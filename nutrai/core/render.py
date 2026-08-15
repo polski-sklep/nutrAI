@@ -399,11 +399,15 @@ def repeat_menu(dishes: Sequence[Any], templates: Sequence[Any] = ()) -> str:
         lines.append("")
         for t in templates:
             lines.append(f"<code>{_esc(t['slug'])}</code> {_esc(t['name'])}")
+    # The footer used to demonstrate every operator prefixed with a literal 3,
+    # which reads as a reference to item 3 in the list above rather than as a
+    # placeholder. Say the number once, then list what can follow it.
     lines += [
         "",
-        "<code>3</code> as before · <code>3 250</code> set total · <code>3 x1.5</code> scale",
-        "<code>3 -onion</code> drop · <code>3 +50 rice</code> add · <code>3 rice 200</code> set one",
-        "<code>3 @14:00</code> time · <code>3 #lunch</code> slot",
+        "<i>Reply with the number alone to log it unchanged, or follow it with:</i>",
+        "<code>x1.5</code> scale · <code>250</code> set total · <code>-onion</code> drop",
+        "<code>+50 rice</code> add · <code>rice 200</code> set one",
+        "<code>@14:00</code> time · <code>@yesterday</code> day · <code>#lunch</code> slot",
     ]
     return "\n".join(lines)
 
