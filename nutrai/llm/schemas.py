@@ -1,0 +1,205 @@
+"""Tool schemas and the system prompts that go with them.
+
+The contract, stated once so it cannot drift: the model returns identity, mass
+and confidence. It never returns a calorie, a gram of protein, or any other
+nutrient value. Those come from USDA via SQL. A model that is not asked to
+estimate nutrition cannot hallucinate nutrition.
+"""
+
+from __future__ import annotations
+
+PARSE_TOOL = {
+    "name": "record_meal",
+    "description": (
+        "Record the identified food items and their masses. Do NOT estimate calories "
+        "or any nutrient value; a nutrition database supplies those downstream."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "dish_name": {
+                "type": "string",
+                "description": "Short human name for the whole plate, e.g. 'beef stir-fry with rice'.",
+            },
+            "slot": {
+                "type": "string",
+                "enum": ["breakfast", "lunch", "dinner", "snack", "drink"],
+            },
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {
+                            "type": "string",
+                            "description": "The ingredient as a person would name it: 'minced beef', 'jasmine rice', 'olive oil'.",
+                        },
+                        "search_terms": {
+                            "type": "string",
+                            "description": "A precise phrase for looking this up in USDA FoodData Central, e.g. 'beef, ground, 15% fat, raw'. Include the cut, fat percentage, and preparation if visible.",
+                        },
+                        "grams": {"type": "number", "description": "Best point estimate of mass in grams."},
+                        "grams_low": {
+                            "type": "number",
+                            "description": "Low end of a plausible range, in grams. Required whenever grams_source is 'estimate'. Make this a real interval you would bet on, not a decoration around your point estimate: a plated portion you cannot weigh is routinely 30-40% either side.",
+                        },
+                        "grams_high": {
+                            "type": "number",
+                            "description": "High end of the plausible range, in grams.",
+                        },
+                        "grams_source": {
+                            "type": "string",
+                            "enum": ["scale", "stated", "package", "estimate", "reference_object"],
+                            "description": "How the mass was determined. Use 'scale' ONLY if a scale display is legible in the photo; report the digits you read in `notes`.",
+                        },
+                        "state": {
+                            "type": "string",
+                            "enum": ["raw", "cooked", "dry", "as_sold", "unknown"],
+                            "description": "The state the mass refers to. Cooked and raw masses differ by up to 35% for meat and 200%+ for rice and pasta. Getting this wrong is the largest error source in the system.",
+                        },
+                        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                    },
+                    "required": ["label", "search_terms", "grams", "grams_source", "state", "confidence"],
+                },
+            },
+            "overall_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "notes": {
+                "type": "string",
+                "description": "Anything that materially affects accuracy: unreadable scale, hidden ingredients, obscured portion, sauce of unknown composition. Be blunt. An empty string is fine.",
+            },
+        },
+        "required": ["dish_name", "items", "overall_confidence"],
+    },
+}
+
+PARSE_SYSTEM = """You convert a description or photograph of a meal into a list of ingredients with masses.
+
+Rules, in priority order:
+1. Never output a calorie or nutrient figure. You output identity, mass, state and confidence only.
+2. If a kitchen scale display is visible, read the digits and use that number with grams_source='scale'. This is the most accurate signal available; prefer it over every visual estimate. State in `notes` what digits you read.
+3. If the user states a mass in text, use it with grams_source='stated'. Trust the user over the photograph.
+4. State matters as much as mass. 100 g of dry rice becomes ~250 g cooked. 100 g of raw mince becomes ~70 g cooked. If you cannot tell which the mass refers to, say 'unknown' and lower your confidence rather than guessing.
+5. Break composite dishes into ingredients only where the split is visible or stated. If you cannot see how much butter is in the mash, do not invent a number: report the dish as one item with a search term for the composite, and say so in `notes`.
+6. Calibrate confidence honestly. A clearly weighed single ingredient is 0.95. A plated mixed dish photographed from above with no scale is 0.4 to 0.6. Overconfidence here corrupts weeks of trend data; under-confidence merely triggers one question.
+7. Cooking fat and oil absorbed during cooking are real and routinely forgotten. If a dish is visibly fried or glossy, include an oil item and mark grams_source='estimate'.
+8. Whenever grams_source is 'estimate', give grams_low and grams_high as a genuine interval. A point estimate with no range asserts a precision the photograph does not contain. Use visible reference objects to narrow it: a standard dinner plate is 26-28 cm across, a dinner fork is 19-20 cm, a chicken egg is 55-60 g, a slice of sandwich bread is 35-40 g."""
+
+DISAMBIGUATE_TOOL = {
+    "name": "choose_food",
+    "description": "Pick the best-matching database row for each ingredient from the supplied candidates.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "choices": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string"},
+                        "fdc_id": {"type": "integer", "description": "Chosen candidate's fdc_id, or 0 if none is acceptable."},
+                        "yield_factor": {
+                            "type": "number",
+                            "description": "Multiply the logged mass by this to get the mass of the chosen database row as described. 1.0 if they match. Example: logged 200 g cooked mince, chosen row is raw mince -> 1.33. Logged 100 g dry pasta, chosen row is cooked pasta -> 2.4.",
+                        },
+                        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                    },
+                    "required": ["label", "fdc_id", "yield_factor", "confidence"],
+                },
+            }
+        },
+        "required": ["choices"],
+    },
+}
+
+DISAMBIGUATE_SYSTEM = """You map ingredient names to rows in USDA FoodData Central.
+
+Prefer Foundation and SR Legacy rows over Branded rows unless a specific brand was named. Prefer the row whose preparation state matches the logged state; when it does not match, set yield_factor to convert. Return fdc_id 0 rather than forcing a bad match — a wrong row is worse than a missing one, because a wrong row is silently counted forever."""
+
+MODIFIER_TOOL = {
+    "name": "modify_dish",
+    "description": "Translate a free-text change to a known dish into explicit component edits.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "operations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "op": {"type": "string", "enum": ["set", "add", "drop", "scale_all"]},
+                        "label": {"type": "string"},
+                        "grams": {"type": "number"},
+                        "factor": {"type": "number"},
+                    },
+                    "required": ["op"],
+                },
+            },
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        },
+        "required": ["operations", "confidence"],
+    },
+}
+
+MODIFIER_SYSTEM = """You are given the component list of a dish the user has eaten before, and a short phrase describing how today's version differed. Emit explicit edits. Use only labels that appear in the supplied component list, except for 'add'. Do not restate unchanged components."""
+
+PLAN_TOOL = {
+    "name": "propose_plan",
+    "description": "Propose numbered dietary changes and the concrete target edits that implement them.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "findings": {
+                "type": "array",
+                "description": "What the data actually shows. Ranked by size of effect, not by ease of fixing.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "statement": {"type": "string"},
+                        "evidence": {"type": "string", "description": "Cite the numbers from the evidence pack. No number, no finding."},
+                        "confidence": {"type": "string", "enum": ["high", "moderate", "low"]},
+                    },
+                    "required": ["statement", "evidence", "confidence"],
+                },
+            },
+            "recommendations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "n": {"type": "integer"},
+                        "action": {"type": "string", "description": "One specific behavioural change. 'Eat more fibre' is useless. 'Add 40 g of oats to the morning yoghurt' is a recommendation."},
+                        "expected_effect": {"type": "string"},
+                        "target_changes": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "nutrient_id": {"type": "integer"},
+                                    "min_amount": {"type": "number"},
+                                    "max_amount": {"type": "number"},
+                                    "rationale": {"type": "string"},
+                                },
+                                "required": ["nutrient_id"],
+                            },
+                        },
+                        "risk": {"type": "string", "description": "What could go wrong or what this trades off. Say 'none identified' only if that is true."},
+                    },
+                    "required": ["n", "action", "expected_effect", "risk"],
+                },
+            },
+            "what_the_data_cannot_tell_you": {
+                "type": "string",
+                "description": "Coverage gaps, short windows, unlogged days, micronutrients with poor database coverage.",
+            },
+        },
+        "required": ["findings", "recommendations", "what_the_data_cannot_tell_you"],
+    },
+}
+
+PLAN_SYSTEM = """You are reviewing a person's own nutrition log against their own stated targets.
+
+You are given an evidence pack of medians, target comparisons and coverage figures. Work only from it. Do not invent numbers, do not assume unlogged days were typical, and do not soften a finding because it is unwelcome.
+
+Rank findings by magnitude of effect. State confidence explicitly. Where database coverage for a micronutrient is poor, say so rather than reporting a deficiency that is really a measurement gap — this is the most common way micronutrient tracking misleads people.
+
+Every recommendation must be a concrete, executable change to what is eaten, and must name the target edits that implement it. Include the trade-off. If the data supports no change, say so and recommend nothing."""

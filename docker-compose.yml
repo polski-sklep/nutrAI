@@ -1,0 +1,37 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: nutrai
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nutrai}
+      POSTGRES_DB: nutrai
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nutrai"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+    # No published port. The bot reaches it over the compose network; nothing
+    # else should. A Postgres on 0.0.0.0:5432 with your food log in it is an
+    # unnecessary thing to own.
+
+  bot:
+    build: .
+    environment:
+      DATABASE_URL: postgresql://nutrai:${POSTGRES_PASSWORD:-nutrai}@db:5432/nutrai
+      TELEGRAM_TOKEN: ${TELEGRAM_TOKEN}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      ALLOWED_TELEGRAM_IDS: ${ALLOWED_TELEGRAM_IDS}
+      DEFAULT_TZ: ${DEFAULT_TZ:-Europe/Warsaw}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - photos:/var/lib/nutrai/photos
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  photos:

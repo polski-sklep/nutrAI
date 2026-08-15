@@ -1,0 +1,23 @@
+[project]
+name = "nutrai"
+version = "0.1.0"
+description = "Telegram-first nutrition tracker: LLM for identity and mass, USDA for nutrition, SQL for everything else."
+requires-python = ">=3.11"
+dependencies = [
+    "aiogram>=3.13",
+    "anthropic>=0.40",
+    "asyncpg>=0.29",
+    "apscheduler>=3.10",
+    "pillow>=10.4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 108
+target-version = "py311"
