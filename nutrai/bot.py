@@ -18,7 +18,7 @@ from aiogram.types import (
 
 from . import db
 from .config import CONFIDENCE_FLOOR, settings
-from .core import dsl, fasting, insight, render
+from .core import dsl, estimate, fasting, insight, render
 from .core.nutrition import ResolvedComponent, total_nutrients
 from .llm import parse as llm
 
@@ -36,9 +36,9 @@ def kb_confirm(entry_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="✓ log it", callback_data=f"ok:{entry_id}"),
-                InlineKeyboardButton(text="✎ fix", callback_data=f"fix:{entry_id}"),
-                InlineKeyboardButton(text="✕ discard", callback_data=f"no:{entry_id}"),
+                InlineKeyboardButton(text="✅ log it", callback_data=f"ok:{entry_id}"),
+                InlineKeyboardButton(text="✏️ fix", callback_data=f"fix:{entry_id}"),
+                InlineKeyboardButton(text="🗑 discard", callback_data=f"no:{entry_id}"),
             ]
         ]
     )
@@ -537,8 +537,14 @@ async def _try_fix(msg: Message, u: Any, text: str) -> bool:
                               grams_source="stated")
             )
 
+    # Sigma is recomputed from the provenance rather than zeroed. Storing 0
+    # claims the mass is exact, which shrinks the day's error bar and makes a
+    # corrected meal look better measured than an uncorrected one.
     resolved = [
-        ResolvedComponent(c.label, c.fdc_id, c.grams, c.yield_factor, 0.0, c.grams_source)
+        ResolvedComponent(
+            c.label, c.fdc_id, c.grams, c.yield_factor,
+            estimate.sigma_for(c.grams, c.grams_source), c.grams_source,
+        )
         for c in new_comps if c.fdc_id
     ]
     if not resolved:
@@ -758,7 +764,14 @@ async def _present(
 
     warnings = list(verdict.warnings)
     if parsed.confidence < CONFIDENCE_FLOOR:
-        warnings.insert(0, f"low overall confidence ({parsed.confidence:.0%}) — check the masses")
+        # "Check the masses" is the wrong instruction when you supplied every
+        # mass yourself. What is left to doubt in that case is whether the right
+        # USDA rows were picked.
+        all_hard = res.grams_sources and all(
+            src in ("scale", "stated", "package") for src in res.grams_sources
+        )
+        what = "check the foods matched" if all_hard else "check the masses"
+        warnings.insert(0, f"low overall confidence ({parsed.confidence:.0%}) — {what}")
     for note in res.prior_notes or []:
         warnings.append(note)
 

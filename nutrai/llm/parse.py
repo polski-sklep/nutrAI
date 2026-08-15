@@ -353,8 +353,13 @@ async def validate(components: list[ResolvedComponent], parsed: ParsedMeal) -> V
 
     for it in parsed.items:
         if str(it.get("state")) == "unknown" and float(it.get("grams", 0) or 0) > 80:
+            # Phrased as the question that is actually open. "Raw or cooked is
+            # unknown" reads as though you might have eaten it raw, which is
+            # absurd for rice and pasta; what is unknown is which side of the
+            # pan the scale reading came from, and that is a 2-3x difference.
             warnings.append(
-                f"{it.get('label')}: raw or cooked is unknown, and that is a 30-100% swing"
+                f"{it.get('label')}: was that weighed before or after cooking? "
+                f"say \u201cdry\u201d or \u201ccooked\u201d and I will use it"
             )
         if str(it.get("grams_source")) == "estimate" and float(it.get("confidence", 1)) < 0.5:
             warnings.append(f"{it.get('label')}: mass is a low-confidence visual estimate")

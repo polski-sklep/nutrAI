@@ -815,6 +815,54 @@ def test_the_fix_button_actually_corrects_the_entry(harness):
     run(scenario())
 
 
+def test_a_fix_does_not_downgrade_untouched_provenance(harness):
+    """Correcting one component must not turn its neighbours into guesses.
+
+    `apply()` hardcoded "repeat" for every component it copied, so correcting
+    the rice in "400 g rice and 100 g chicken" downgraded the untouched chicken
+    from `stated` to `repeat`. It rendered as ≈, and portion_history() stopped
+    counting it — that reads only scale/stated/package rows, so a mass you
+    stated quietly stopped being able to inform a future estimate.
+    """
+
+    async def scenario():
+        await _reset()
+        from nutrai import db
+
+        harness.llm.meal = {
+            "dish_name": "rice and chicken", "slot": "dinner",
+            "overall_confidence": 0.9, "notes": "",
+            "items": [
+                {"label": "rice", "search_terms": "rice, white, long-grain, regular, cooked",
+                 "grams": 400, "grams_source": "stated", "state": "cooked", "confidence": 0.9},
+                {"label": "chicken", "search_terms": "chicken, broilers or fryers, breast, meat only, cooked, roasted",
+                 "grams": 100, "grams_source": "stated", "state": "cooked", "confidence": 0.9},
+            ],
+        }
+        await harness.feed("400g rice and 100g chicken")
+        card = harness.sent.last()
+        entry_id = _confirm_id(card)
+        await harness.press(f"fix:{entry_id}", card.message_id)
+        await harness.feed("rice 500")
+
+        p = await db.pool()
+        rows = {
+            r["label"]: (r["grams_source"], float(r["grams_sigma"]))
+            for r in await p.fetch(
+                "SELECT label, grams_source, grams_sigma FROM log_component WHERE entry_id=$1",
+                entry_id,
+            )
+        }
+        assert rows["chicken"][0] == "stated", rows
+        assert rows["rice"][0] == "stated", rows
+        # And sigma is recomputed, not zeroed — zero would claim the corrected
+        # mass is exact and shrink the day's error bar.
+        assert rows["rice"][1] > 0, rows
+        assert rows["chicken"][1] > 0, rows
+
+    run(scenario())
+
+
 def test_fix_can_drop_a_component(harness):
     async def scenario():
         uid = await _reset()

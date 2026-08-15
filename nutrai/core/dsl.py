@@ -289,8 +289,18 @@ def apply(components: list[Component], ops: list[Op]) -> tuple[list[Component], 
     not already an alias cannot be resolved here — it needs the food resolver,
     and possibly one cheap model call. Everything else is arithmetic.
     """
+    # Provenance is carried through, not overwritten.
+    #
+    # This used to hardcode "repeat" for every component. On the repeat path
+    # that is honest — dish_component stores no provenance, so there is none to
+    # keep — but the fix path feeds in rows from log_component, which do have
+    # it. Correcting the rice in "400 g rice and 100 g chicken" silently
+    # downgraded the untouched chicken from `stated` to `repeat`: it rendered
+    # as a guess, and portion_history() stopped counting it, because that reads
+    # only scale/stated/package rows. A mass you stated does not stop being
+    # stated because you corrected something next to it.
     out = [
-        Component(c.label, c.fdc_id, float(c.grams), c.state, c.yield_factor, "repeat")
+        Component(c.label, c.fdc_id, float(c.grams), c.state, c.yield_factor, c.grams_source)
         for c in components
     ]
     unresolved: list[AddComponent] = []
