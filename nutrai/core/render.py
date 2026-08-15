@@ -495,11 +495,22 @@ def _esc(s: str) -> str:
 
 def supplement_stack_card(stack: Sequence[Any]) -> str:
     lines = ["💊 <b>Your daily stack</b>", ""]
+    cadence = {"alternate": "every other day", "occasional": "occasional"}
     for s in stack:
         serving = f"{float(s['servings_per_day']):g} × {s['serving_desc']}"
-        mark = "" if s["verified_at"] else "  <i>(unverified)</i>"
-        lines.append(f"   • <b>{_esc(s['name'])}</b> — {_esc(serving)}{mark}")
-        lines.append(f"     {s['n_nutrients']} nutrient(s) from its label")
+        extra = cadence.get(s["schedule"], "")
+        lines.append(
+            f"   • <b>{_esc(s['name'])}</b> — {_esc(serving)}"
+            + (f" · {extra}" if extra else "")
+        )
+        detail = [f"{s['n_nutrients']} tracked nutrient(s)"]
+        if s["brand"]:
+            detail.insert(0, _esc(s["brand"]))
+        if not s["verified_at"]:
+            detail.append("unverified")
+        lines.append(f"     <i>{' · '.join(detail)}</i>")
+        if s["note"]:
+            lines.append(f"     <i>{_esc(s['note'])}</i>")
     lines += ["", "<code>/supp</code> logs the lot for today."]
     return "\n".join(lines)
 
@@ -654,11 +665,22 @@ def _esc(s: str) -> str:
 
 def supplement_stack_card(stack: Sequence[Any]) -> str:
     lines = ["💊 <b>Your daily stack</b>", ""]
+    cadence = {"alternate": "every other day", "occasional": "occasional"}
     for s in stack:
         serving = f"{float(s['servings_per_day']):g} × {s['serving_desc']}"
-        mark = "" if s["verified_at"] else "  <i>(unverified)</i>"
-        lines.append(f"   • <b>{_esc(s['name'])}</b> — {_esc(serving)}{mark}")
-        lines.append(f"     {s['n_nutrients']} nutrient(s) from its label")
+        extra = cadence.get(s["schedule"], "")
+        lines.append(
+            f"   • <b>{_esc(s['name'])}</b> — {_esc(serving)}"
+            + (f" · {extra}" if extra else "")
+        )
+        detail = [f"{s['n_nutrients']} tracked nutrient(s)"]
+        if s["brand"]:
+            detail.insert(0, _esc(s["brand"]))
+        if not s["verified_at"]:
+            detail.append("unverified")
+        lines.append(f"     <i>{' · '.join(detail)}</i>")
+        if s["note"]:
+            lines.append(f"     <i>{_esc(s['note'])}</i>")
     lines += ["", "<code>/supp</code> logs the lot for today."]
     return "\n".join(lines)
 

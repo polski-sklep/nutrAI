@@ -236,8 +236,11 @@ SUPPLEMENT_TOOL = {
                 "items": {
                     "type": "object",
                     "properties": {
-                        "name": {"type": "string", "description": "Product name, e.g. 'Solgar Chelated Zinc 22 mg'."},
-                        "brand": {"type": "string"},
+                        "name": {
+                            "type": "string",
+                            "description": "What the supplement IS, not what it is sold as. 'Chelated Magnesium', 'Zinc', 'Omega 3', 'Creatine'. No brand, no dose, no marketing series name — those go in `brand` and `serving_desc`.",
+                        },
+                        "brand": {"type": "string", "description": "Manufacturer or range: 'Solgar', 'HSN EssentialSeries'."},
                         "serving_desc": {
                             "type": "string",
                             "description": "The serving the panel is stated per, as printed: '1 capsule', '2 capsules', '1 scoop (5 g)'.",

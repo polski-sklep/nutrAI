@@ -390,20 +390,12 @@ async def supp(msg: Message) -> None:
 
 
 def _button_label(sup: Any) -> str:
-    """Telegram truncates a long button, and it truncates the wrong end.
-
-    "HSN EssentialSeries Chelated Magnesium" cut to 28 characters reads "HSN
-    EssentialSeries Chelated" — the brand survives and the actual substance,
-    the only part that identifies it, is what falls off. Drop the brand words
-    first and keep the tail.
-    """
+    """Names are the substance now — "Chelated Magnesium", not "HSN
+    EssentialSeries Chelated Magnesium" — so this rarely has to do anything.
+    Kept as a guard, trimming the front so the substance survives if it ever
+    does: truncating the tail is what hid the word "Magnesium" entirely."""
     name = sup["name"]
-    if len(name) <= 30:
-        return name
-    words = name.split()
-    while len(" ".join(words)) > 30 and len(words) > 2:
-        words.pop(0)
-    return "… " + " ".join(words)
+    return name if len(name) <= 32 else "… " + name[-30:]
 
 
 def _supp_keyboard(action_id: int, stack: list[Any], selected: list[int]) -> InlineKeyboardMarkup:
