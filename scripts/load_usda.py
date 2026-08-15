@@ -41,8 +41,50 @@ def rows(path: Path) -> Iterator[dict[str, str]]:
 
 
 async def copy(con: asyncpg.Connection, table: str, columns: list[str], records: list[tuple]) -> None:
-    if records:
-        await con.copy_records_to_table(table, columns=columns, records=records)
+    """COPY into a staging table, then upsert into the real one.
+
+    The obvious implementation — TRUNCATE then COPY straight in — is wrong here
+    in a way that only shows up the second time you run it. `nutrient` is
+    referenced by `target` and by `log_nutrient`, so `TRUNCATE nutrient CASCADE`
+    silently takes your versioned targets and your immutable nutrient snapshots
+    with it. Refreshing the food database must never be able to touch the log:
+    that is the whole point of snapshotting nutrients at confirm time.
+
+    So: stage, upsert, drop. Reference data is refreshed in place, and re-running
+    the loader against a newer FDC export is a safe, ordinary thing to do.
+    """
+    if not records:
+        return
+    stage = f"_stage_{table}"
+    # Not ON COMMIT DROP: asyncpg runs each execute() in its own implicit
+    # transaction, so the table would vanish before the COPY that fills it.
+    await con.execute(f"DROP TABLE IF EXISTS {stage}")
+    await con.execute(f"CREATE TEMP TABLE {stage} (LIKE {table} INCLUDING DEFAULTS)")
+    # A generated column cannot be COPYed into, and is recomputed on insert.
+    generated = await con.fetch(
+        """SELECT attname FROM pg_attribute
+            WHERE attrelid = $1::regclass AND attgenerated <> '' AND NOT attisdropped""",
+        table,
+    )
+    for g in generated:
+        await con.execute(f"ALTER TABLE {stage} DROP COLUMN {g['attname']}")
+    await con.copy_records_to_table(stage, columns=columns, records=records)
+    cols = ", ".join(columns)
+    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in columns if c not in PKEYS[table])
+    conflict = ", ".join(PKEYS[table])
+    await con.execute(
+        f"""INSERT INTO {table} ({cols}) SELECT {cols} FROM {stage}
+            ON CONFLICT ({conflict}) DO UPDATE SET {updates}"""
+    )
+    await con.execute(f"DROP TABLE {stage}")
+
+
+PKEYS = {
+    "nutrient": ("id",),
+    "food": ("fdc_id",),
+    "food_nutrient": ("fdc_id", "nutrient_id"),
+    "food_portion": ("id",),
+}
 
 
 async def main(src: Path, include_branded: bool) -> None:
@@ -57,10 +99,10 @@ async def main(src: Path, include_branded: bool) -> None:
             int(r["id"]),
             float(r["nutrient_nbr"]) if r.get("nutrient_nbr") else None,
             r["name"], r["unit_name"],
-            int(r["rank"]) if r.get("rank") else None,
+            # FDC writes rank as "280.0", not "280". int() rejects that string.
+            int(float(r["rank"])) if r.get("rank") else None,
             int(r["id"]) in core,
         ))
-    await con.execute("TRUNCATE nutrient CASCADE")
     await copy(con, "nutrient", ["id", "nutrient_nbr", "name", "unit", "rank", "is_core"], recs)
     print(f"  {len(recs)} nutrients")
 

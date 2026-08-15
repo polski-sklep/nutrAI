@@ -1,0 +1,526 @@
+"""Stage 1 of docs/ARCHITECTURE.md, as an executable check.
+
+    docker compose up -d db
+    python scripts/load_usda.py <fdc_csv_dir>
+    python scripts/bootstrap.py --telegram-id 123456789 ...
+    pytest -q -m integration
+
+Send one text message, get one confirmation card, press confirm, see it in
+/today — plus the zero-token repeat path, which is the feature the whole design
+rests on and the one a unit test cannot reach because it is mostly SQL.
+
+Skipped, not failed, when there is no database. `pytest -q` stays DB-free.
+
+The Anthropic client is stubbed. Everything below it is real: the resolver runs
+against real USDA rows, the nutrient arithmetic is the real arithmetic, and the
+messages are the ones a human would have read.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import datetime as dt
+import os
+import re
+from typing import Any
+
+import pytest
+
+from tests.fake_telegram import CHAT_ID, FakeTelegram
+
+pytestmark = pytest.mark.integration
+
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://nutrai:nutrai@localhost:5432/nutrai")
+
+
+# ------------------------------------------------------------------ skipping
+
+
+def _db_ready() -> tuple[bool, str]:
+    try:
+        import asyncpg
+    except ImportError:  # pragma: no cover
+        return False, "asyncpg not installed"
+
+    async def check() -> tuple[bool, str]:
+        try:
+            con = await asyncio.wait_for(asyncpg.connect(DATABASE_URL), timeout=5)
+        except Exception as exc:
+            return False, f"no database at {DATABASE_URL}: {exc}"
+        try:
+            foods = await con.fetchval("SELECT count(*) FROM food")
+            targets = await con.fetchval("SELECT count(*) FROM target")
+            if not foods:
+                return False, "no USDA data loaded — run scripts/load_usda.py"
+            if not targets:
+                return False, "no user bootstrapped — run scripts/bootstrap.py"
+            return True, ""
+        finally:
+            await con.close()
+
+    return asyncio.run(check())
+
+
+_READY, _WHY = _db_ready()
+pytestmark = [pytest.mark.integration, pytest.mark.skipif(not _READY, reason=_WHY)]
+
+
+# ---------------------------------------------------------------- LLM stub
+
+
+class StubLLM:
+    """Stands in for Anthropic. Counts calls so the zero-token paths can be
+    asserted to be actually zero-token rather than merely cheap."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.meal: dict[str, Any] = {}
+        self.pending_labels: list[str] = []
+
+    async def __call__(self, *, model: str, tool: dict, system: Any, content: list, **kw: Any):
+        from nutrai.llm.client import ToolResult
+
+        name = tool["name"]
+        self.calls.append(name)
+
+        if name == "record_meal":
+            data = self.meal
+        elif name == "choose_food":
+            # Take the head of the candidate list, which is what a
+            # correctly-behaving Haiku does when the list is ranked best-first.
+            # This is also why db.search_foods must rank by relevance: a stub
+            # this obedient logs whatever the resolver put in position one.
+            data = {"choices": []}
+            for line in content[0]["text"].splitlines():
+                if line.strip().startswith("- label:"):
+                    label = line.split("- label:")[1].split("(")[0].strip()
+                    self.pending_labels.append(label)
+                elif line.strip().startswith("candidates:") and self.pending_labels:
+                    first = line.split("candidates:")[1].split("|")[0].strip()
+                    data["choices"].append({
+                        "label": self.pending_labels.pop(0),
+                        "fdc_id": int(first.split(":")[0]),
+                        "yield_factor": 1.0,
+                        "confidence": 0.8,
+                    })
+        elif name == "modify_dish":
+            data = {"operations": []}
+        else:
+            raise AssertionError(f"stub has no answer for tool {name!r}")
+
+        return ToolResult(
+            data=data, model=model, input_tokens=500, output_tokens=120,
+            cache_read_tokens=0, cache_write_tokens=0, latency_ms=900,
+            cost_usd=0.0038, stop_reason="tool_use",
+        )
+
+
+MEAL = {
+    "dish_name": "mince and rice",
+    "slot": "dinner",
+    "overall_confidence": 0.91,
+    "notes": "",
+    "items": [
+        {"label": "minced beef", "search_terms": "beef, ground, 85% lean meat / 15% fat, raw",
+         "grams": 250, "grams_source": "scale", "state": "raw", "confidence": 0.95},
+        {"label": "rice", "search_terms": "rice, white, long-grain, regular, cooked",
+         "grams": 164, "grams_source": "scale", "state": "cooked", "confidence": 0.95},
+        {"label": "olive oil", "search_terms": "oil, olive, salad or cooking",
+         "grams": 15, "grams_source": "estimate", "state": "as_sold", "confidence": 0.45},
+    ],
+}
+
+
+# ------------------------------------------------------------------ harness
+
+
+async def _reset(user_telegram_id: int = CHAT_ID) -> int:
+    """Wipe this user's log, keep the USDA reference data and the targets."""
+    import asyncpg
+
+    con = await asyncpg.connect(DATABASE_URL)
+    try:
+        uid = await con.fetchval("SELECT id FROM app_user WHERE telegram_id = $1", user_telegram_id)
+        await con.execute("DELETE FROM log_entry WHERE user_id = $1", uid)
+        await con.execute("DELETE FROM dish WHERE user_id = $1", uid)
+        await con.execute("DELETE FROM food_alias WHERE user_id = $1", uid)
+        await con.execute("DELETE FROM pending_action WHERE user_id = $1", uid)
+        await con.execute("DELETE FROM notification_log WHERE user_id = $1", uid)
+        await con.execute("DELETE FROM llm_call WHERE user_id = $1", uid)
+        return uid
+    finally:
+        await con.close()
+
+
+class Harness:
+    def __init__(self) -> None:
+        self.tg = FakeTelegram()
+        self.llm = StubLLM()
+        self.llm.meal = dict(MEAL)
+
+    async def feed(self, text: str) -> None:
+        from nutrai.bot import dp
+
+        await dp.feed_update(self.tg.bot, self.tg.text_update(text))
+
+    async def press(self, callback_data: str, message_id: int) -> None:
+        from nutrai.bot import dp
+
+        await dp.feed_update(
+            self.tg.bot, self.tg.callback_update(callback_data, message_id)
+        )
+
+    @property
+    def sent(self):
+        return self.tg.session
+
+
+def _confirm_id(card) -> int:
+    """The entry id behind a confirmation card's ✓ button."""
+    return int(next(b for b in card.buttons if b.startswith("ok:")).split(":")[1])
+
+
+def run(coro):
+    """One event loop per test, and the connection pool dies inside it.
+
+    db.pool() memoises a pool bound to whatever loop created it. Closing it from
+    a later asyncio.run() raises 'Event loop is closed' from deep inside
+    asyncpg, which reads like a driver bug and is not one.
+    """
+
+    async def wrapper():
+        from nutrai import db
+
+        try:
+            return await coro
+        finally:
+            await db.close()
+
+    return asyncio.run(wrapper())
+
+
+@pytest.fixture
+def harness(monkeypatch):
+    import nutrai.llm.parse as parse_mod
+
+    h = Harness()
+    monkeypatch.setattr(parse_mod, "call_tool", h.llm)
+    monkeypatch.setenv("DATABASE_URL", DATABASE_URL)
+    return h
+
+
+# -------------------------------------------------------------------- tests
+
+
+def test_text_message_to_confirmed_entry_in_today(harness):
+    """The whole of stage 1 in one test."""
+
+    async def scenario():
+        await _reset()
+
+        await harness.feed("/start")
+        assert harness.sent.sent, "no reply to /start"
+
+        harness.sent.clear()
+        await harness.feed("250 g minced beef, 164 g rice, a splash of olive oil")
+
+        card = harness.sent.last()
+        assert "mince and rice" in card.text
+        assert "kcal" in card.text
+        # Provenance marks: two weighed, one guessed.
+        assert card.text.count("⚖") == 2, card.text
+        assert "≈" in card.text
+        assert "Nothing is logged until you confirm." in card.text
+
+        assert any(b.startswith("ok:") for b in card.buttons), card.buttons
+        entry_id = _confirm_id(card)
+
+        # Nothing counts before the button is pressed.
+        from nutrai import db
+
+        p = await db.pool()
+        assert await p.fetchval("SELECT status FROM log_entry WHERE id=$1", entry_id) == "pending"
+        assert await p.fetchval("SELECT count(*) FROM log_nutrient WHERE entry_id=$1", entry_id) == 0
+
+        await harness.press(f"ok:{entry_id}", card.message_id)
+        assert await p.fetchval("SELECT status FROM log_entry WHERE id=$1", entry_id) == "confirmed"
+        n_nutrients = await p.fetchval(
+            "SELECT count(*) FROM log_nutrient WHERE entry_id=$1", entry_id
+        )
+        # The snapshot is the point: a full panel, written once, never recomputed.
+        assert n_nutrients > 30, f"only {n_nutrients} nutrients snapshotted"
+
+        harness.sent.clear()
+        await harness.feed("/today")
+        day = harness.sent.find("kcal")
+        assert day, harness.sent.texts()
+        assert "mince and rice" in day.text
+        assert "% of today's mass was weighed or stated" in day.text
+
+        # Energy actually landed, and is in the right ballpark for
+        # 250 g raw mince + 164 g cooked rice + 15 g oil.
+        kcal = await p.fetchval(
+            """SELECT sum(ln.amount) FROM log_entry e JOIN log_nutrient ln ON ln.entry_id = e.id
+                WHERE e.user_id = (SELECT id FROM app_user WHERE telegram_id = $1)
+                  AND ln.nutrient_id = 1008 AND e.status = 'confirmed'""",
+            CHAT_ID,
+        )
+        assert 700 < float(kcal) < 1400, f"{kcal} kcal is not plausible for that plate"
+
+    run(scenario())
+
+
+def test_repeat_is_zero_token(harness):
+    """`/r` then `1` must not touch a model, and must log without a gate."""
+
+    async def scenario():
+        await _reset()
+        await harness.feed("250 g minced beef, 164 g rice, a splash of olive oil")
+        card = harness.sent.last()
+        entry_id = _confirm_id(card)
+        await harness.press(f"ok:{entry_id}", card.message_id)
+
+        calls_before = len(harness.llm.calls)
+        harness.sent.clear()
+
+        await harness.feed("/r")
+        menu = harness.sent.last()
+        assert "repeat" in menu.text.lower()
+        assert "mince and rice" in menu.text
+
+        harness.sent.clear()
+        await harness.feed("1")
+
+        assert len(harness.llm.calls) == calls_before, "the repeat path called a model"
+        # An unmodified repeat of a confirmed dish logs immediately, no button.
+        # Threshold notifications fire straight after the write, so the ✓ line
+        # is not necessarily the last thing on screen.
+        confirmation = next((s for s in harness.sent.sent if s.text.startswith("✓")), None)
+        assert confirmation, harness.sent.texts()
+        assert not confirmation.buttons
+
+        from nutrai import db
+
+        p = await db.pool()
+        n = await p.fetchval(
+            """SELECT count(*) FROM log_entry
+                WHERE user_id = (SELECT id FROM app_user WHERE telegram_id=$1)
+                  AND status='confirmed'""",
+            CHAT_ID,
+        )
+        assert n == 2
+
+    run(scenario())
+
+
+def test_repeat_with_modifier_goes_through_the_gate(harness):
+    """`1 x1.5` is a new claim about the world, so it must be confirmed."""
+
+    async def scenario():
+        await _reset()
+        await harness.feed("250 g minced beef, 164 g rice, a splash of olive oil")
+        card = harness.sent.last()
+        await harness.press(f"ok:{_confirm_id(card)}", card.message_id)
+        await harness.feed("/r")
+
+        calls_before = len(harness.llm.calls)
+        harness.sent.clear()
+        await harness.feed("1 x1.5")
+
+        assert len(harness.llm.calls) == calls_before, "x1.5 is in the grammar; it must not cost a call"
+        gated = harness.sent.last()
+        assert [b for b in gated.buttons if b.startswith("ok:")], gated.text
+        # 250 -> 375 g of mince.
+        assert "375" in gated.text, gated.text
+
+    run(scenario())
+
+
+def _jpeg(w: int = 1280, h: int = 960) -> bytes:
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (w, h), (140, 90, 60)).save(buf, format="JPEG")
+    return buf.getvalue()
+
+
+def test_photo_to_confirmation_card(harness):
+    """Stage 2: one photo, one parse, one card.
+
+    Exercises the real download, the real downscale, and the real handler —
+    which is where the largest-PhotoSize choice and the image budget live.
+    """
+
+    async def scenario():
+        await _reset()
+        from nutrai.bot import dp
+
+        await dp.feed_update(
+            harness.tg.bot,
+            harness.tg.photo_update(_jpeg(), caption="mince and rice, weighed"),
+        )
+
+        card = harness.sent.last()
+        assert "mince and rice" in card.text, harness.sent.texts()
+        assert [b for b in card.buttons if b.startswith("ok:")]
+        assert harness.llm.calls.count("record_meal") == 1, harness.llm.calls
+
+        # The uploaded image must be the downscaled one. A stock 1280x960
+        # Telegram photo is 1,610 visual tokens; 896x672 is 768 and identifies
+        # a plate just as well.
+        from nutrai.config import IMAGE_LONG_EDGE
+        from nutrai.llm.parse import prepare_image, visual_tokens
+
+        _b64, w, h = prepare_image(_jpeg())
+        assert max(w, h) == IMAGE_LONG_EDGE
+        assert visual_tokens(w, h) < visual_tokens(1280, 960)
+
+    run(scenario())
+
+
+def test_photo_confidence_below_threshold_escalates_once(harness):
+    async def scenario():
+        await _reset()
+        from nutrai.bot import dp
+        from nutrai.config import CONFIDENCE_ESCALATE
+
+        harness.llm.meal = dict(MEAL, overall_confidence=CONFIDENCE_ESCALATE - 0.2)
+        await dp.feed_update(harness.tg.bot, harness.tg.photo_update(_jpeg()))
+
+        # Exactly one escalation, not a loop.
+        assert harness.llm.calls.count("record_meal") == 2, harness.llm.calls
+
+        from nutrai import db
+
+        p = await db.pool()
+        purposes = [
+            r["purpose"]
+            for r in await p.fetch("SELECT purpose FROM llm_call ORDER BY id")
+        ]
+        assert "photo_parse" in purposes
+        assert "photo_parse_escalated" in purposes
+
+    run(scenario())
+
+
+def test_album_becomes_one_meal_not_four(harness):
+    """Without the media_group_id buffer, a four-photo meal is four meals."""
+
+    async def scenario():
+        await _reset()
+        from nutrai.bot import ALBUM_WAIT, dp
+
+        for _ in range(3):
+            await dp.feed_update(
+                harness.tg.bot, harness.tg.photo_update(_jpeg(), media_group_id="album-1")
+            )
+        await asyncio.sleep(ALBUM_WAIT + 0.6)
+
+        cards = [s for s in harness.sent.sent if s.buttons]
+        assert len(cards) == 1, f"{len(cards)} confirmation cards for one album"
+
+    run(scenario())
+
+
+def test_no_slash_command_is_ever_dropped(harness):
+    """Through the real dispatcher, so registration order is what is tested."""
+
+    async def scenario():
+        await _reset()
+        from nutrai.bot import COMMANDS
+
+        # Commands that do not exist come back with the list of ones that do.
+        for typed in ("/improve", "/targets", "/week", "/nonsense", "/r0"):
+            harness.sent.clear()
+            await harness.feed(typed)
+            assert harness.sent.sent, f"{typed} produced no reply at all"
+            reply = harness.sent.last().text
+            assert "is not a command here" in reply, reply
+            assert "/insight" in reply
+
+        # Commands that do exist are not swallowed by the catch-all.
+        for name, _desc in COMMANDS:
+            harness.sent.clear()
+            await harness.feed(name)
+            assert harness.sent.sent, f"{name} produced no reply at all"
+            assert "is not a command here" not in harness.sent.last().text, name
+
+        # And no model was called to work any of that out.
+        assert not harness.llm.calls
+
+    run(scenario())
+
+
+def test_every_message_is_valid_html(harness):
+    """Whatever the bot sends, Telegram must be able to parse it."""
+
+    async def scenario():
+        await _reset()
+        await harness.feed("250 g minced beef, 164 g rice, a splash of olive oil")
+        card = harness.sent.last()
+        await harness.press(f"ok:{_confirm_id(card)}", card.message_id)
+        for cmd in ("/start", "/today", "/today all", "/r", "/spend", "/fast", "/nope"):
+            await harness.feed(cmd)
+
+        for sent in harness.sent.sent:
+            if sent.parse_mode != "HTML":
+                continue
+            _assert_balanced_html(sent.text)
+            for block in re.findall(r"<pre>(.*?)</pre>", sent.text, re.DOTALL):
+                assert "<" not in block, f"nested markup in <pre>:\n{block}"
+
+    run(scenario())
+
+
+def _assert_balanced_html(text: str) -> None:
+    stack: list[str] = []
+    for m in re.finditer(r"<(/?)([a-z]+)[^>]*>", text):
+        closing, name = m.group(1), m.group(2)
+        if closing:
+            assert stack and stack[-1] == name, f"unbalanced </{name}> in:\n{text}"
+            stack.pop()
+        else:
+            stack.append(name)
+    assert not stack, f"unclosed {stack} in:\n{text}"
+
+
+def test_llm_calls_are_priced_and_recorded(harness):
+    async def scenario():
+        uid = await _reset()
+        await harness.feed("250 g minced beef, 164 g rice, a splash of olive oil")
+
+        from nutrai import db
+
+        p = await db.pool()
+        rows = await p.fetch("SELECT purpose, model, cost_usd FROM llm_call WHERE user_id=$1", uid)
+        assert rows, "no llm_call row written — /spend would report nothing"
+        assert any(r["purpose"] == "text_parse" for r in rows)
+        assert all(float(r["cost_usd"]) > 0 for r in rows)
+
+    run(scenario())
+
+
+def test_day_progress_and_thresholds_run_without_a_model(harness):
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+        from nutrai.jobs.notify import evaluate_user
+
+        await harness.feed("250 g minced beef, 164 g rice, a splash of olive oil")
+        card = harness.sent.last()
+        await harness.press(f"ok:{_confirm_id(card)}", card.message_id)
+
+        today = db.local_date_for(dt.datetime.now(dt.timezone.utc), "Europe/Warsaw", 4)
+        prog = await db.day_progress(uid, today)
+        assert prog, "day_progress returned nothing"
+        by_id = {r["nutrient_id"]: r for r in prog}
+        assert float(by_id[1008]["amount"]) > 0
+        assert by_id[1003]["state"] in ("under", "ok", "over")
+
+        # Must not raise, must not call a model.
+        msgs = await evaluate_user(uid, today)
+        assert isinstance(msgs, list)
+
+    run(scenario())

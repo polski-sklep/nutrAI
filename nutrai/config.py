@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 MODEL_PHOTO = os.getenv("MODEL_PHOTO", "claude-sonnet-5")
 MODEL_PHOTO_ESCALATE = os.getenv("MODEL_PHOTO_ESCALATE", "claude-opus-5")
 MODEL_TEXT = os.getenv("MODEL_TEXT", "claude-sonnet-5")
-MODEL_CHEAP = os.getenv("MODEL_CHEAP", "claude-haiku-4-5")
+MODEL_CHEAP = os.getenv("MODEL_CHEAP", "claude-haiku-4-5-20251001")
 MODEL_PLAN = os.getenv("MODEL_PLAN", "claude-opus-5")
 
 # USD per million tokens, from platform.claude.com/docs/en/about-claude/pricing
@@ -23,6 +23,42 @@ PRICES: dict[str, tuple[float, float]] = {
 }
 CACHE_READ_MULT = 0.1
 CACHE_WRITE_MULT = 1.25  # 5-minute TTL
+
+
+def _check_models_are_priced(configured: dict[str, str] | None = None) -> None:
+    """Fail at import if a routed model has no entry in PRICES.
+
+    `price()` falls back to Sonnet's rate for an unknown model, which is the
+    right behaviour there — raising inside it would abort a request whose API
+    call has already been made and already been billed, losing the parse and
+    the money both. But that fallback means a typo in a model id shows up only
+    as a `/spend` figure that is quietly wrong, and cost accounting you cannot
+    trust is the same as no cost accounting.
+
+    So the check happens here, at import, before anything can be spent: the
+    process refuses to start rather than misreporting for a month.
+
+    Note this validates the *pricing table*, not the model id. Only
+    `GET /v1/models` can tell you the id is real.
+    """
+    configured = configured or {
+        "MODEL_PHOTO": MODEL_PHOTO,
+        "MODEL_PHOTO_ESCALATE": MODEL_PHOTO_ESCALATE,
+        "MODEL_TEXT": MODEL_TEXT,
+        "MODEL_CHEAP": MODEL_CHEAP,
+        "MODEL_PLAN": MODEL_PLAN,
+    }
+    missing = {name: mid for name, mid in configured.items() if mid not in PRICES}
+    if missing:
+        raise ValueError(
+            "model id not present in config.PRICES, so its calls would be priced "
+            "as Sonnet and /spend would be wrong: "
+            + ", ".join(f"{name}={mid!r}" for name, mid in sorted(missing.items()))
+            + ". Add it to PRICES, or correct the id."
+        )
+
+
+_check_models_are_priced()
 
 # Downscale before upload. Claude bills ceil(w/28)*ceil(h/28) visual tokens.
 # A stock Telegram 1280x960 photo costs 1610 visual tokens on a high-res-tier

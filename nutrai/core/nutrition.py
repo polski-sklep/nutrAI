@@ -31,6 +31,38 @@ class ResolvedComponent:
     grams_source: str = "estimate"
 
 
+# FDC reports food energy under three different nutrient ids, and which one a
+# row carries depends on the dataset it came from. SR Legacy uses 1008. A large
+# share of Foundation rows do not have 1008 at all and carry only the Atwater
+# variants: in the 2025-04-24 release, 276 of 411 Foundation foods have no 1008.
+#
+# That interacts badly with `food.precedence`, which deliberately ranks
+# Foundation first. Left alone, the resolver prefers exactly the rows most
+# likely to report no energy, the component contributes 0 kcal to the snapshot,
+# and `energy_cross_check` cannot flag it because its own guard skips rows whose
+# database energy is zero. A plate silently loses its largest item and every
+# median, target comparison and TDEE estimate downstream inherits the error.
+#
+# Preferring 2048 over 2047 because specific Atwater factors are derived per
+# food, where general factors are the 4/4/9 approximation.
+ENERGY_FALLBACKS = (2048, 2047)
+
+
+def normalise_energy(profile: dict[int, float]) -> dict[int, float]:
+    """Fill nutrient 1008 from the row's own Atwater energy when 1008 is absent.
+
+    This is not an invented number and not a model's guess: it is the same USDA
+    row's energy, reported under a different id. Nothing is fabricated and
+    nothing is zeroed — a row carrying no energy at all still carries none.
+    """
+    if ENERGY_KCAL in profile:
+        return profile
+    for nid in ENERGY_FALLBACKS:
+        if nid in profile:
+            return {**profile, ENERGY_KCAL: profile[nid]}
+    return profile
+
+
 def scale_profile(profile: dict[int, float], grams: float, yield_factor: float = 1.0) -> dict[int, float]:
     """profile is per 100 g of the USDA row. Returns absolute amounts."""
     k = (grams * yield_factor) / 100.0

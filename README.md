@@ -56,11 +56,12 @@ b               log a whole meal template         — zero tokens
 /f 8            rate focus now (also /rate energy 6, /rate rpe 9)
 /insight        fat-loss rate from your weight trend; correlations, gated at n=20
 
-/today  /today all  /yesterday  /week
-/improve        numbered plan from your own data, with an apply gate
-/targets        view and edit
+/today  /today all  /yesterday
 /spend          what the model layer has actually cost
 ```
+
+Anything else beginning with `/` gets the list above back. Nothing is ever
+dropped in silence.
 
 ## Cost
 
@@ -155,8 +156,21 @@ nutrai/jobs/notify.py     threshold rules, SQL-evaluated, template-rendered
 pytest -q
 ```
 
-60 tests cover the repeat grammar, the nutrient arithmetic, the estimation
-layer and the fasting/inference layer — the places where a silent bug corrupts
-months of data rather than producing an obvious error. Two of them exist purely
-to stop the system overclaiming: one asserts the fasting phase gloss never says
-"you are burning", the other asserts a correlation at n=10 refuses to report.
+109 tests cover the repeat grammar, the nutrient arithmetic, the estimation
+layer, the fasting/inference layer, the rendering and the command surface — the
+places where a silent bug corrupts months of data rather than producing an
+obvious error. Three exist purely to stop the system overclaiming: one asserts
+the fasting phase gloss never says "you are burning", one asserts a correlation
+at n=10 refuses to report, and one asserts a nutrient no logged food measures is
+never displayed as a shortfall. Another asserts every command the bot advertises
+has a handler behind it, because for a while three of them did not.
+
+```bash
+pytest -q                  # 109 tests, no database
+pytest -q -m integration   # the end-to-end path, needs a loaded database
+```
+
+The integration suite drives the real aiogram dispatcher against a real Postgres
+with the Anthropic client stubbed: text and photo in, resolver against real USDA
+rows, confirm gate, snapshot, `/today`. It skips itself when there is no
+database, so `pytest -q` stays offline.

@@ -89,11 +89,12 @@ async def daily_summary(bot) -> None:
         day = db.local_date_for(now, u["tz"], u["day_rollover_hour"])
         prog = await db.day_progress(u["id"], day)
         entries = await db.day_entries(u["id"], day)
+        coverage = await db.day_coverage(u["id"], day)
         try:
             await bot.send_message(
                 u["telegram_id"],
-                render.day_card(day, prog, entries),
-                parse_mode="Markdown",
+                render.day_card(day, prog, entries, coverage=coverage),
+                parse_mode="HTML",
             )
         except Exception as exc:
             log.warning("summary failed for %s: %s", u["telegram_id"], exc)

@@ -5,9 +5,18 @@ this file is the operating constraints.
 
 ## What this repo is
 
-A working scaffold, not a sketch. ~2,700 lines, 60 passing tests, every module
-compiles. It has **never run against a live Postgres or a live Anthropic API**.
-The remaining work is integration debugging, not construction.
+A working scaffold, not a sketch. ~2,700 lines, 109 passing tests, every module
+compiles.
+
+It **has** now run against a live Postgres: schema applied, USDA Foundation +
+SR Legacy loaded (8,204 foods), a user bootstrapped, and a text message driven
+end to end to a confirmed entry visible in `/today`. `tests/test_integration.py`
+holds that path open — it drives the real aiogram dispatcher against the real
+database with the Anthropic client stubbed, and skips itself when no database is
+present so `pytest -q` stays DB-free.
+
+It has **never run against a live Anthropic API or a live Telegram**. Those need
+your keys. Everything below the model call is exercised.
 
 If you find yourself writing a second version of something that already exists
 here, stop. That is the failure mode this file exists to prevent.
@@ -39,12 +48,18 @@ here, stop. That is the failure mode this file exists to prevent.
 
 Do not skip ahead. Each stage is gated on the one before it.
 
-1. **Make it run.** Docker compose up, load USDA, bootstrap a user, send one
-   text message, get one confirmation card, press confirm, see it in `/today`.
-   Expect breakage in: asyncpg type coercion on `numeric` columns, the
-   `day_progress()` function signature, aiogram 3 handler registration order,
-   and Markdown parse errors on food names with underscores.
-2. **Make the photo path work.** One photo, one parse, one card.
+1. **Make it run.** ~~Docker compose up, load USDA, bootstrap a user, send one
+   text message, get one confirmation card, press confirm, see it in
+   `/today`.~~ Done, against a live Postgres. Of the four predicted breakages,
+   the `numeric`/Decimal one was real (`render.day_card`); `day_progress()` and
+   aiogram registration order were fine; the Markdown one was resolved by moving
+   every outgoing message to HTML parse mode rather than by guessing at legacy
+   Markdown's undocumented escaping. Re-verify any time with
+   `pytest -q -m integration`.
+2. **Make the photo path work.** One photo, one parse, one card. Structurally
+   done and covered by tests (download, downscale, largest-PhotoSize, album
+   buffering, single conditional escalation), all against a stubbed model. What
+   remains is one real photo through a real API key.
 3. **Collect the eval set.** Two weeks. Do not build anything else during it.
 4. **Score the models.** Only now touch the routing table in `config.py`.
 5. **Everything else** — pgvector, MCP server, dashboard — after 4.
@@ -56,12 +71,67 @@ core works.
 
 ```bash
 docker compose up -d db                     # Postgres 16, schema auto-applied
-pytest -q                                    # 60 tests, no DB needed
+pytest -q                                    # 109 tests, no DB needed
+pytest -q -m integration                     # the end-to-end path, needs the DB
 python scripts/load_usda.py <fdc_csv_dir>    # ~2 min for Foundation+SR+FNDDS
 python scripts/bootstrap.py --telegram-id N ...
 python -m nutrai.bot                       # run locally against local db
 docker compose logs -f bot
 ```
+
+The db service publishes `127.0.0.1:5432` so the loader, the bootstrap script
+and a locally-run bot can reach it. Loopback only — never widen that binding.
+
+`sql/*.sql` is applied by the Postgres entrypoint **on first boot only**. A new
+file (like `004_coverage.sql`) has to be applied by hand to an existing volume:
+
+```bash
+docker compose exec -T db psql -U nutrai -d nutrai -f - < sql/004_coverage.sql
+```
+
+## Known gaps
+
+- **`/improve` and `/targets` are deliberately unwired.** `core/plan.py` is
+  fully written and unreachable from the bot; wiring it is stage 5 by the order
+  above. They are no longer advertised in `/start` or the README, and typing
+  either now returns the list of commands that do exist. `/week` was never
+  implemented at all. `tests/test_commands.py` fails if anything is advertised
+  without a handler, so this cannot drift back.
+- **No live model call has ever been made.** The ids in `config.py` are
+  unverified against `GET /v1/models`; nobody has had a key to hand. Verify with:
+
+  ```bash
+  curl -s "https://api.anthropic.com/v1/models?limit=100" \
+    -H "x-api-key: $ANTHROPIC_API_KEY" -H "anthropic-version: 2023-06-01" \
+    | grep -o '"id":"[^"]*"'
+  ```
+
+  `config.py` checks at import that every routed model has a `PRICES` entry and
+  refuses to start otherwise — so pointing a `MODEL_*` env var at a model you
+  have not priced is a startup failure, by design. That check validates the
+  pricing table, not the id: only the call above tells you the id is real.
+
+## Outgoing message format
+
+Telegram **HTML**, not Markdown. Legacy Markdown has no defined escape syntax,
+so a food called `chicken_breast` either mangles the message or gets it rejected
+with HTTP 400, and a rejected confirmation card leaves the entry in `pending`
+while the user sees nothing. HTML needs three characters escaped and
+`html.escape` does it correctly.
+
+Rules when adding a message:
+
+- Escape every piece of dynamic text with `render._esc` (or `html.escape`).
+- Column-aligned output goes in **one** `<pre>` block. Per-line `<code>` spans
+  do not preserve alignment — Telegram renders adjacent spans proportionally
+  and the columns drift.
+- No nested tags inside `<pre>`; Telegram rejects them. Section headings inside
+  a table are plain text.
+- Pad *before* escaping. `&` becomes `&amp;` — five source characters that
+  render as one — so padding an escaped string aligns the source, not the screen.
+- `bot.resend_unformatted` still catches a rejection and resends unformatted.
+  It should now be unreachable; a "markup rejected by Telegram" line in the logs
+  means something above was skipped.
 
 ## Style
 
@@ -80,3 +150,10 @@ docker compose logs -f bot
 - The repeat DSL rejects `250 g of chicken and rice` by returning `None`. That
   is correct: it is a food description, not a repeat command.
 - `_label_match` is loose on purpose. `-onion` should match `red onion`.
+- **`claude-sonnet-5` and `claude-opus-5` having no date suffix does not make
+  them aliases.** From the 4.6 generation onward a dateless id *is* the pinned
+  snapshot — there is no evergreen pointer behind it that can move under you
+  mid-eval. Only pre-4.6 models carry a dateless alias distinct from their dated
+  id, which is why `MODEL_CHEAP` is pinned to `claude-haiku-4-5-20251001` while
+  the other two are correct as they stand. The comment above them in
+  `config.py` is accurate. Do not "fix" this.

@@ -6,6 +6,7 @@ from nutrai.core.nutrition import (
     coverage,
     energy_cross_check,
     mass_sanity,
+    normalise_energy,
     scale_profile,
     total_nutrients,
 )
@@ -80,6 +81,35 @@ def test_fibre_is_not_four_kcal_per_gram():
     with_correction = energy_cross_check(high_fibre)
     naive = 5 * 4 + 20 * 4 + 0.5 * 9
     assert with_correction.kcal_atwater == pytest.approx(naive - 24.0)
+
+
+def test_atwater_energy_fills_in_for_a_row_with_no_1008():
+    """Most Foundation rows report energy only under 2047/2048.
+
+    Without the fallback the component contributes 0 kcal, energy_cross_check
+    cannot flag it (its guard skips kcal_db == 0), and the day silently loses
+    its largest item. This is not invention: the number is the same USDA row's
+    own energy under a different id.
+    """
+    foundation_beef = {PROTEIN: 18.6, FAT: 15.0, CARB: 0.0, 2047: 242.6, 2048: 247.8}
+    filled = normalise_energy(foundation_beef)
+    # Atwater *specific* factors are derived per food; general is the 4/4/9
+    # approximation. Prefer specific.
+    assert filled[ENERGY_KCAL] == pytest.approx(247.8)
+
+    t = total_nutrients([ResolvedComponent("mince", 9, 250.0)], {9: filled})
+    assert t[ENERGY_KCAL] == pytest.approx(619.5, rel=1e-3)
+
+
+def test_normalise_energy_leaves_a_real_1008_alone():
+    assert normalise_energy(MINCE)[ENERGY_KCAL] == pytest.approx(215.0)
+    both = {ENERGY_KCAL: 215.0, 2048: 999.0}
+    assert normalise_energy(both)[ENERGY_KCAL] == pytest.approx(215.0)
+
+
+def test_normalise_energy_does_not_invent_energy():
+    """A row that measured no energy at all still reports none — invariant 6."""
+    assert ENERGY_KCAL not in normalise_energy({PROTEIN: 10.0})
 
 
 def test_mass_sanity():

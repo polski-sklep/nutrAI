@@ -4,6 +4,7 @@ import asyncio
 import datetime as dt
 import logging
 from collections import defaultdict
+from html import escape
 from typing import Any
 
 from aiogram import Bot, Dispatcher, F
@@ -56,21 +57,39 @@ def _today(u: Any) -> dt.date:
 # ---------------------------------------------------------------- commands
 
 
+# The single source of truth for what this bot can do. `/start` renders it, the
+# unknown-command handler renders it, and a test asserts every entry has a
+# handler registered. That test exists because `/start` advertised `/improve`,
+# `/targets` and `/week` for a while when none of the three had a handler, and
+# typing them did nothing at all — aiogram matched nothing and dropped the
+# message. Advertising a command you have not written is a bug you only find by
+# reading, so it is now findable by running the tests instead.
+COMMANDS: list[tuple[str, str]] = [
+    ("/r", "repeat something you have eaten before"),
+    ("/today", "where you stand · <code>/today all</code> for every nutrient"),
+    ("/yesterday", "the same, for yesterday"),
+    ("/fast", "current fast, duration and phase"),
+    ("/window", "your eating window, midpoint and stability"),
+    ("/f", "rate your focus now, e.g. <code>/f 8</code>"),
+    ("/rate", "energy, mood, hunger, sleep or rpe — <code>/rate energy 6</code>"),
+    ("/insight", "fat-loss rate and what the data actually supports"),
+    ("/spend", "what this has cost in API calls"),
+]
+
+
+def command_list() -> str:
+    return "\n".join(f"<code>{c}</code> {desc}" for c, desc in COMMANDS)
+
+
 @dp.message(CommandStart())
 async def start(msg: Message) -> None:
     await _user(msg)
     await msg.answer(
         "Send a photo of what you ate, or describe it in text.\n\n"
-        "`/r` repeat something you have eaten before\n"
-        "`/today` `/week` where you stand\n"
-        "`/fast` current fast · `/window` your eating window\n"
-        "`/f 8` rate your focus now · `/insight` what the data supports\n"
-        "`/improve` numbered plan from your own data\n"
-        "`/targets` view and edit your nutrient targets\n"
-        "`/spend` what this has cost in API calls\n\n"
-        "Weigh things when you can. A scale reading in the frame beats every "
+        + command_list()
+        + "\n\nWeigh things when you can. A scale reading in the frame beats every "
         "visual estimate a model will ever make.",
-        parse_mode="Markdown",
+        parse_mode="HTML",
     )
 
 
@@ -82,7 +101,7 @@ async def repeat_menu(msg: Message) -> None:
         await msg.answer("Nothing to repeat yet. Log something first.")
         return
     await db.put_pending(u["id"], "repeat_menu", {"ids": [d["id"] for d in dishes]})
-    await msg.answer(render.repeat_menu(dishes), parse_mode="Markdown")
+    await msg.answer(render.repeat_menu(dishes), parse_mode="HTML")
 
 
 @dp.message(Command("today"))
@@ -102,13 +121,15 @@ async def _send_day(msg: Message, u: Any, day: dt.date, show_all: bool = False) 
     entries = await db.day_entries(u["id"], day)
     conf = await db.day_mass_confidence(u["id"], day)
     sigma = await db.day_energy_sigma(u["id"], day)
+    coverage = await db.day_coverage(u["id"], day)
     await msg.answer(
         render.day_card(
             day, prog, entries, show_all=show_all,
             pct_measured=float(conf["pct_measured"]) if conf and conf["pct_measured"] is not None else None,
             energy_sigma=sigma,
+            coverage=coverage,
         ),
-        parse_mode="Markdown",
+        parse_mode="HTML",
     )
 
 
@@ -120,10 +141,17 @@ async def spend(msg: Message) -> None:
         await msg.answer("No model calls in the last 30 days.")
         return
     total = sum(float(r["usd"]) for r in rows)
-    lines = [f"*30 days: ${total:.2f}*", ""]
+    # Two decimals renders the entire point of this command as "$0.00". The
+    # design target is ~$0.42 a month, so the interesting digits are the ones
+    # $%.2f throws away.
+    headline = f"${total:.2f}" if total >= 1 else f"{total*100:.2f}¢"
+    lines = [f"<b>30 days: {headline}</b>", ""]
+    # One <pre> for the whole table: the columns only line up inside a
+    # single preformatted block.
+    table = []
     for r in rows:
-        lines.append(
-            f"`{r['purpose']:<20}` {r['calls']:>4} calls  ${float(r['usd']):.3f}  "
+        table.append(
+            f"{escape(r['purpose']):<20} {r['calls']:>4} calls  ${float(r['usd']):.3f}  "
             f"({r['tin']:,} in / {r['cached']:,} cached / {r['tout']:,} out)"
         )
     zero = await db.pool()
@@ -133,9 +161,9 @@ async def spend(msg: Message) -> None:
               AND created_at >= now() - interval '30 days'""",
         u["id"],
     )
-    lines.append("")
+    lines.append("<pre>" + "\n".join(table) + "</pre>")
     lines.append(f"{n_free} entries logged without any model call.")
-    await msg.answer("\n".join(lines), parse_mode="Markdown")
+    await msg.answer("\n".join(lines), parse_mode="HTML")
 
 
 # ------------------------------------------------------------------ fasting
@@ -150,14 +178,14 @@ async def fast_now(msg: Message) -> None:
         return
     phase, gloss = fasting.phase_label(h)
     lines = [
-        f"*{int(h)}h {int((h % 1) * 60):02d}m* since your last logged intake",
-        f"phase: {phase} — {gloss}",
+        f"<b>{int(h)}h {int((h % 1) * 60):02d}m</b> since your last logged intake",
+        f"phase: {escape(phase)} — {escape(gloss)}",
         "",
-        "_A population-average timeline, not a measurement of you. Nothing here"
+        "<i>A population-average timeline, not a measurement of you. Nothing here"
         " observes your respiratory quotient or your ketones, and a fasting"
-        " phase is not a fat-loss rate — see /insight for that._",
+        " phase is not a fat-loss rate — see /insight for that.</i>",
     ]
-    await msg.answer("\n".join(lines), parse_mode="Markdown")
+    await msg.answer("\n".join(lines), parse_mode="HTML")
 
 
 @dp.message(Command("window"))
@@ -176,28 +204,34 @@ async def window(msg: Message) -> None:
         for r in rows
     ]
     s = fasting.summarise(fasting.fasts_from(times), windows)
+    # The figures are a column-aligned table, so they live in one <pre>.
     lines = [
-        "*eating window, last 14 days*",
-        f"median window       {s['median_window_h']} h",
-        f"median overnight fast {s['median_overnight_fast_h']} h",
-        f"longest fast        {s['longest_fast_h']} h",
-        f"mean midpoint       {s['mean_midpoint']}  ({s['tre_class']})",
-        f"midpoint variability ±{s['midpoint_sd_h']} h",
-        "",
+        "<b>eating window, last 14 days</b>",
+        "<pre>"
+        + "\n".join(
+            [
+                f"median window        {s['median_window_h']} h",
+                f"median overnight fast {s['median_overnight_fast_h']} h",
+                f"longest fast         {s['longest_fast_h']} h",
+                f"mean midpoint        {s['mean_midpoint']}  ({s['tre_class']})",
+                f"midpoint variability ±{s['midpoint_sd_h']} h",
+            ]
+        )
+        + "</pre>",
     ]
     if float(s["midpoint_sd_h"]) > 1.5:
         lines.append(
-            "_Your window position moves more than an hour and a half day to day."
+            "<i>Your window position moves more than an hour and a half day to day."
             " Window length is what people talk about; position is what the"
-            " trials separate, and an unstable position is the harder problem._"
+            " trials separate, and an unstable position is the harder problem.</i>"
         )
     elif s["tre_class"] == "late":
         lines.append(
-            "_Late-positioned window. In the trial evidence early windows"
+            "<i>Late-positioned window. In the trial evidence early windows"
             " outrank late ones for fat mass at matched energy, though the"
-            " margin is small and energy deficit is doing most of the work._"
+            " margin is small and energy deficit is doing most of the work.</i>"
         )
-    await msg.answer("\n".join(lines), parse_mode="Markdown")
+    await msg.answer("\n".join(lines), parse_mode="HTML")
 
 
 @dp.message(Command("rate", "f"))
@@ -213,10 +247,11 @@ async def rate(msg: Message) -> None:
         kind, value = parts[0].lower(), float(parts[1])
     else:
         await msg.answer(
-            "`/rate focus 8` · `/rate energy 6` · `/rate rpe 9` · `/f 8` is focus\n"
+            "<code>/rate focus 8</code> · <code>/rate energy 6</code> · "
+            "<code>/rate rpe 9</code> · <code>/f 8</code> is focus\n"
             "Rate when you notice, not on a schedule. Ratings you invent at the"
             " end of the day are noise you will later mistake for signal.",
-            parse_mode="Markdown",
+            parse_mode="HTML",
         )
         return
     h = await db.current_fast_hours(u["id"])
@@ -237,7 +272,7 @@ async def insight_cmd(msg: Message) -> None:
     weights = await db.weight_series(u["id"], 42)
     energy = await db.daily_energy(u["id"], 42)
     flr = insight.fat_loss_rate(weights, energy)
-    out.append("*fat loss*")
+    out.append("<b>fat loss</b>")
     if not flr:
         out.append(
             f"Need {insight.MIN_TREND_DAYS}+ days of weigh-ins spanning at least two weeks."
@@ -250,28 +285,31 @@ async def insight_cmd(msg: Message) -> None:
             f"median intake {flr.median_intake_kcal:,.0f} · implied TDEE {flr.implied_tdee_kcal:,.0f}"
         )
         if flr.note:
-            out.append(f"_{flr.note}_")
+            out.append(f"<i>{escape(flr.note)}</i>")
         out.append(
-            "_This is the only trustworthy answer to 'am I burning fat', and note"
-            " that it contains no reference to when you ate._"
+            "<i>This is the only trustworthy answer to 'am I burning fat', and note"
+            " that it contains no reference to when you ate.</i>"
         )
 
     for kind, label in (("focus", "focus vs hours fasted"), ("rpe", "session RPE vs hours fasted")):
         obs = await db.observations(u["id"], kind)
         out.append("")
-        out.append(f"*{label}*")
+        out.append(f"<b>{escape(label)}</b>")
         if not obs:
-            out.append(f"No `{kind}` ratings logged. `/rate {kind} 7`")
+            out.append(
+                f"No <code>{escape(kind)}</code> ratings logged. "
+                f"<code>/rate {escape(kind)} 7</code>"
+            )
             continue
         xs = [float(o["hours_fasted"]) for o in obs]
         ys = [float(o["value"]) for o in obs]
         clock = [o["observed_at"].hour + o["observed_at"].minute / 60 for o in obs]
         f = insight.correlate(label, xs, ys, clock_hours=clock)
-        out.append(f.verdict)
+        out.append(escape(f.verdict))
         if f.caveat:
-            out.append(f"⚠ {f.caveat}")
+            out.append(f"⚠ {escape(f.caveat)}")
 
-    await msg.answer("\n".join(out), parse_mode="Markdown")
+    await msg.answer("\n".join(out), parse_mode="HTML")
 
 
 # ------------------------------------------------------------------ photos
@@ -442,7 +480,7 @@ async def _try_repeat(msg: Message, u: Any, cmd: dsl.RepeatCommand) -> bool:
     totals = total_nutrients(resolved, profs)
     await msg.answer(
         render.confirm_card(dish["name"], new_comps, totals, confidence=None, warnings=[]),
-        parse_mode="Markdown",
+        parse_mode="HTML",
         reply_markup=kb_confirm(entry_id),
     )
     return True
@@ -502,9 +540,9 @@ async def _present(
         cost_usd=parsed.cost_usd + res.cost_usd,
     )
     if edit:
-        await edit.edit_text(text, parse_mode="Markdown", reply_markup=kb_confirm(entry_id))
+        await edit.edit_text(text, parse_mode="HTML", reply_markup=kb_confirm(entry_id))
     else:
-        await msg.answer(text, parse_mode="Markdown", reply_markup=kb_confirm(entry_id))
+        await msg.answer(text, parse_mode="HTML", reply_markup=kb_confirm(entry_id))
 
 
 def _slugify(name: str) -> str:
@@ -512,6 +550,24 @@ def _slugify(name: str) -> str:
 
     s = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
     return s[:32] or "dish"
+
+
+# ------------------------------------------------------- unknown commands
+# Registered after every other message handler, so it catches only what nothing
+# else claimed. aiogram walks handlers in registration order and stops at the
+# first match; without a terminal case an unrecognised `/command` matches
+# nothing and is discarded in silence, which from the other side of the screen
+# is indistinguishable from the bot being down.
+
+
+@dp.message(F.text.startswith("/"))
+async def unknown_command(msg: Message) -> None:
+    await _user(msg)
+    typed = (msg.text or "").split()[0]
+    await msg.answer(
+        f"{escape(typed)} is not a command here.\n\n" + command_list(),
+        parse_mode="HTML",
+    )
 
 
 # ---------------------------------------------------------------- callbacks
@@ -540,11 +596,17 @@ async def cb_no(cq: CallbackQuery) -> None:
 async def cb_fix(cq: CallbackQuery) -> None:
     entry_id = int(cq.data.split(":")[1])
     e, comps = await db.entry_with_components(entry_id)
-    lines = [f"Reply with the correction, e.g. `rice 200` or `-oil` or `x0.8`.", ""]
+    lines = [
+        (
+            "Reply with the correction, e.g. <code>rice 200</code> or "
+            "<code>-oil</code> or <code>x0.8</code>."
+        ),
+        "",
+    ]
     for c in comps:
-        lines.append(f"`{c['label']}` {float(c['grams']):.0f} g")
+        lines.append(f"<code>{escape(c['label'])}</code> {float(c['grams']):.0f} g")
     await db.put_pending(e["user_id"], "fix_entry", {"entry_id": entry_id})
-    await cq.message.answer("\n".join(lines), parse_mode="Markdown")
+    await cq.message.answer("\n".join(lines), parse_mode="HTML")
     await cq.answer()
 
 
@@ -562,9 +624,35 @@ async def _check_thresholds(msg: Message, u: Any) -> None:
         await msg.answer(text)
 
 
+async def resend_unformatted(make_request, bot: Bot, method):
+    """Retry once without parse_mode when Telegram rejects the markup.
+
+    Outbound messages are HTML, escaped with `html.escape`, which should make
+    this unreachable — that is the point of having moved off Markdown. It stays
+    because the cost of being wrong is asymmetric: an unbalanced tag gets the
+    whole message rejected with HTTP 400, and the user experiences that as the
+    bot silently ignoring them. For a confirmation card that is the worst
+    available outcome, because the entry is already sitting in `pending`.
+
+    Delivering the same text unformatted is strictly better than delivering
+    nothing. The warning is there so an escaping bug shows up in the logs as a
+    repeated line rather than as an app that "sometimes doesn't reply".
+    """
+    from aiogram.exceptions import TelegramBadRequest
+
+    try:
+        return await make_request(bot, method)
+    except TelegramBadRequest as exc:
+        if "parse entities" not in str(exc).lower() or getattr(method, "parse_mode", None) is None:
+            raise
+        log.warning("markup rejected by Telegram, resending as plain text: %s", exc)
+        return await make_request(bot, method.model_copy(update={"parse_mode": None}))
+
+
 async def run() -> None:
     logging.basicConfig(level=logging.INFO)
     bot = Bot(settings.telegram_token)
+    bot.session.middleware(resend_unformatted)
     from .jobs.notify import start_scheduler
 
     start_scheduler(bot)

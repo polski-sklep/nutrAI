@@ -13,9 +13,13 @@ services:
       interval: 5s
       retries: 10
     restart: unless-stopped
-    # No published port. The bot reaches it over the compose network; nothing
-    # else should. A Postgres on 0.0.0.0:5432 with your food log in it is an
-    # unnecessary thing to own.
+    # Bound to the loopback interface only. The bot container reaches this over
+    # the compose network and does not need the mapping; `scripts/load_usda.py`,
+    # `scripts/bootstrap.py` and `python -m nutrai.bot` all run on the host and
+    # do. A Postgres on 0.0.0.0:5432 with your food log in it is an unnecessary
+    # thing to own — hence 127.0.0.1 rather than a bare "5432:5432".
+    ports:
+      - "127.0.0.1:5432:5432"
 
   bot:
     build: .

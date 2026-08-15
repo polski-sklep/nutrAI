@@ -11,6 +11,7 @@ from .. import db
 from ..config import (
     AUTO_MATCH_SIMILARITY,
     CONFIDENCE_ESCALATE,
+    ENERGY_KCAL,
     IMAGE_JPEG_QUALITY,
     IMAGE_LONG_EDGE,
     MODEL_CHEAP,
@@ -282,6 +283,19 @@ async def validate(components: list[ResolvedComponent], parsed: ParsedMeal) -> V
             f"energy check: macros imply {ec.kcal_atwater:.0f} kcal, database says "
             f"{ec.kcal_db:.0f} ({ec.delta_pct:+.0f}%) — a component is probably matched wrong"
         )
+
+    # A component whose USDA row reports no energy contributes nothing to the
+    # day's total and raises nothing anywhere else: energy_cross_check's own
+    # guard skips the case, because it cannot tell "no energy reported" from
+    # "zero-energy food". Say it out loud instead — a plate that is quietly
+    # missing its largest item is the failure this whole validation pass exists
+    # to catch.
+    for c in components:
+        if ENERGY_KCAL not in profs.get(c.fdc_id, {}):
+            warnings.append(
+                f"{c.label}: this USDA row reports no energy, so its {c.grams:.0f} g "
+                f"add 0 kcal to the total — pin it to a row that does"
+            )
 
     for c in components:
         if c.grams > 1500:

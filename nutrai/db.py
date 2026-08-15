@@ -7,7 +7,7 @@ from typing import Any, Iterable, Sequence
 import asyncpg
 
 from .config import AUTO_MATCH_SIMILARITY, CORE_NUTRIENTS, settings
-from .core.nutrition import ResolvedComponent, total_nutrients
+from .core.nutrition import ResolvedComponent, normalise_energy, total_nutrients
 
 _pool: asyncpg.Pool | None = None
 
@@ -106,8 +106,20 @@ async def portion_history(user_id: int, fdc_id: int, limit: int = 30) -> list[fl
 async def search_foods(query: str, limit: int = 5, data_types: Sequence[str] | None = None) -> list[asyncpg.Record]:
     """Candidate generation for the resolver.
 
-    Full-text rank plus trigram similarity, ordered by data-type precedence so
-    a well-measured Foundation row beats a manufacturer's self-reported label.
+    Full-text rank plus trigram similarity, with data-type precedence as the
+    tie-breaker so a well-measured Foundation row beats a manufacturer's
+    self-reported label *at comparable relevance*.
+
+    Precedence must not outrank relevance, which is what ordering by it first
+    does. Measured on the real tables: for `rice, white, long-grain, regular,
+    cooked`, precedence-first puts `Rice, white, long grain, unenriched, raw`
+    (similarity 0.48, and no energy value in FDC at all) above `Rice, white,
+    long-grain, regular, enriched, cooked` (similarity 0.84, 130 kcal/100 g).
+    Two things go wrong from there: the top candidate falls below
+    AUTO_MATCH_SIMILARITY so a model call gets paid for, and the model is then
+    handed a candidate list ordered worst-first. Picking the head of it logs
+    cooked rice as a raw row with no calories — the "wrong USDA row, right
+    grams" failure that drifts your totals and raises no error anywhere.
     """
     p = await pool()
     dt_filter = "AND f.data_type = ANY($3::text[])" if data_types else ""
@@ -120,9 +132,9 @@ async def search_foods(query: str, limit: int = 5, data_types: Sequence[str] | N
          WHERE (to_tsvector('english', f.description) @@ plainto_tsquery('english', $1)
                 OR f.description % $1)
                {dt_filter}
-      ORDER BY f.precedence ASC, (similarity(f.description, $1) + ts_rank(
+      ORDER BY (similarity(f.description, $1) + ts_rank(
                    to_tsvector('english', f.description),
-                   plainto_tsquery('english', $1))) DESC
+                   plainto_tsquery('english', $1))) DESC, f.precedence ASC
          LIMIT $2"""
     args: list[Any] = [query, limit]
     if data_types:
@@ -131,17 +143,8 @@ async def search_foods(query: str, limit: int = 5, data_types: Sequence[str] | N
 
 
 async def profiles_for(fdc_ids: Iterable[int]) -> dict[int, dict[int, float]]:
-    ids = list({int(i) for i in fdc_ids})
-    if not ids:
-        return {}
     p = await pool()
-    rows = await p.fetch(
-        "SELECT fdc_id, nutrient_id, amount FROM food_nutrient WHERE fdc_id = ANY($1::int[])", ids
-    )
-    out: dict[int, dict[int, float]] = {i: {} for i in ids}
-    for r in rows:
-        out[r["fdc_id"]][r["nutrient_id"]] = float(r["amount"])
-    return out
+    return await _profiles_con(p, list(fdc_ids))
 
 
 # ------------------------------------------------------------------ dishes
@@ -296,7 +299,13 @@ async def confirm_entry(entry_id: int) -> dict[int, float]:
     return totals
 
 
-async def _profiles_con(con: asyncpg.Connection, fdc_ids: list[int]) -> dict[int, dict[int, float]]:
+async def _profiles_con(con: Any, fdc_ids: Iterable[int]) -> dict[int, dict[int, float]]:
+    """Per-100 g nutrient profiles, keyed by fdc_id.
+
+    The one place a food's nutrients enter the system, which is why the energy
+    normalisation lives here: it then applies identically to the confirm-time
+    snapshot, to the validation pass, and to anything else that reads a profile.
+    """
     ids = list({int(i) for i in fdc_ids})
     if not ids:
         return {}
@@ -306,7 +315,7 @@ async def _profiles_con(con: asyncpg.Connection, fdc_ids: list[int]) -> dict[int
     out: dict[int, dict[int, float]] = {i: {} for i in ids}
     for r in rows:
         out[r["fdc_id"]][r["nutrient_id"]] = float(r["amount"])
-    return out
+    return {fid: normalise_energy(prof) for fid, prof in out.items()}
 
 
 async def discard_entry(entry_id: int) -> None:
@@ -333,6 +342,19 @@ async def day_progress(user_id: int, day: dt.date, core_only: bool = True) -> li
         core = set(CORE_NUTRIENTS)
         rows = [r for r in rows if r["nutrient_id"] in core]
     return rows
+
+
+async def day_coverage(user_id: int, day: dt.date) -> dict[int, float]:
+    """nutrient_id -> fraction of the day's mass whose food row reports it.
+
+    Without this, a plate of beef reports "Vitamin B-12 0.0 µg, 0% of target"
+    because the Foundation beef row does not carry B-12 — a measurement gap
+    rendered as a dietary one. Skipping nulls keeps the arithmetic honest; only
+    coverage keeps the *display* honest.
+    """
+    p = await pool()
+    rows = await p.fetch("SELECT * FROM day_nutrient_coverage($1, $2)", user_id, day)
+    return {r["nutrient_id"]: float(r["covered_frac"] or 0) for r in rows}
 
 
 async def day_entries(user_id: int, day: dt.date) -> list[asyncpg.Record]:
