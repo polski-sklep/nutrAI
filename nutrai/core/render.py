@@ -531,3 +531,32 @@ def supplement_confirm_card(
             lines.append(f"   • {_esc(label)} — {_esc(d.reason)}")
     lines += ["", "Check these against the packet. Nothing is saved until you confirm."]
     return "\n".join(lines)
+
+
+def supplement_pick_card(
+    stack: Sequence[Any], selected: Sequence[int], *, had_yesterday: bool
+) -> str:
+    """Ask which of the stack was actually taken.
+
+    Defaulting to yesterday's set and asking is the difference between a record
+    and an assumption. A stack is a habit, not a rule, and the day you skip one
+    is exactly the day a silent auto-log puts a number in your totals that never
+    went in your mouth.
+    """
+    sel = set(selected)
+    lines = ["💊 <b>Which did you take?</b>", ""]
+    lines.append(
+        "<i>Same as yesterday, pre-ticked. Tap any to remove.</i>"
+        if had_yesterday
+        else "<i>Your whole stack, pre-ticked. Tap any to remove.</i>"
+    )
+    lines.append("")
+    for s in stack:
+        mark = "✅" if s["id"] in sel else "⬜️"
+        lines.append(
+            f"   {mark} {_esc(s['name'])} — "
+            f"{float(s['servings_per_day']):g} × {_esc(s['serving_desc'])}"
+        )
+    if not sel:
+        lines += ["", "<i>Nothing selected — “log these” would record none.</i>"]
+    return "\n".join(lines)

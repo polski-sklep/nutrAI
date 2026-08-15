@@ -1108,7 +1108,15 @@ def test_supplements_count_toward_targets_and_stay_attributable(harness):
         assert float(mid[1114]["amount_supplement"]) == 0.0
         assert mid[1114]["state"] == "under"
 
+        # /supp asks rather than assumes: the stack is pre-ticked and logged
+        # only when the button is pressed.
+        harness.sent.clear()
         await harness.feed("/supp")
+        picker = harness.sent.last()
+        assert "Which did you take?" in picker.text
+        log_btn = next(b for b in picker.buttons if b.startswith("suplog:"))
+        await harness.press(log_btn, picker.message_id)
+
         after = {r["nutrient_id"]: r for r in await db.day_progress(uid, today)}
         assert float(after[1114]["amount_supplement"]) == pytest.approx(20.0)
         assert float(after[1114]["amount"]) == pytest.approx(
@@ -1117,7 +1125,12 @@ def test_supplements_count_toward_targets_and_stay_attributable(harness):
         assert after[1114]["state"] == "ok"
 
         # Logging twice is not taking double.
+        harness.sent.clear()
         await harness.feed("/supp")
+        picker = harness.sent.last()
+        await harness.press(
+            next(b for b in picker.buttons if b.startswith("suplog:")), picker.message_id
+        )
         again = {r["nutrient_id"]: r for r in await db.day_progress(uid, today)}
         assert float(again[1114]["amount_supplement"]) == pytest.approx(20.0)
 
@@ -1141,5 +1154,91 @@ def test_supplement_contribution_is_visible_on_the_day_card(harness):
 
         card = render.day_card(today, await db.day_progress(uid, today), [], show_all=True)
         assert "💊" in card, card
+
+    run(scenario())
+
+
+def test_supplement_picker_lets_you_drop_one(harness):
+    """The day you skip one is the day an assumed log invents a number."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await p.execute("DELETE FROM supplement WHERE user_id = $1", uid)
+        today = db.local_date_for(dt.datetime.now(dt.timezone.utc), "Europe/Warsaw", 4)
+        await db.upsert_supplement(uid, "D3", [(1114, 20.0)], serving_desc="1 capsule")
+        await db.upsert_supplement(uid, "B12", [(1178, 100.0)], serving_desc="1 tablet")
+
+        harness.sent.clear()
+        await harness.feed("/supp")
+        picker = harness.sent.last()
+        # Both pre-ticked.
+        assert picker.text.count("✅") == 2, picker.text
+
+        toggle = next(b for b in picker.buttons if b.startswith("supt:"))
+        await harness.press(toggle, picker.message_id)
+        picker = harness.sent.last()
+        assert picker.text.count("✅") == 1, picker.text
+
+        await harness.press(
+            next(b for b in picker.buttons if b.startswith("suplog:")), picker.message_id
+        )
+        prog = {r["nutrient_id"]: r for r in await db.day_progress(uid, today)}
+        supplied = [nid for nid in (1114, 1178) if float(prog[nid]["amount_supplement"]) > 0]
+        assert len(supplied) == 1, "the deselected supplement was logged anyway"
+
+    run(scenario())
+
+
+def test_a_meal_can_be_backdated_from_the_fix_card(harness):
+    """Food gets remembered late. Logging it on the wrong day corrupts two days."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        await harness.feed("250 g minced beef, 164 g rice, a splash of olive oil")
+        card = harness.sent.last()
+        entry_id = _confirm_id(card)
+        await harness.press(f"fix:{entry_id}", card.message_id)
+
+        harness.sent.clear()
+        await harness.feed("@yesterday")
+        assert "moved to" in harness.sent.last().text
+
+        p = await db.pool()
+        today = db.local_date_for(dt.datetime.now(dt.timezone.utc), "Europe/Warsaw", 4)
+        assert await p.fetchval(
+            "SELECT local_date FROM log_entry WHERE id=$1", entry_id
+        ) == today - dt.timedelta(days=1)
+
+        # Confirm it and it lands in yesterday's totals, not today's.
+        await harness.press(f"ok:{_confirm_id(harness.sent.last())}", harness.sent.last().message_id)
+        assert not await db.day_entries(uid, today)
+        assert await db.day_entries(uid, today - dt.timedelta(days=1))
+        # No model was needed to move a day.
+        assert harness.llm.calls.count("record_meal") == 1
+
+    run(scenario())
+
+
+def test_backdating_never_goes_forward(harness):
+    """A meal filed in the future is invisible until it silently arrives."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        await harness.feed("250 g minced beef, 164 g rice, a splash of olive oil")
+        card = harness.sent.last()
+        entry_id = _confirm_id(card)
+        await harness.press(f"fix:{entry_id}", card.message_id)
+        await harness.feed("@2099-01-01")
+
+        p = await db.pool()
+        today = db.local_date_for(dt.datetime.now(dt.timezone.utc), "Europe/Warsaw", 4)
+        assert await p.fetchval("SELECT local_date FROM log_entry WHERE id=$1", entry_id) == today
 
     run(scenario())

@@ -21,6 +21,8 @@ Grammar
                 +50 rice | +rice  add a component (grams optional)
                 rice 200          set one component to 200 g
                 @14:00            override the log time
+                @yesterday | @sat | @2026-08-14 | @-2
+                                  file it on an earlier day, never a later one
                 #dinner           override the meal slot
 
 Examples
@@ -49,6 +51,21 @@ RE_ADD_QTY = re.compile(rf"^\+({_NUM}){_UNIT}$", re.I)
 RE_ADD_LABEL = re.compile(rf"^\+(.+)$")
 RE_DROP = re.compile(rf"^[-–—](.+)$")
 RE_TIME = re.compile(r"^@(\d{1,2})[:.h]?(\d{2})?$")
+# @yesterday, @yday, @sat, @2026-08-14, @-1 (one day back).
+#
+# Food gets remembered late. Without this the only options are to log it on the
+# wrong day — which silently corrupts the day it lands on *and* the day it came
+# from — or not to log it at all, which corrupts a third day by omission. A
+# tracker that can only describe the present tense is one you stop trusting the
+# moment you eat something away from your phone.
+RE_DATE_ISO = re.compile(r"^@(\d{4})-(\d{2})-(\d{2})$")
+RE_DATE_BACK = re.compile(r"^@-(\d{1,2})$")
+WORD_DAYS = {"yesterday": 1, "yday": 1, "today": 0, "tonight": 0}
+WEEKDAYS = {
+    "mon": 0, "monday": 0, "tue": 1, "tues": 1, "tuesday": 1, "wed": 2, "weds": 2,
+    "wednesday": 2, "thu": 3, "thur": 3, "thurs": 3, "thursday": 3, "fri": 4,
+    "friday": 4, "sat": 5, "saturday": 5, "sun": 6, "sunday": 6,
+}
 RE_SLOT = re.compile(r"^#(\w+)$")
 RE_INDEX = re.compile(r"^\d{1,2}$")
 RE_SLUG = re.compile(r"^[a-z][a-z0-9_-]{0,31}$", re.I)
@@ -94,7 +111,21 @@ class SetSlot:
     slot: str
 
 
-Op = Scale | TotalGrams | SetComponent | AddComponent | DropComponent | SetTime | SetSlot
+@dataclass(frozen=True)
+class SetDate:
+    """Days back from today, or an explicit date. Never forward.
+
+    Relative rather than absolute where possible, because it is resolved against
+    the user's own day-rollover hour at apply time — a meal at 01:00 belongs to
+    the day that has not ended yet, and "yesterday" has to mean the same thing
+    to this op as it does to everything else.
+    """
+    days_back: int | None = None
+    iso: str | None = None
+    weekday: int | None = None  # 0=Monday, the most recent one that has passed
+
+
+Op = Scale | TotalGrams | SetComponent | AddComponent | DropComponent | SetTime | SetSlot | SetDate
 
 
 @dataclass
@@ -168,6 +199,26 @@ def parse_ops(toks: list[str]) -> tuple[list[Op], list[str]]:
 
         if low in WORD_SCALE:
             ops.append(Scale(WORD_SCALE[low]))
+            i += 1
+            continue
+
+        if m := RE_DATE_ISO.match(tok):
+            ops.append(SetDate(iso=f"{m.group(1)}-{m.group(2)}-{m.group(3)}"))
+            i += 1
+            continue
+
+        if m := RE_DATE_BACK.match(tok):
+            ops.append(SetDate(days_back=int(m.group(1))))
+            i += 1
+            continue
+
+        if low.startswith("@") and low[1:] in WORD_DAYS:
+            ops.append(SetDate(days_back=WORD_DAYS[low[1:]]))
+            i += 1
+            continue
+
+        if low.startswith("@") and low[1:] in WEEKDAYS:
+            ops.append(SetDate(weekday=WEEKDAYS[low[1:]]))
             i += 1
             continue
 
@@ -261,6 +312,10 @@ def _is_op_token(tok: str) -> bool:
     return bool(
         RE_SCALE.match(tok)
         or RE_TIME.match(tok)
+        or RE_DATE_ISO.match(tok)
+        or RE_DATE_BACK.match(tok)
+        or (tok.lower().startswith("@") and tok.lower()[1:] in WORD_DAYS)
+        or (tok.lower().startswith("@") and tok.lower()[1:] in WEEKDAYS)
         or RE_SLOT.match(tok)
         or RE_DROP.match(tok)
         or tok.startswith("+")
@@ -337,3 +392,31 @@ def apply(components: list[Component], ops: list[Op]) -> tuple[list[Component], 
 def _label_match(a: str, b: str) -> bool:
     a, b = a.lower().strip(), b.lower().strip()
     return a == b or b in a.split() or a.startswith(b) or b.startswith(a)
+
+
+def resolve_date(op: SetDate, today: "dt.date") -> "dt.date":
+    """A SetDate against the user's own today. Always backwards.
+
+    A named weekday means the most recent one that has already happened, never
+    the coming one: you are recording a meal you ate, and there is no such thing
+    as remembering next Saturday. Same for an explicit date — a future one is
+    clamped to today rather than accepted, because it is far more likely to be a
+    typo than an intention, and a meal filed in the future is invisible in every
+    summary until it silently arrives.
+    """
+    import datetime as _dt
+
+    if op.iso:
+        try:
+            d = _dt.date.fromisoformat(op.iso)
+        except ValueError:
+            return today
+        return min(d, today)
+    if op.weekday is not None:
+        # Naming today's own weekday means today, not a week ago. `@-7` is how
+        # you say last Saturday on a Saturday, and it is unambiguous.
+        days_back = (today.weekday() - op.weekday) % 7
+        return today - _dt.timedelta(days=days_back)
+    if op.days_back:
+        return today - _dt.timedelta(days=max(0, op.days_back))
+    return today

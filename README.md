@@ -48,6 +48,7 @@ until you press the button.
 3 +50 rice      add one                           — zero tokens
 3 rice 200      set one component                 — zero tokens
 3 @14:00 #lunch time and slot                     — zero tokens
+3 @yesterday    file it on an earlier day           — zero tokens
 b               log a whole meal template         — zero tokens
 3 but I used the leaner mince   → falls through to Haiku, ~0.08¢
 
@@ -55,6 +56,9 @@ b               log a whole meal template         — zero tokens
 /window         eating window, midpoint and stability, 14 days — zero tokens
 /f 8            rate focus now (also /rate energy 6, /rate rpe 9)
 /weight 78.2    log a weigh-in — the only input to the fat-loss rate
+/supp           log today's stack, asking which you took · /supp add
+/undo           unlog the last thing logged today
+/audit          check recent entries for wrong matches
 /insight        fat-loss rate from your weight trend; correlations, gated at n=20
 
 /today  /today all  /yesterday

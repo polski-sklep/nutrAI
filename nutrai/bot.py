@@ -370,12 +370,99 @@ async def supp(msg: Message) -> None:
         await msg.answer(f"Cleared {n} supplement record(s) for today.")
         return
 
-    n = await db.log_supplements(u["id"], day)
+    # Ask rather than assume. Yesterday's set is the default because a stack is
+    # a habit, not a rule — and the day you skip one is exactly the day an
+    # assumed log puts a number in your totals that never went in your mouth.
+    yesterday = {
+        r["name"] for r in await db.supplements_logged_on(u["id"], day - dt.timedelta(days=1))
+    }
+    today_logged = {r["name"] for r in await db.supplements_logged_on(u["id"], day)}
+    default = today_logged or yesterday or {s["name"] for s in stack}
+    selected = [s["id"] for s in stack if s["name"] in default]
+
+    action_id = await db.put_pending(u["id"], "supp_pick", {
+        "selected": selected, "day": day.isoformat(),
+    })
+    await msg.answer(
+        render.supplement_pick_card(stack, selected, had_yesterday=bool(yesterday)),
+        parse_mode="HTML",
+        reply_markup=_supp_keyboard(action_id, stack, selected),
+    )
+
+
+
+def _supp_keyboard(action_id: int, stack: list[Any], selected: list[int]) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(
+            text=f"{'✅' if s['id'] in selected else '⬜️'} {s['name'][:28]}",
+            callback_data=f"supt:{action_id}:{s['id']}",
+        )]
+        for s in stack
+    ]
+    rows.append([
+        InlineKeyboardButton(text="💊 log these", callback_data=f"suplog:{action_id}"),
+        InlineKeyboardButton(text="🗑 none", callback_data=f"supnone:{action_id}"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@dp.callback_query(F.data.startswith("supt:"))
+async def cb_supp_toggle(cq: CallbackQuery) -> None:
+    _, action_id, sup_id = cq.data.split(":")
+    payload = await db.take_pending(int(action_id))
+    if not payload:
+        await cq.answer("expired")
+        return
+    u = await db.get_or_create_user(cq.from_user.id)
+    selected = list(payload["selected"])
+    sid = int(sup_id)
+    selected.remove(sid) if sid in selected else selected.append(sid)
+
+    new_id = await db.put_pending(u["id"], "supp_pick", {**payload, "selected": selected})
+    stack = await db.supplement_stack(u["id"])
+    await cq.message.edit_text(
+        render.supplement_pick_card(stack, selected, had_yesterday=True),
+        parse_mode="HTML",
+        reply_markup=_supp_keyboard(new_id, stack, selected),
+    )
+    await cq.answer()
+
+
+@dp.callback_query(F.data.startswith("suplog:"))
+async def cb_supp_log(cq: CallbackQuery) -> None:
+    payload = await db.take_pending(int(cq.data.split(":")[1]))
+    if not payload:
+        await cq.answer("expired")
+        return
+    u = await db.get_or_create_user(cq.from_user.id)
+    day = dt.date.fromisoformat(payload["day"])
+    await db.unlog_supplements(u["id"], day)
+    n = await db.log_supplements(u["id"], day, payload["selected"])
+    await cq.answer("logged")
     taken = await db.supplements_logged_on(u["id"], day)
-    lines = [f"💊 <b>Stack logged</b> — {n} supplement{'s' if n != 1 else ''}"]
-    lines += [f"   • {escape(t['name'])}" for t in taken]
-    await msg.answer("\n".join(lines), parse_mode="HTML")
-    await _send_day(msg, u, day)
+    if taken:
+        lines = [f"💊 <b>Logged for {day:%a %-d %b}</b>"] + [
+            f"   • {escape(t['name'])}" for t in taken
+        ]
+    else:
+        lines = [f"💊 Nothing recorded for {day:%a %-d %b}."]
+    await cq.message.edit_text("\n".join(lines), parse_mode="HTML")
+    await _send_day(cq.message, u, day)
+
+
+@dp.callback_query(F.data.startswith("supnone:"))
+async def cb_supp_none(cq: CallbackQuery) -> None:
+    payload = await db.take_pending(int(cq.data.split(":")[1]))
+    if not payload:
+        await cq.answer("expired")
+        return
+    u = await db.get_or_create_user(cq.from_user.id)
+    day = dt.date.fromisoformat(payload["day"])
+    n = await db.unlog_supplements(u["id"], day)
+    await cq.answer("cleared")
+    await cq.message.edit_text(
+        f"💊 Nothing recorded for {day:%a %-d %b}." + (f" Cleared {n}." if n else "")
+    )
 
 
 @dp.message(Command("undo"))
@@ -564,6 +651,57 @@ async def on_text(msg: Message) -> None:
     await _present(msg, u, parsed, source="text", photo_file_id=None, edit=note)
 
 
+
+def _when_from_ops(ops: list[Any], u: Any, base: dt.datetime | None = None) -> dt.datetime:
+    """Fold @date and @time ops into one UTC instant.
+
+    Resolved against the user's own timezone and rollover hour, so "yesterday"
+    means the same thing here as it does to local_date_for — otherwise a meal
+    logged at 01:00 and marked @yesterday would land two days back.
+    """
+    import zoneinfo
+
+    tz = zoneinfo.ZoneInfo(u["tz"])
+    now = (base or dt.datetime.now(dt.timezone.utc)).astimezone(tz)
+    day = db.local_date_for(now, u["tz"], u["day_rollover_hour"])
+    hour, minute = now.hour, now.minute
+
+    for op in ops:
+        if isinstance(op, dsl.SetDate):
+            day = dsl.resolve_date(op, day)
+        elif isinstance(op, dsl.SetTime):
+            hour, minute = op.hour, op.minute
+
+    local = dt.datetime.combine(day, dt.time(hour, minute), tzinfo=tz)
+    # A time before the rollover belongs to the day that has not ended, so the
+    # calendar date carrying it is the next one.
+    if hour < u["day_rollover_hour"]:
+        local += dt.timedelta(days=1)
+    return local.astimezone(dt.timezone.utc)
+
+
+
+async def _apply_when(entry_id: int, ops: list[Any], u: Any) -> dt.date | None:
+    """Move a pending entry to another day or time. Returns the new local date.
+
+    Only pending entries: once confirmed, log_nutrient has been written and the
+    entry belongs to a day's arithmetic. Moving it then is a different and
+    larger operation than a correction, and /undo plus a re-log is the honest
+    way to do it.
+    """
+    if not any(isinstance(o, (dsl.SetDate, dsl.SetTime)) for o in ops):
+        return None
+    when = _when_from_ops(ops, u)
+    day = db.local_date_for(when, u["tz"], u["day_rollover_hour"])
+    p = await db.pool()
+    updated = await p.fetchval(
+        """UPDATE log_entry SET logged_at = $2, local_date = $3
+            WHERE id = $1 AND status = 'pending' RETURNING local_date""",
+        entry_id, when, day,
+    )
+    return updated
+
+
 async def _try_fix(msg: Message, u: Any, text: str) -> bool:
     """Apply a correction to the pending entry the ✎ button was pressed on.
 
@@ -589,6 +727,37 @@ async def _try_fix(msg: Message, u: Any, text: str) -> bool:
         return True
 
     ops, unparsed = dsl.parse_ops(text.split())
+
+    # A date or time on its own is a complete correction. "I ate this
+    # yesterday" changes nothing about the components and everything about
+    # which day's totals it lands in.
+    moved = await _apply_when(entry_id, ops, u)
+    if moved and not any(
+        isinstance(o, (dsl.Scale, dsl.TotalGrams, dsl.SetComponent,
+                       dsl.AddComponent, dsl.DropComponent))
+        for o in ops
+    ):
+        await db.clear_pending(u["id"], "fix_entry")
+        entry, comps = await db.entry_with_components(entry_id)
+        profs = await db.profiles_for([c["fdc_id"] for c in comps])
+        from .core.nutrition import ResolvedComponent as _RC
+
+        resolved = [
+            _RC(c["label"], c["fdc_id"], float(c["grams"]), float(c["yield_factor"]),
+                float(c["grams_sigma"] or 0), c["grams_source"])
+            for c in comps
+        ]
+        await msg.answer(
+            render.confirm_card(
+                entry["name"], resolved, total_nutrients(resolved, profs),
+                confidence=None,
+                warnings=[f"moved to {moved:%a %-d %b}"],
+            ),
+            parse_mode="HTML",
+            reply_markup=kb_confirm(entry_id),
+        )
+        return True
+
     if not ops:
         await msg.answer(
             "I could not read that as a correction. Try "
@@ -723,16 +892,10 @@ async def _try_repeat(msg: Message, u: Any, cmd: dsl.RepeatCommand) -> bool:
             for c in res.components:
                 new_comps.append(dsl.Component(c.label, c.fdc_id, c.grams, yield_factor=c.yield_factor))
 
-    when = dt.datetime.now(dt.timezone.utc)
+    when = _when_from_ops(ops, u)
     slot = dish["default_slot"]
     for op in ops:
-        if isinstance(op, dsl.SetTime):
-            import zoneinfo
-
-            tz = zoneinfo.ZoneInfo(u["tz"])
-            local = dt.datetime.now(tz).replace(hour=op.hour, minute=op.minute, second=0, microsecond=0)
-            when = local.astimezone(dt.timezone.utc)
-        elif isinstance(op, dsl.SetSlot):
+        if isinstance(op, dsl.SetSlot):
             slot = op.slot
 
     resolved = [ResolvedComponent(c.label, c.fdc_id, c.grams, c.yield_factor) for c in new_comps if c.fdc_id]
