@@ -22,6 +22,8 @@ import asyncio
 import datetime as dt
 import os
 import re
+import subprocess
+import sys
 from typing import Any
 
 import pytest
@@ -134,13 +136,53 @@ MEAL = {
 # ------------------------------------------------------------------ harness
 
 
+def _bootstrap_test_user(telegram_id: int = CHAT_ID) -> None:
+    """Create the test user by running the real bootstrap script.
+
+    The suite used to assume someone had bootstrapped this id by hand, so
+    deleting that row — which is the correct thing to do the moment a real
+    account exists — turned the whole suite red for a reason that had nothing to
+    do with the code. Own the fixture instead, and own it by calling the real
+    script rather than by writing a second version of it here.
+    """
+    subprocess.run(
+        [
+            sys.executable, "scripts/bootstrap.py",
+            "--telegram-id", str(telegram_id), "--name", "integration-test",
+            "--sex", "male", "--age", "34", "--height-cm", "183",
+            "--weight-kg", "74.4", "--activity", "1.55", "--deficit", "500",
+            "--protein-g", "180",
+        ],
+        env={**os.environ, "PYTHONPATH": ".", "DATABASE_URL": DATABASE_URL},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
 async def _reset(user_telegram_id: int = CHAT_ID) -> int:
     """Wipe this user's log, keep the USDA reference data and the targets."""
     import asyncpg
 
     con = await asyncpg.connect(DATABASE_URL)
     try:
-        uid = await con.fetchval("SELECT id FROM app_user WHERE telegram_id = $1", user_telegram_id)
+        # Existence is not enough: the bot's own `get_or_create_user` will
+        # happily create this row on first contact with no targets attached, and
+        # a user with no targets makes day_progress() return nothing at all.
+        # Gate on the thing actually needed rather than on the row being there.
+        uid = await con.fetchval(
+            """SELECT u.id FROM app_user u
+                WHERE u.telegram_id = $1
+                  AND EXISTS (SELECT 1 FROM target t WHERE t.user_id = u.id)""",
+            user_telegram_id,
+        )
+        if uid is None:
+            await con.close()
+            _bootstrap_test_user(user_telegram_id)
+            con = await asyncpg.connect(DATABASE_URL)
+            uid = await con.fetchval(
+                "SELECT id FROM app_user WHERE telegram_id = $1", user_telegram_id
+            )
         await con.execute("DELETE FROM log_entry WHERE user_id = $1", uid)
         await con.execute("DELETE FROM dish WHERE user_id = $1", uid)
         await con.execute("DELETE FROM food_alias WHERE user_id = $1", uid)

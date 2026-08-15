@@ -57,19 +57,26 @@ async def call_tool(
     system: list[dict[str, Any]] | str,
     content: list[dict[str, Any]],
     max_tokens: int = 1200,
-    temperature: float = 0.0,
 ) -> ToolResult:
     """One request, one forced tool call, one validated object back.
 
     `tool_choice={"type":"tool"}` is doing real work here. Asking for JSON in
     prose and parsing it is the single most common source of silent breakage in
     pipelines like this: it fails on the day the model writes a preamble.
+
+    No `temperature`. It used to be pinned to 0.0 for reproducibility, and the
+    Claude 5 models reject the parameter outright:
+
+        400 invalid_request_error: `temperature` is deprecated for this model.
+
+    Which killed every parse on the first live call. What actually buys
+    determinism here is the forced tool call and a schema with no free-text
+    field to wander into — temperature was never the load-bearing part.
     """
     t0 = time.perf_counter()
     msg = await client().messages.create(
         model=model,
         max_tokens=max_tokens,
-        temperature=temperature,
         system=system,
         tools=[tool],
         tool_choice={"type": "tool", "name": tool["name"]},

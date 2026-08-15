@@ -354,13 +354,34 @@ async def _handle_photos(msgs: list[Message]) -> None:
         images.append((b64, w, h, m.photo[-1].file_id))
 
     note = await msg.answer("reading…")
-    parsed = await llm.parse_photo(images[0][0], caption, user_id=u["id"])
-    for extra in images[1:]:
-        more = await llm.parse_photo(extra[0], caption, user_id=u["id"], escalate=False)
-        parsed.items.extend(more.items)
-        parsed.cost_usd += more.cost_usd
+    try:
+        parsed = await llm.parse_photo(images[0][0], caption, user_id=u["id"])
+        for extra in images[1:]:
+            more = await llm.parse_photo(extra[0], caption, user_id=u["id"], escalate=False)
+            parsed.items.extend(more.items)
+            parsed.cost_usd += more.cost_usd
+    except Exception as exc:
+        await _parse_failed(note, exc)
+        return
 
     await _present(msg, u, parsed, source="photo", photo_file_id=images[0][3], edit=note)
+
+
+async def _parse_failed(note: Message, exc: Exception) -> None:
+    """Say so, rather than leaving "reading…" on screen forever.
+
+    An unhandled exception here is invisible: aiogram logs it and returns, the
+    placeholder never gets edited, and the only signal is a message that sits
+    there indefinitely. That is indistinguishable from a slow model, so you wait
+    instead of looking at the logs. The first live photo parse died on a 400 and
+    presented as a three-minute hang.
+    """
+    log.exception("parse failed")
+    await note.edit_text(
+        f"That did not go through — {escape(type(exc).__name__)}. "
+        "Nothing was logged. The detail is in the bot logs; try again in a moment.",
+        parse_mode="HTML",
+    )
 
 
 # -------------------------------------------------------------------- text
@@ -376,7 +397,11 @@ async def on_text(msg: Message) -> None:
         return
 
     note = await msg.answer("parsing…")
-    parsed = await llm.parse_text(text, user_id=u["id"])
+    try:
+        parsed = await llm.parse_text(text, user_id=u["id"])
+    except Exception as exc:
+        await _parse_failed(note, exc)
+        return
     await _present(msg, u, parsed, source="text", photo_file_id=None, edit=note)
 
 
