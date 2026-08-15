@@ -89,6 +89,43 @@ file (like `004_coverage.sql`) has to be applied by hand to an existing volume:
 docker compose exec -T db psql -U nutrai -d nutrai -f - < sql/004_coverage.sql
 ```
 
+## Backups
+
+```bash
+make backup          # dump, verify, rotate (keeps 30)
+make backup-check    # rehearse a restore into a scratch db, then drop it
+```
+
+Full dump including the USDA tables. They are reproducible from a public
+download, but at ~8 MB compressed the saving is not worth a backup that needs a
+3 GB re-download and a working loader before it restores.
+
+The dump is written to a temporary name and moved into place only after it is
+verified to contain every table that matters, so an interrupted run cannot leave
+a plausible-looking empty file. Run `make backup-check` occasionally: an
+untested backup is a belief, and the moment you find out is the worst one.
+
+Schedule it daily. On macOS, `launchd`:
+
+```bash
+cat > ~/Library/LaunchAgents/com.nutrai.backup.plist <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.nutrai.backup</string>
+  <key>ProgramArguments</key>
+  <array><string>/Users/Jacob/Projects/nutrAI/scripts/backup.sh</string></array>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>0</integer></dict>
+  <key>StandardErrorPath</key><string>/tmp/nutrai-backup.log</string>
+</dict></plist>
+EOF
+launchctl load ~/Library/LaunchAgents/com.nutrai.backup.plist
+```
+
+On the VPS, a cron line does the same. Either way the backups sit on the same
+disk as the database, which protects you from a bad migration and not from a
+dead disk — copy them somewhere else too.
+
 ## Known gaps
 
 - **`/improve` and `/targets` are deliberately unwired.** `core/plan.py` is

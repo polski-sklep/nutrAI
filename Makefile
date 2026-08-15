@@ -1,4 +1,4 @@
-.PHONY: db test load bootstrap pin run logs deploy fmt
+.PHONY: db test load bootstrap pin run logs deploy fmt backup backup-check
 
 db:                       ## Postgres only; schema in sql/ applies on first boot
 	docker compose up -d db
@@ -21,6 +21,12 @@ run:                      ## run the bot locally against the local db
 
 logs:
 	docker compose logs -f bot
+
+backup:                   ## dump, verify and rotate. NUTRAI_BACKUP_DIR to relocate
+	./scripts/backup.sh
+
+backup-check:             ## rehearse the latest restore into a scratch db
+	./scripts/restore.sh --check $$(ls -1t $${NUTRAI_BACKUP_DIR:-$$HOME/nutrai-backups}/nutrai-*.sql.gz | head -1)
 
 deploy:                   ## on the VPS: pull, rebuild, restart. DB untouched.
 	git pull --ff-only
