@@ -65,7 +65,7 @@ PARSE_TOOL = {
             "overall_confidence": {"type": "number", "minimum": 0, "maximum": 1},
             "notes": {
                 "type": "string",
-                "description": "Anything that materially affects accuracy: unreadable scale, hidden ingredients, obscured portion, sauce of unknown composition. Be blunt. An empty string is fine.",
+                "description": "Anything that materially affects accuracy: unreadable scale, hidden ingredients, obscured portion, sauce of unknown composition. Be blunt and brief — one or two sentences, 200 characters at the outside. An empty string is fine and is the right answer for a clearly weighed single ingredient.",
             },
         },
         "required": ["dish_name", "items", "overall_confidence"],
@@ -82,7 +82,8 @@ Rules, in priority order:
 5. Break composite dishes into ingredients only where the split is visible or stated. If you cannot see how much butter is in the mash, do not invent a number: report the dish as one item with a search term for the composite, and say so in `notes`.
 6. Calibrate confidence honestly. A clearly weighed single ingredient is 0.95. A plated mixed dish photographed from above with no scale is 0.4 to 0.6. Overconfidence here corrupts weeks of trend data; under-confidence merely triggers one question.
 7. Cooking fat and oil absorbed during cooking are real and routinely forgotten. If a dish is visibly fried or glossy, include an oil item and mark grams_source='estimate'.
-8. Whenever grams_source is 'estimate', give grams_low and grams_high as a genuine interval. A point estimate with no range asserts a precision the photograph does not contain. Use visible reference objects to narrow it: a standard dinner plate is 26-28 cm across, a dinner fork is 19-20 cm, a chicken egg is 55-60 g, a slice of sandwich bread is 35-40 g."""
+8. Be terse. Output tokens are the dominant cost of this call and prose in `notes` is charged at five times the rate of the image you are reading. State what affects accuracy and stop; do not restate what the item list already says.
+9. Whenever grams_source is 'estimate', give grams_low and grams_high as a genuine interval. A point estimate with no range asserts a precision the photograph does not contain. Use visible reference objects to narrow it: a standard dinner plate is 26-28 cm across, a dinner fork is 19-20 cm, a chicken egg is 55-60 g, a slice of sandwich bread is 35-40 g."""
 
 DISAMBIGUATE_TOOL = {
     "name": "choose_food",

@@ -72,7 +72,22 @@ IMAGE_JPEG_QUALITY = int(os.getenv("IMAGE_JPEG_QUALITY", "82"))
 # Below this, the parse is presented as a question, not as a result.
 CONFIDENCE_FLOOR = float(os.getenv("CONFIDENCE_FLOOR", "0.60"))
 # Below this on a photo, escalate to the larger model once before asking.
-CONFIDENCE_ESCALATE = float(os.getenv("CONFIDENCE_ESCALATE", "0.75"))
+#
+# Was 0.75, on the assumption that 20-30% of photos would escalate. Measured
+# against real plates it fired on essentially all of them: PARSE_SYSTEM tells
+# the model to report 0.4-0.6 for "a plated mixed dish photographed from above
+# with no scale", which is what most photos are. So the escalation was not
+# conditional in practice, it was routine, and it is 74% of the cost of a photo
+# — 4.2p of a 5.6p parse.
+#
+# The first measured instance also lost: Opus ran, returned lower confidence
+# than Sonnet, and its answer was discarded. That is docs/ARCHITECTURE.md §8's
+# escalation-precision question answered once, in the negative. Once is not an
+# eval set, so this is set low rather than to zero: Opus still runs when a parse
+# is genuinely poor, not merely when the plate is a plate.
+#
+# Provisional. Score it properly at stage 4 and set it from the numbers.
+CONFIDENCE_ESCALATE = float(os.getenv("CONFIDENCE_ESCALATE", "0.45"))
 # Atwater cross-check tolerance: |kcal_from_macros - kcal_from_db| / kcal_from_db
 ENERGY_TOLERANCE = float(os.getenv("ENERGY_TOLERANCE", "0.12"))
 # Trigram similarity above which a food match is accepted without a model call.

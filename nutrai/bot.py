@@ -771,7 +771,7 @@ async def _check_thresholds(msg: Message, u: Any) -> None:
     from .jobs.notify import evaluate_user
 
     for text in await evaluate_user(u["id"], _today(u)):
-        await msg.answer(text)
+        await msg.answer(text, parse_mode="HTML")
 
 
 async def resend_unformatted(make_request, bot: Bot, method):

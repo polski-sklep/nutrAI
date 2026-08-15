@@ -55,7 +55,8 @@ async def evaluate_user(user_id: int, day: dt.date) -> list[str]:
             continue
 
         text = rule["template"] or render.threshold_message(
-            rule["nutrient_name"], amount, float(target), rule["unit"], direction
+            rule["nutrient_name"], amount, float(target), rule["unit"], direction,
+            nutrient_id=rule["nutrient_id"],
         )
         await p.execute(
             "INSERT INTO notification_log (rule_id, user_id, local_date, payload) VALUES ($1,$2,$3,$4)",
@@ -76,7 +77,7 @@ async def sweep(bot) -> None:
         day = db.local_date_for(now, u["tz"], u["day_rollover_hour"])
         for text in await evaluate_user(u["id"], day):
             try:
-                await bot.send_message(u["telegram_id"], text)
+                await bot.send_message(u["telegram_id"], text, parse_mode="HTML")
             except Exception as exc:  # a blocked bot must not kill the sweep
                 log.warning("notify failed for %s: %s", u["telegram_id"], exc)
 

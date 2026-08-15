@@ -405,17 +405,38 @@ def repeat_menu(dishes: Sequence[Any], templates: Sequence[Any] = ()) -> str:
 # --------------------------------------------------------- notifications
 
 
-def threshold_message(nutrient_name: str, amount: float, target: float, unit: str, direction: str) -> str:
+def threshold_message(
+    nutrient_name: str,
+    amount: float,
+    target: float,
+    unit: str,
+    direction: str,
+    nutrient_id: int = 0,
+) -> str:
+    """One threshold crossing, as HTML.
+
+    Two lines rather than one: the headline is what happened, the second line is
+    the number you would act on. A single run-on sentence made a ceiling breach
+    and a floor reminder look identical at a glance, which is the opposite of
+    what a notification is for.
+    """
     pct = amount / target * 100 if target else 0
+    icon = _emoji(nutrient_id)
+    name = _esc(_short(nutrient_name))
+
     if direction == "over":
+        over = amount - target
         return (
-            f"▲ {nutrient_name}: {fmt_amount(amount, unit)} — {pct:.0f}% of your "
-            f"{fmt_amount(target, unit)} ceiling."
+            f"⚠️ <b>{name} — {fmt_amount(amount, unit)}</b>\n"
+            f"{icon} {pct:.0f}% of your {fmt_amount(target, unit)} ceiling"
+            + (f" · {fmt_amount(over, unit)} over" if over > 0 else "")
         )
+
     remaining = max(0.0, target - amount)
     return (
-        f"▽ {nutrient_name}: {fmt_amount(amount, unit)} — {pct:.0f}% of your floor. "
-        f"{fmt_amount(remaining, unit)} to go."
+        f"🔔 <b>{name} — {fmt_amount(amount, unit)}</b>\n"
+        f"{icon} {pct:.0f}% of your {fmt_amount(target, unit)} floor · "
+        f"{fmt_amount(remaining, unit)} to go"
     )
 
 
