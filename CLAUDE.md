@@ -15,8 +15,14 @@ holds that path open — it drives the real aiogram dispatcher against the real
 database with the Anthropic client stubbed, and skips itself when no database is
 present so `pytest -q` stays DB-free.
 
-It has **never run against a live Anthropic API or a live Telegram**. Those need
-your keys. Everything below the model call is exercised.
+It has since run live, end to end, against real Telegram and real Anthropic:
+photo and text parse, resolve, confirm, snapshot, repeat, correct, undo,
+backdate, supplements. Roughly fifteen real bugs were found that way and only
+that way — every one produced a plausible number and raised nothing. The ones
+worth remembering are in `jobs/audit.py`, which now looks for them daily.
+
+Backups run nightly via `~/Library/LaunchAgents/com.nutrai.backup.plist` and are
+restore-tested with `make backup-check`.
 
 If you find yourself writing a second version of something that already exists
 here, stop. That is the failure mode this file exists to prevent.
@@ -134,8 +140,12 @@ dead disk — copy them somewhere else too.
   either now returns the list of commands that do exist. `/week` was never
   implemented at all. `tests/test_commands.py` fails if anything is advertised
   without a handler, so this cannot drift back.
-- **No live model call has ever been made.** The ids in `config.py` are
-  unverified against `GET /v1/models`; nobody has had a key to hand. Verify with:
+- **Meal templates are unreachable.** `meal_template`, `template_by_slug` and
+  `_log_template` all exist; nothing can create one. No longer advertised in the
+  README. Least harmful of the dead paths — it fails by doing nothing.
+- **Model ids were verified** against `GET /v1/models` on 15 Aug 2026:
+  `claude-sonnet-5`, `claude-opus-5`, `claude-haiku-4-5-20251001` all resolve.
+  Re-check after any routing change with:
 
   ```bash
   curl -s "https://api.anthropic.com/v1/models?limit=100" \

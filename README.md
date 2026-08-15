@@ -49,7 +49,6 @@ until you press the button.
 3 rice 200      set one component                 — zero tokens
 3 @14:00 #lunch time and slot                     — zero tokens
 3 @yesterday    file it on an earlier day           — zero tokens
-b               log a whole meal template         — zero tokens
 3 but I used the leaner mince   → falls through to Haiku, ~0.08¢
 
 /fast           current fast, duration and phase — zero tokens
