@@ -297,8 +297,14 @@ async def rate(msg: Message) -> None:
         return
     if kind:
         icon, gloss = RATE_KINDS[kind]
+        # A bare number is also the repeat selector, so record which kind is
+        # waiting for one. Without this, showing a 1-10 keypad and then typing
+        # "4" pulled up dish 4 from the /r menu instead — the keypad invites a
+        # number and the grammar had already claimed it.
+        await db.put_pending(u["id"], "rate_await", {"kind": kind})
         await msg.answer(
-            f"{icon} <b>{kind}</b> — {gloss}\n<i>1 lowest, 10 highest.</i>",
+            f"{icon} <b>{kind}</b> — {gloss}\n"
+            f"<i>1 lowest, 10 highest. Tap one, or just type the number.</i>",
             parse_mode="HTML",
             reply_markup=_rate_value_keyboard(kind),
         )
@@ -317,6 +323,8 @@ async def rate(msg: Message) -> None:
 async def cb_rate_kind(cq: CallbackQuery) -> None:
     kind = cq.data.split(":")[1]
     icon, gloss = RATE_KINDS.get(kind, ("📊", ""))
+    u = await db.get_or_create_user(cq.from_user.id)
+    await db.put_pending(u["id"], "rate_await", {"kind": kind})
     await cq.answer()
     await cq.message.edit_text(
         f"{icon} <b>{kind}</b> — {gloss}\n<i>1 lowest, 10 highest.</i>",
@@ -329,6 +337,7 @@ async def cb_rate_kind(cq: CallbackQuery) -> None:
 async def cb_rate_value(cq: CallbackQuery) -> None:
     _, kind, value = cq.data.split(":")
     u = await db.get_or_create_user(cq.from_user.id)
+    await db.clear_pending(u["id"], "rate_await")
     await cq.answer("recorded")
     await cq.message.edit_text(
         await _rating_text(u, kind, float(value)), parse_mode="HTML"
@@ -605,10 +614,13 @@ async def undo(msg: Message) -> None:
         f"↩️ The last thing logged today is {label} — "
         f"{int(age_min // 60)}h {int(age_min % 60)}m ago. Undo that?",
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="↩️ undo it", callback_data=f"undook:{entry['id']}"),
-            InlineKeyboardButton(text="✕ keep it", callback_data=f"undono:{entry['id']}"),
-        ]]),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="↩️ undo it", callback_data=f"undook:{entry['id']}"),
+                InlineKeyboardButton(text="🔒 keep it", callback_data=f"undono:{entry['id']}"),
+            ],
+            [InlineKeyboardButton(text="📋 undo something else", callback_data="undopick:")],
+        ]),
     )
 
 
@@ -638,10 +650,43 @@ async def cb_undo_ok(cq: CallbackQuery) -> None:
     await _do_undo(cq.message, u, entry_id, "that entry", _today(u))
 
 
+@dp.callback_query(F.data.startswith("undopick:"))
+async def cb_undo_pick(cq: CallbackQuery) -> None:
+    """List today's confirmed entries so a middle one can be removed.
+
+    The last-logged one is only usually the wrong one. Without this the only
+    way to remove an earlier meal is to undo everything after it and log those
+    again, which invents more errors than it fixes."""
+    u = await db.get_or_create_user(cq.from_user.id)
+    day = _today(u)
+    entries = await db.confirmed_entries_on(u["id"], day)
+    await cq.answer()
+    if not entries:
+        await cq.message.edit_text("Nothing confirmed today.")
+        return
+
+    import zoneinfo
+
+    tz = zoneinfo.ZoneInfo(u["tz"])
+    lines = [f"📋 <b>Confirmed on {day:%a %-d %b}</b>", "", "<i>Tap one to unlog it.</i>"]
+    rows = []
+    for e in entries:
+        when = e["logged_at"].astimezone(tz)
+        rows.append([InlineKeyboardButton(
+            text=f"{when:%H:%M} · {e['name'][:26]} · {float(e['kcal']):,.0f} kcal",
+            callback_data=f"undook:{e['id']}",
+        )])
+    rows.append([InlineKeyboardButton(text="🔒 keep them all", callback_data="undono:0")])
+    await cq.message.edit_text(
+        "\n".join(lines), parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
 @dp.callback_query(F.data.startswith("undono:"))
 async def cb_undo_no(cq: CallbackQuery) -> None:
     await cq.answer("kept")
-    await cq.message.edit_text((cq.message.text or "") + "\n\n✕ kept")
+    await cq.message.edit_text((cq.message.text or "") + "\n\n🔒 kept")
 
 
 @dp.message(Command("audit"))
@@ -795,6 +840,16 @@ async def on_text(msg: Message) -> None:
     if await db.latest_pending(u["id"], "supp_label"):
         await _handle_supplement_label(msg, u, text=text)
         return
+
+    # A number typed while a rating keypad is on screen is that rating, not a
+    # repeat selector. Checked before the grammar, which claims bare numbers.
+    awaiting = await db.latest_pending(u["id"], "rate_await")
+    if awaiting and text.strip().replace(".", "", 1).isdigit():
+        value = float(text.strip())
+        if 0 < value <= 10:
+            await db.clear_pending(u["id"], "rate_await")
+            await _record_rating(msg, u, awaiting["kind"], value)
+            return
 
     # A correction to a card you just pressed ✎ on takes precedence over every
     # other reading of the message. Checked first because "rice 200" is a valid

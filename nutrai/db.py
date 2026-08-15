@@ -331,6 +331,19 @@ async def last_confirmed_entry(user_id: int, day: dt.date) -> asyncpg.Record | N
     )
 
 
+async def confirmed_entries_on(user_id: int, day: dt.date) -> list[asyncpg.Record]:
+    """Everything confirmed on a day, newest first, for picking one to undo."""
+    p = await pool()
+    return await p.fetch(
+        """SELECT e.id, e.name, e.logged_at, COALESCE(k.amount, 0) AS kcal
+             FROM log_entry e
+             LEFT JOIN log_nutrient k ON k.entry_id = e.id AND k.nutrient_id = 1008
+            WHERE e.user_id = $1 AND e.local_date = $2 AND e.status = 'confirmed'
+         ORDER BY e.logged_at DESC, e.id DESC""",
+        user_id, day,
+    )
+
+
 async def undo_entry(user_id: int, entry_id: int) -> asyncpg.Record | None:
     """Discard one confirmed entry by id, and correct its dish's counter."""
     p = await pool()

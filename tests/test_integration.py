@@ -1355,3 +1355,46 @@ def test_rate_offers_buttons_and_records_a_tap(harness):
         assert not harness.llm.calls
 
     run(scenario())
+
+
+def test_a_number_after_the_rating_keypad_is_the_rating(harness):
+    """A bare number is also the repeat selector, and the keypad invites one.
+
+    /f then "4" pulled up dish 4 from the repeat menu instead of recording
+    focus 4 — the grammar had already claimed bare numbers.
+    """
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await p.execute("DELETE FROM observation WHERE user_id = $1", uid)
+
+        # Give the repeat menu something to collide with.
+        await harness.feed("250 g minced beef, 164 g rice, a splash of olive oil")
+        card = harness.sent.last()
+        await harness.press(f"ok:{_confirm_id(card)}", card.message_id)
+        await harness.feed("/r")
+
+        harness.sent.clear()
+        await harness.feed("/f")
+        await harness.feed("1")
+
+        assert float(
+            await p.fetchval(
+                "SELECT value FROM observation WHERE user_id=$1 AND kind='focus'", uid
+            )
+        ) == 1.0, "the number was eaten by the repeat grammar"
+        # And no meal was logged by it.
+        assert await p.fetchval(
+            "SELECT count(*) FROM log_entry WHERE user_id=$1 AND status='confirmed'", uid
+        ) == 1
+
+        # Once consumed, a bare number is a repeat selector again.
+        harness.sent.clear()
+        await harness.feed("1")
+        assert any("Logged" in s.text or s.buttons for s in harness.sent.sent), \
+            harness.sent.texts()
+
+    run(scenario())
