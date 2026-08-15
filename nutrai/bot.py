@@ -73,6 +73,8 @@ COMMANDS: list[tuple[str, str]] = [
     ("/f", "rate your focus now, e.g. <code>/f 8</code>"),
     ("/rate", "energy, mood, hunger, sleep or rpe — <code>/rate energy 6</code>"),
     ("/weight", "log a weigh-in, e.g. <code>/weight 78.2</code>"),
+    ("/undo", "unlog the last thing you logged today"),
+    ("/audit", "check the last week's entries for wrong matches"),
     ("/insight", "fat-loss rate and what the data actually supports"),
     ("/spend", "what this has cost in API calls"),
 ]
@@ -323,6 +325,39 @@ async def weight(msg: Message) -> None:
     else:
         lines += ["", "📈 <code>/insight</code> has enough to work with."]
     await msg.answer("\n".join(lines), parse_mode="HTML")
+
+
+@dp.message(Command("undo"))
+async def undo(msg: Message) -> None:
+    """Unlog the last thing logged today."""
+    u = await _user(msg)
+    day = _today(u)
+    entry = await db.undo_last_entry(u["id"], day)
+    if not entry:
+        await msg.answer("Nothing logged today to undo.")
+        return
+
+    kcal = await (await db.pool()).fetchval(
+        "SELECT amount FROM log_nutrient WHERE entry_id = $1 AND nutrient_id = 1008",
+        entry["id"],
+    )
+    await msg.answer(
+        f"↩️ <b>Unlogged</b> — {escape(entry['name'])}"
+        + (f" ({float(kcal):,.0f} kcal)" if kcal else "")
+        + "\n\nIt is marked discarded, not deleted, so it counts towards nothing.",
+        parse_mode="HTML",
+    )
+    await _send_day(msg, u, day)
+
+
+@dp.message(Command("audit"))
+async def audit_cmd(msg: Message) -> None:
+    """Run the daily self-check now, over the last week."""
+    u = await _user(msg)
+    from .jobs.audit import audit_user
+
+    findings = await audit_user(u["id"], days=7)
+    await msg.answer(render.audit_card(findings), parse_mode="HTML")
 
 
 @dp.message(Command("insight"))

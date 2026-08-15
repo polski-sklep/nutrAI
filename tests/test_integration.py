@@ -940,6 +940,109 @@ def test_an_unreadable_correction_keeps_the_fix_open(harness):
     run(scenario())
 
 
+def test_undo_removes_the_last_entry_without_deleting_it(harness):
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        await harness.feed("250 g minced beef, 164 g rice, a splash of olive oil")
+        card = harness.sent.last()
+        entry_id = _confirm_id(card)
+        await harness.press(f"ok:{entry_id}", card.message_id)
+
+        p = await db.pool()
+        assert await p.fetchval("SELECT times_logged FROM dish WHERE user_id=$1", uid) == 1
+
+        harness.sent.clear()
+        await harness.feed("/undo")
+        assert "Unlogged" in harness.sent.sent[0].text
+
+        # Discarded, not deleted — invariant 2 keeps the snapshot.
+        assert await p.fetchval("SELECT status FROM log_entry WHERE id=$1", entry_id) == "discarded"
+        assert await p.fetchval(
+            "SELECT count(*) FROM log_nutrient WHERE entry_id=$1", entry_id
+        ) > 0
+        # And it counts towards nothing.
+        today = db.local_date_for(dt.datetime.now(dt.timezone.utc), "Europe/Warsaw", 4)
+        assert not await db.day_entries(uid, today)
+
+        # times_logged is decremented, so the dish cannot repeat without a gate.
+        assert await p.fetchval("SELECT times_logged FROM dish WHERE user_id=$1", uid) == 0
+        await harness.feed("/r")
+        harness.sent.clear()
+        await harness.feed("1")
+        assert [b for b in harness.sent.last().buttons if b.startswith("ok:")], \
+            "an undone dish repeated with no confirmation"
+
+    run(scenario())
+
+
+def test_undo_with_nothing_logged_says_so(harness):
+    async def scenario():
+        await _reset()
+        harness.sent.clear()
+        await harness.feed("/undo")
+        assert "Nothing logged today" in harness.sent.last().text
+
+    run(scenario())
+
+
+def test_audit_catches_an_inverted_match(harness):
+    """The failure that prompted the audit: a real food matched to an analogue.
+
+    Internally consistent, so the Atwater check passes and nothing raises. The
+    only evidence is a nutrient that does not belong.
+    """
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai.jobs.audit import audit_user
+        from nutrai import db
+
+        p = await db.pool()
+        meatless = await p.fetchval(
+            "SELECT fdc_id FROM food WHERE description ILIKE 'Chicken, meatless%' LIMIT 1"
+        )
+        if meatless is None:
+            pytest.skip("this USDA build has no meatless chicken row")
+
+        harness.llm.meal = {
+            "dish_name": "fried chicken", "slot": "dinner",
+            "overall_confidence": 0.8, "notes": "",
+            "items": [{"label": "fried chicken", "search_terms": "chicken, meatless, breaded, fried",
+                       "grams": 400, "grams_source": "stated", "state": "cooked",
+                       "confidence": 0.8}],
+        }
+        await harness.feed("400g fried chicken")
+        card = harness.sent.last()
+        await harness.press(f"ok:{_confirm_id(card)}", card.message_id)
+
+        codes = {f.code for f in await audit_user(uid, days=1)}
+        assert "inverted_match" in codes, codes
+        # And the alias that would repeat it silently.
+        assert "inverted_alias" in codes, codes
+
+    run(scenario())
+
+
+def test_audit_is_quiet_on_a_clean_log(harness):
+    async def scenario():
+        uid = await _reset()
+        from nutrai.jobs.audit import audit_user
+
+        await harness.feed("250 g minced beef, 164 g rice, a splash of olive oil")
+        card = harness.sent.last()
+        await harness.press(f"ok:{_confirm_id(card)}", card.message_id)
+
+        serious = [
+            f for f in await audit_user(uid, days=1) if f.severity in ("error", "warn")
+        ]
+        # A weighed, correctly-matched meal should raise nothing serious.
+        assert not [f for f in serious if f.code == "inverted_match"], serious
+
+    run(scenario())
+
+
 def test_llm_calls_are_priced_and_recorded(harness):
     async def scenario():
         uid = await _reset()

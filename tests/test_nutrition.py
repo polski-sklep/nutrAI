@@ -117,3 +117,25 @@ def test_mass_sanity():
     assert mass_sanity(comps, 402.0)
     assert mass_sanity(comps, None)
     assert not mass_sanity(comps, 700.0)
+
+
+def test_inverting_terms_block_an_auto_match():
+    """A soy analogue is not the food, however similar the string.
+
+    "Chicken, meatless, breaded, fried" scored high enough against a real
+    breaded chicken to auto-match, and its macros are close enough that the
+    Atwater cross-check passes — 400 g of fried chicken logged as a meat
+    substitute, visible only as 17 g of fibre on a plate of chicken.
+    """
+    from nutrai.llm.parse import inverts_meaning
+
+    asked = "panko-breaded fried chicken bites chicken breast, breaded, fried, panko crust"
+    assert inverts_meaning(asked, "Chicken, meatless, breaded, fried")
+    assert not inverts_meaning(asked, "Chicken, broilers or fryers, breast, breaded, fried")
+
+    # Asking for the analogue still gets you the analogue.
+    assert not inverts_meaning("vegan chicken nuggets", "Chicken, meatless, breaded, fried")
+    assert not inverts_meaning("imitation crab salad", "Crab, imitation, made from surimi")
+
+    for bad in ("Fish sticks, imitation", "Cheese, substitute, cheddar", "Bacon, vegetarian"):
+        assert inverts_meaning("fish sticks cheese bacon", bad), bad

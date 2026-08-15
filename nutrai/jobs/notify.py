@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -31,6 +32,8 @@ async def evaluate_user(user_id: int, day: dt.date) -> list[str]:
     prog = {r["nutrient_id"]: r for r in await p.fetch("SELECT * FROM day_progress($1,$2)", user_id, day)}
     out: list[str] = []
 
+    # Which rules actually crossed, and by how much.
+    crossed: list[tuple[Any, float, float]] = []
     for rule in rules:
         row = prog.get(rule["nutrient_id"])
         if not row:
@@ -41,10 +44,37 @@ async def evaluate_user(user_id: int, day: dt.date) -> list[str]:
         if not target:
             continue
         pct = amount / float(target) * 100
+        hit = (
+            pct >= float(rule["threshold_pct"])
+            if direction == "over"
+            else pct <= float(rule["threshold_pct"])
+        )
+        if hit:
+            crossed.append((rule, amount, pct))
 
-        crossed = pct >= float(rule["threshold_pct"]) if direction == "over" else pct <= float(rule["threshold_pct"])
-        if not crossed:
+    # Of the ones that crossed, only the tightest per nutrient and direction.
+    #
+    # bootstrap seeds energy at 80% and 100%. At 113% both cross, both render
+    # from the same amount against the same target, and the text does not say
+    # which threshold fired — so the identical sentence arrives twice, seconds
+    # apart. The 80% warning has nothing left to tell you once you are past
+    # 100%. Deduped *after* the crossing test, not before: at 85% the 100% rule
+    # has not fired and the 80% one is the whole message.
+    best: dict[tuple[int, str], tuple[Any, float, float]] = {}
+    for rule, amount, pct in crossed:
+        key = (rule["nutrient_id"], rule["direction"])
+        prev = best.get(key)
+        if prev is None:
+            best[key] = (rule, amount, pct)
             continue
+        tighter = float(rule["threshold_pct"]) > float(prev[0]["threshold_pct"])
+        if tighter if rule["direction"] == "over" else not tighter:
+            best[key] = (rule, amount, pct)
+
+    for rule, amount, pct in best.values():
+        direction = rule["direction"]
+        row = prog[rule["nutrient_id"]]
+        target = float(row["max_amount"] if direction == "over" else row["min_amount"])
 
         recent = await p.fetchval(
             """SELECT max(sent_at) FROM notification_log
@@ -55,7 +85,7 @@ async def evaluate_user(user_id: int, day: dt.date) -> list[str]:
             continue
 
         text = rule["template"] or render.threshold_message(
-            rule["nutrient_name"], amount, float(target), rule["unit"], direction,
+            rule["nutrient_name"], amount, target, rule["unit"], direction,
             nutrient_id=rule["nutrient_id"],
         )
         await p.execute(
@@ -107,5 +137,10 @@ def start_scheduler(bot) -> AsyncIOScheduler:
     # 21:00 Europe/Warsaw. Move this to a per-user job once there is more than
     # one user; a single cron is honest for a single-user deployment.
     sched.add_job(daily_summary, CronTrigger(hour=19, minute=0), args=[bot], id="daily")
+    # After the summary, so a bad match is flagged while the day is still in
+    # mind and the entry is still easy to recognise.
+    from .audit import audit_and_report
+
+    sched.add_job(audit_and_report, CronTrigger(hour=19, minute=5), args=[bot], id="audit")
     sched.start()
     return sched

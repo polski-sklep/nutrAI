@@ -204,6 +204,39 @@ async def _candidates(it: dict[str, Any], label: str) -> list[Any]:
     )[:5]
 
 
+# Words that invert the meaning of a food rather than qualifying it.
+#
+# USDA carries "Chicken, meatless, breaded, fried" — a soy analogue — and it
+# scores highly against "chicken breast, breaded, fried, panko crust", because
+# lexically the two are nearly the same string. Its macros are close enough that
+# the Atwater cross-check passes, so 400 g of real fried chicken auto-matched to
+# it in silence and the only visible trace was 17 g of fibre on a plate of
+# chicken.
+#
+# That is the "wrong USDA row, right grams" failure from ARCHITECTURE §11:
+# totals drift and nothing raises. A trigram score cannot see it, because
+# "meatless" is one short word in a long description. So it is named.
+INVERTING_TERMS = (
+    "meatless", "imitation", "substitute", "vegetarian", "vegan",
+    "analog", "analogue", "meat-free", "plant-based",
+)
+
+
+def inverts_meaning(query: str, description: str) -> bool:
+    """True when a candidate negates the food that was asked for.
+
+    Only when the query did not ask for it — someone logging vegan chicken says
+    so, and should get the analogue.
+    """
+    q, d = query.lower(), description.lower()
+    # Any inversion word in the request means an analogue was wanted, not just
+    # the same one: "vegan chicken nuggets" should be allowed to match
+    # "Chicken, meatless, breaded, fried". Matching term-for-term would block it.
+    if any(term in q for term in INVERTING_TERMS):
+        return False
+    return any(term in d for term in INVERTING_TERMS)
+
+
 async def resolve_items(user_id: int, items: list[dict[str, Any]]) -> Resolution:
     """Ingredient names to USDA rows.
 
@@ -242,7 +275,15 @@ async def resolve_items(user_id: int, items: list[dict[str, Any]]) -> Resolution
             continue
 
         cands = await _candidates(it, label)
-        if cands and float(cands[0]["sim"] or 0) >= AUTO_MATCH_SIMILARITY:
+        # A candidate that negates the food is never auto-matched, however well
+        # it scores. It drops to the model instead of being taken on trust —
+        # tier 3 costs a fraction of a penny and can read the word "meatless".
+        asked_for = f"{label} {it.get('search_terms') or ''}"
+        if (
+            cands
+            and float(cands[0]["sim"] or 0) >= AUTO_MATCH_SIMILARITY
+            and not inverts_meaning(asked_for, cands[0]["description"])
+        ):
             await _accept(label, cands[0]["fdc_id"], it)
             await db.upsert_alias(user_id, label, cands[0]["fdc_id"], float(it.get("grams", 0) or 0))
             continue

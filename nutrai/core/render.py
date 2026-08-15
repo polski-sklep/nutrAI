@@ -405,6 +405,43 @@ def repeat_menu(dishes: Sequence[Any], templates: Sequence[Any] = ()) -> str:
 # --------------------------------------------------------- notifications
 
 
+def audit_card(findings: Sequence[Any]) -> str:
+    """The daily self-check, grouped by how much it matters.
+
+    Errors first because they mean a number in the log is wrong, not merely
+    uncertain — and a wrong number that nobody corrects becomes a median, then
+    a trend, then a recommendation.
+    """
+    if not findings:
+        return "🩺 <b>Daily check</b>\n\nNothing to flag. The log looks sound."
+
+    icons = {"error": "❌", "warn": "⚠️", "info": "💡"}
+    titles = {
+        "error": "Wrong, not just uncertain",
+        "warn": "Worth a look",
+        "info": "Would pay off later",
+    }
+
+    lines = ["🩺 <b>Daily check</b>"]
+    for severity in ("error", "warn", "info"):
+        group = [f for f in findings if f.severity == severity]
+        if not group:
+            continue
+        lines.append("")
+        lines.append(f"{icons[severity]} <b>{titles[severity]}</b>")
+        for f in group:
+            lines.append(f"   • <b>{_esc(f.summary)}</b>")
+            lines.append(f"     {_esc(f.detail)}")
+
+    if any(f.severity == "error" for f in findings):
+        lines.append("")
+        lines.append(
+            "<i>Fix an entry by sending it again and pressing ✏️, or ignore this "
+            "if the match was right after all.</i>"
+        )
+    return "\n".join(lines)
+
+
 def threshold_message(
     nutrient_name: str,
     amount: float,

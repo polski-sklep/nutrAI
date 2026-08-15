@@ -318,6 +318,47 @@ async def _profiles_con(con: Any, fdc_ids: Iterable[int]) -> dict[int, dict[int,
     return {fid: normalise_energy(prof) for fid, prof in out.items()}
 
 
+async def undo_last_entry(user_id: int, day: dt.date) -> asyncpg.Record | None:
+    """Discard the most recent confirmed entry of a day. Returns it, or None.
+
+    Discarded, never deleted. `log_nutrient` is a snapshot and invariant 2 says
+    it is never rewritten — every rollup already filters on status='confirmed',
+    so flipping the status removes it from the arithmetic while leaving the
+    record of what was logged and unlogged intact.
+
+    Scoped to one day because "undo" means the thing you just did. A bare /undo
+    reaching back into last week to silently remove a meal would be a worse
+    failure than the one it was trying to fix.
+    """
+    p = await pool()
+    async with p.acquire() as con, con.transaction():
+        entry = await con.fetchrow(
+            """SELECT * FROM log_entry
+                WHERE user_id = $1 AND local_date = $2 AND status = 'confirmed'
+             ORDER BY logged_at DESC, id DESC LIMIT 1
+             FOR UPDATE""",
+            user_id, day,
+        )
+        if not entry:
+            return None
+        await con.execute(
+            "UPDATE log_entry SET status = 'discarded' WHERE id = $1", entry["id"]
+        )
+        if entry["dish_id"]:
+            # times_logged gates the no-confirmation repeat path, so leaving it
+            # inflated would let an undone dish log instantly next time.
+            await con.execute(
+                """UPDATE dish d
+                      SET times_logged = GREATEST(d.times_logged - 1, 0),
+                          last_logged_at = (
+                              SELECT max(e.logged_at) FROM log_entry e
+                               WHERE e.dish_id = d.id AND e.status = 'confirmed')
+                    WHERE d.id = $1""",
+                entry["dish_id"],
+            )
+        return entry
+
+
 async def discard_entry(entry_id: int) -> None:
     p = await pool()
     await p.execute("UPDATE log_entry SET status = 'discarded' WHERE id = $1", entry_id)
