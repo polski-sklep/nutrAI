@@ -106,6 +106,20 @@ async def main(src: Path, include_branded: bool) -> None:
     await copy(con, "nutrient", ["id", "nutrient_nbr", "name", "unit", "rank", "is_core"], recs)
     print(f"  {len(recs)} nutrients")
 
+    # The survey (FNDDS) export numbers its food_nutrient rows with INFOODS
+    # tagnames — 203 protein, 204 fat, 208 energy — where Foundation and SR
+    # Legacy use FDC internal ids: 1003, 1004, 1008. Every one of FNDDS's
+    # ~353k nutrient rows is numbered the old way, so without this map the load
+    # dies on the foreign key, and a load that merely skipped them would be
+    # worse: 5,432 survey foods would resolve happily and contribute zero of
+    # every nutrient, which is the silent-zero failure the whole design exists
+    # to avoid. nutrient.nutrient_nbr is exactly the mapping.
+    known_ids = {int(r["id"]) for r in rows(src / "nutrient.csv")}
+    by_nbr: dict[int, int] = {}
+    for r in rows(src / "nutrient.csv"):
+        if r.get("nutrient_nbr"):
+            by_nbr.setdefault(int(float(r["nutrient_nbr"])), int(r["id"]))
+
     print("food_category…")
     cats = {r["id"]: r["description"] for r in rows(src / "food_category.csv")} \
         if (src / "food_category.csv").exists() else {}
@@ -138,7 +152,7 @@ async def main(src: Path, include_branded: bool) -> None:
     print(f"  {n} foods")
 
     print("food_nutrient… (the big one)")
-    recs, n, skipped = [], 0, 0
+    recs, n, skipped, unmapped = [], 0, 0, 0
     seen: set[tuple[int, int]] = set()
     for r in rows(src / "food_nutrient.csv"):
         fid = int(r["fdc_id"])
@@ -148,11 +162,20 @@ async def main(src: Path, include_branded: bool) -> None:
         if not amt:
             skipped += 1
             continue
-        key = (fid, int(r["nutrient_id"]))
+        nid = int(r["nutrient_id"])
+        if nid not in known_ids:
+            mapped = by_nbr.get(nid)
+            if mapped is None:
+                # Referential filtering: a nutrient this export never defined.
+                # Skipping beats failing the whole load on the foreign key.
+                unmapped += 1
+                continue
+            nid = mapped
+        key = (fid, nid)
         if key in seen:          # FDC ships occasional duplicates
             continue
         seen.add(key)
-        recs.append((fid, key[1], float(amt)))
+        recs.append((fid, nid, float(amt)))
         if len(recs) >= BATCH:
             await copy(con, "food_nutrient", ["fdc_id", "nutrient_id", "amount"], recs)
             n += len(recs)
@@ -161,7 +184,10 @@ async def main(src: Path, include_branded: bool) -> None:
                 print(f"    {n:,}")
     await copy(con, "food_nutrient", ["fdc_id", "nutrient_id", "amount"], recs)
     n += len(recs)
-    print(f"  {n:,} nutrient rows ({skipped:,} skipped for null amount)")
+    print(
+        f"  {n:,} nutrient rows ({skipped:,} skipped for null amount, "
+        f"{unmapped:,} for an undefined nutrient id)"
+    )
 
     print("food_portion…")
     units = {r["id"]: r["name"] for r in rows(src / "measure_unit.csv")} \

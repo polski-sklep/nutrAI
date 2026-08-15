@@ -531,10 +531,41 @@ async def _present(
 ) -> None:
     res = await llm.resolve_items(u["id"], parsed.items)
     if not res.components:
-        await (edit or msg).edit_text(
-            "I could not match anything in that to the food database. "
-            "Name the ingredients plainly and I will try again."
+        # Keep the parse even though nothing resolved.
+        #
+        # This used to return here, which threw away the most informative thing
+        # the pipeline produces. A photo that reaches this branch has already
+        # cost a Sonnet call, often an Opus escalation and a Haiku
+        # disambiguation — call it 5p — and the one artefact worth having from
+        # it, the model's actual output, went nowhere. You could see that a
+        # meal failed but never what search terms it chose, so the resolver
+        # could not be improved against the case that beat it.
+        #
+        # Stored as a discarded entry: `parse` holds the raw tool output and
+        # `photo_file_id` still points at the image, so it can be re-run against
+        # a better database later. Every rollup filters on status='confirmed',
+        # so it counts towards nothing.
+        entry_id = await db.create_pending_entry(
+            u["id"], parsed.dish_name, [], source=source, slot=parsed.slot,
+            confidence=parsed.confidence, model=parsed.model, parse=parsed.raw,
+            photo_file_id=photo_file_id, dish_id=None, tz=u["tz"],
+            rollover_hour=u["day_rollover_hour"],
         )
+        await db.discard_entry(entry_id)
+
+        # Name what failed. "I could not match anything" gives you nothing to
+        # act on; the labels tell you which word to rephrase.
+        missed = ", ".join(res.unresolved) or parsed.dish_name
+        text = (
+            f"No match in the food database for: <b>{escape(missed)}</b>\n\n"
+            "Nothing was logged. Try naming the ingredients plainly — "
+            "<code>2 cheese rolls, 1 pickle, half an avocado, 4 slices salami</code> — "
+            "or state the masses and I will trust those over the photo."
+        )
+        if edit:
+            await edit.edit_text(text, parse_mode="HTML")
+        else:
+            await msg.answer(text, parse_mode="HTML")
         return
 
     verdict = await llm.validate(res.components, parsed)

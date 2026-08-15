@@ -528,6 +528,64 @@ def _assert_balanced_html(text: str) -> None:
     assert not stack, f"unclosed {stack} in:\n{text}"
 
 
+def test_an_unresolvable_meal_still_keeps_the_parse(harness):
+    """A resolution failure is the most informative thing the pipeline emits.
+
+    It has already cost a Sonnet call, often an Opus escalation and a Haiku
+    disambiguation. Throwing the model's output away at that point means you can
+    see that a meal failed but never what search terms lost, so the resolver
+    cannot be improved against the case that beat it.
+    """
+
+    async def scenario():
+        uid = await _reset()
+        harness.llm.meal = {
+            "dish_name": "unmatchable thing",
+            "slot": "lunch",
+            "overall_confidence": 0.55,
+            "notes": "",
+            "items": [
+                {"label": "zzqqx", "search_terms": "zzqqxwv nonexistent foodstuff",
+                 "grams": 100, "grams_source": "estimate", "state": "unknown",
+                 "confidence": 0.3},
+            ],
+        }
+
+        await harness.feed("some zzqqx please")
+
+        reply = harness.sent.last().text
+        assert "No match" in reply, reply
+        # The failing label is named, so there is something to act on.
+        assert "zzqqx" in reply
+        assert not harness.sent.last().buttons, "nothing to confirm — nothing resolved"
+
+        from nutrai import db
+
+        p = await db.pool()
+        row = await p.fetchrow(
+            """SELECT status, parse, confidence, model FROM log_entry
+                WHERE user_id = $1 ORDER BY id DESC LIMIT 1""",
+            uid,
+        )
+        assert row is not None, "the parse was discarded — 5p of model output lost"
+        assert row["status"] == "discarded", row["status"]
+        assert row["parse"], "entry kept but the parse JSON was not"
+        assert "zzqqx" in row["parse"], "the parse does not contain what the model said"
+
+        # It must not count towards anything.
+        today = db.local_date_for(dt.datetime.now(dt.timezone.utc), "Europe/Warsaw", 4)
+        assert not await db.day_entries(uid, today)
+        kcal = await p.fetchval(
+            """SELECT COALESCE(sum(ln.amount), 0) FROM log_entry e
+                 JOIN log_nutrient ln ON ln.entry_id = e.id
+                WHERE e.user_id = $1 AND ln.nutrient_id = 1008""",
+            uid,
+        )
+        assert float(kcal) == 0.0
+
+    run(scenario())
+
+
 def test_llm_calls_are_priced_and_recorded(harness):
     async def scenario():
         uid = await _reset()
