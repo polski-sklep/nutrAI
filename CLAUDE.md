@@ -111,6 +111,28 @@ docker compose exec -T db psql -U nutrai -d nutrai -f - < sql/004_coverage.sql
   have not priced is a startup failure, by design. That check validates the
   pricing table, not the id: only the call above tells you the id is real.
 
+## Decided, not yet done
+
+Agreed changes with the reasoning already settled. Do them when next in the
+area; do not re-litigate them.
+
+- **`llm/client.py:price()` must return `None`, not a Sonnet-priced guess.**
+  Not raising is right — aborting after the API call has been made loses the
+  parse and the money both. But a silent fallback in the cost layer is the same
+  failure this design rejects everywhere else: nulls are not zeros, and a cost
+  you cannot compute is *unknown*, not $0.006. So: return `None`, log a warning,
+  store `llm_call.cost_usd` as NULL, and have `/spend` print "3 calls, cost
+  unknown" rather than folding them into a total that looks complete.
+
+  `cost_usd` is currently `NOT NULL DEFAULT 0`, which is the schema encoding the
+  same mistake — dropping the constraint is part of the change, and `spend_report`
+  has to separate a NULL from a zero rather than `sum()`-ing over both.
+
+  After the import-time `PRICES` check this path is nearly unreachable, which is
+  exactly the argument for making it honest rather than plausible when it does
+  fire: the once-a-year case that reports a confident wrong number is worse than
+  the one that admits it does not know.
+
 ## Outgoing message format
 
 Telegram **HTML**, not Markdown. Legacy Markdown has no defined escape syntax,
@@ -150,6 +172,12 @@ Rules when adding a message:
 - The repeat DSL rejects `250 g of chicken and rice` by returning `None`. That
   is correct: it is a food description, not a repeat command.
 - `_label_match` is loose on purpose. `-onion` should match `red onion`.
+- **`ruff check` reports around thirty findings and that is the resting state.**
+  Nearly all are `UP017` (`dt.timezone.utc` rather than `datetime.UTC`) and a
+  couple of deliberate broad `except` clauses. The datetime spelling is a
+  consistency choice applied across every module, not an oversight. Do not run
+  `ruff --fix` across the tree to make the number go down; it is churn that
+  makes the next diff unreadable and fixes nothing.
 - **`claude-sonnet-5` and `claude-opus-5` having no date suffix does not make
   them aliases.** From the 4.6 generation onward a dateless id *is* the pinned
   snapshot — there is no evergreen pointer behind it that can move under you
