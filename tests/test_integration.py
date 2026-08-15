@@ -1081,3 +1081,65 @@ def test_day_progress_and_thresholds_run_without_a_model(harness):
         assert isinstance(msgs, list)
 
     run(scenario())
+
+
+def test_supplements_count_toward_targets_and_stay_attributable(harness):
+    """Counted, per the user's decision — but never blended into the food total.
+
+    A micronutrient met by a capsule is different information from one met by
+    food. Blending them would let /improve recommend fixing a deficiency that is
+    already treated, or conclude a diet supplies something it does not.
+    """
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await p.execute("DELETE FROM supplement WHERE user_id = $1", uid)
+        today = db.local_date_for(dt.datetime.now(dt.timezone.utc), "Europe/Warsaw", 4)
+
+        before = {r["nutrient_id"]: r for r in await db.day_progress(uid, today)}
+        assert before[1114]["state"] == "under"
+
+        await db.upsert_supplement(uid, "D3", [(1114, 20.0)], serving_desc="1 capsule")
+        # Defined is not taken: nothing counts until the stack is logged.
+        mid = {r["nutrient_id"]: r for r in await db.day_progress(uid, today)}
+        assert float(mid[1114]["amount_supplement"]) == 0.0
+        assert mid[1114]["state"] == "under"
+
+        await harness.feed("/supp")
+        after = {r["nutrient_id"]: r for r in await db.day_progress(uid, today)}
+        assert float(after[1114]["amount_supplement"]) == pytest.approx(20.0)
+        assert float(after[1114]["amount"]) == pytest.approx(
+            float(after[1114]["amount_food"]) + 20.0
+        )
+        assert after[1114]["state"] == "ok"
+
+        # Logging twice is not taking double.
+        await harness.feed("/supp")
+        again = {r["nutrient_id"]: r for r in await db.day_progress(uid, today)}
+        assert float(again[1114]["amount_supplement"]) == pytest.approx(20.0)
+
+        # And none of it costs a model call.
+        assert not harness.llm.calls
+
+    run(scenario())
+
+
+def test_supplement_contribution_is_visible_on_the_day_card(harness):
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+        from nutrai.core import render
+
+        p = await db.pool()
+        await p.execute("DELETE FROM supplement WHERE user_id = $1", uid)
+        today = db.local_date_for(dt.datetime.now(dt.timezone.utc), "Europe/Warsaw", 4)
+        await db.upsert_supplement(uid, "D3", [(1114, 20.0)], serving_desc="1 capsule")
+        await db.log_supplements(uid, today)
+
+        card = render.day_card(today, await db.day_progress(uid, today), [], show_all=True)
+        assert "💊" in card, card
+
+    run(scenario())

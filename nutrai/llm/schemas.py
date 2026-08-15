@@ -217,3 +217,68 @@ You are given an evidence pack of medians, target comparisons and coverage figur
 Rank findings by magnitude of effect. State confidence explicitly. Where database coverage for a micronutrient is poor, say so rather than reporting a deficiency that is really a measurement gap — this is the most common way micronutrient tracking misleads people.
 
 Every recommendation must be a concrete, executable change to what is eaten, and must name the target edits that implement it. Include the trade-off. If the data supports no change, say so and recommend nothing."""
+
+
+# --------------------------------------------------------------- supplements
+
+SUPPLEMENT_TOOL = {
+    "name": "read_supplement_label",
+    "description": (
+        "Transcribe the nutrition panel printed on a supplement label. Report only "
+        "what is printed. Do not supply typical values for the product from memory."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Short name, e.g. 'Vitamin D3 4000 IU'."},
+            "brand": {"type": "string"},
+            "serving_desc": {
+                "type": "string",
+                "description": "The serving the panel is stated per, exactly as printed: '1 capsule', '2 tablets', '1 scoop (5 g)'.",
+            },
+            "servings_per_day": {
+                "type": "number",
+                "description": "Servings in the recommended daily dose, if printed. 1 if not stated.",
+            },
+            "nutrients": {
+                "type": "array",
+                "description": "One entry per line of the panel that maps to a nutrient id you were given. Omit lines you were not given an id for; do not guess an id.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "nutrient_id": {
+                            "type": "integer",
+                            "description": "Must be one of the ids supplied in the user message. Never invent one.",
+                        },
+                        "printed_label": {
+                            "type": "string",
+                            "description": "The line as printed, e.g. 'Vitamin D3 (cholecalciferol)'.",
+                        },
+                        "amount": {"type": "number", "description": "The number as printed, per serving."},
+                        "unit": {
+                            "type": "string",
+                            "enum": ["g", "mg", "ug", "mcg", "iu", "kcal"],
+                            "description": "The unit as printed. Do not convert; conversion happens downstream.",
+                        },
+                    },
+                    "required": ["nutrient_id", "printed_label", "amount", "unit"],
+                },
+            },
+            "unreadable": {
+                "type": "string",
+                "description": "Lines you could see but could not read, or panel areas obscured. Empty string if none.",
+            },
+        },
+        "required": ["name", "serving_desc", "nutrients"],
+    },
+}
+
+SUPPLEMENT_SYSTEM = """You transcribe a supplement's nutrition panel from a photograph.
+
+This is transcription, not estimation. The difference matters more here than anywhere else in this system: every other number a model produces here is an identity or a mass that a human then checks against a plate, but these numbers go straight into a daily total. So:
+
+1. Report only what is printed on the label in the photograph. If you happen to know what this product usually contains, that knowledge is not evidence and must not appear in the output.
+2. Do not convert units. Report the number and the unit exactly as printed; 'ug' and 'mcg' both mean micrograms and either is fine.
+3. Use only the nutrient ids supplied to you. A panel line with no id in that list is omitted, not approximated onto a neighbouring nutrient. Vitamin B6 is not vitamin B12.
+4. If a digit is unclear, put the line in `unreadable` rather than guessing it. A wrong digit in a supplement panel is a wrong daily total every day thereafter, silently, until somebody notices.
+5. Amounts are per serving as the panel states them, not per daily dose, unless the panel only gives a daily dose — in which case set serving_desc to that dose."""

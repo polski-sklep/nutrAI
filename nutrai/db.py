@@ -690,3 +690,113 @@ async def latest_pending(user_id: int, kind: str) -> dict | None:
         user_id, kind,
     )
     return json.loads(row["payload"]) if row else None
+
+
+# -------------------------------------------------------------- supplements
+
+
+async def nutrient_units(nutrient_ids: Sequence[int] | None = None) -> dict[int, str]:
+    """nutrient_id -> the unit the rest of the system counts it in."""
+    p = await pool()
+    if nutrient_ids:
+        rows = await p.fetch(
+            "SELECT id, unit FROM nutrient WHERE id = ANY($1::int[])", list(nutrient_ids)
+        )
+    else:
+        rows = await p.fetch("SELECT id, unit FROM nutrient")
+    return {r["id"]: r["unit"] for r in rows}
+
+
+async def upsert_supplement(
+    user_id: int, name: str, nutrients: list[tuple[int, float]], *,
+    brand: str | None = None, serving_desc: str = "1 serving",
+    servings_per_day: float = 1.0, photo_file_id: str | None = None,
+    source: str = "label_photo",
+) -> int:
+    """Create or replace one supplement and its whole panel.
+
+    The panel is replaced wholesale rather than merged: a re-read of a label is
+    a new statement of what the product contains, and merging would leave a
+    nutrient behind from a previous reformulation with nothing to indicate it.
+    """
+    p = await pool()
+    async with p.acquire() as con, con.transaction():
+        sup_id = await con.fetchval(
+            """INSERT INTO supplement
+                 (user_id, name, brand, serving_desc, servings_per_day,
+                  photo_file_id, source, verified_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7, now())
+               ON CONFLICT (user_id, name) DO UPDATE
+                 SET brand = EXCLUDED.brand,
+                     serving_desc = EXCLUDED.serving_desc,
+                     servings_per_day = EXCLUDED.servings_per_day,
+                     photo_file_id = EXCLUDED.photo_file_id,
+                     source = EXCLUDED.source,
+                     verified_at = now(),
+                     active = true
+               RETURNING id""",
+            user_id, name.strip(), brand, serving_desc, servings_per_day,
+            photo_file_id, source,
+        )
+        await con.execute("DELETE FROM supplement_nutrient WHERE supplement_id = $1", sup_id)
+        await con.executemany(
+            "INSERT INTO supplement_nutrient (supplement_id, nutrient_id, amount) VALUES ($1,$2,$3)",
+            [(sup_id, nid, amt) for nid, amt in nutrients],
+        )
+    return sup_id
+
+
+async def supplement_stack(user_id: int, active_only: bool = True) -> list[asyncpg.Record]:
+    p = await pool()
+    return await p.fetch(
+        f"""SELECT s.*, (SELECT count(*) FROM supplement_nutrient sn
+                          WHERE sn.supplement_id = s.id) AS n_nutrients
+              FROM supplement s
+             WHERE s.user_id = $1 {'AND s.active' if active_only else ''}
+          ORDER BY s.name""",
+        user_id,
+    )
+
+
+async def log_supplements(user_id: int, day: dt.date, supplement_ids: Sequence[int] | None = None) -> int:
+    """Record today's stack. Idempotent: taking it twice is not taking double."""
+    p = await pool()
+    async with p.acquire() as con, con.transaction():
+        if supplement_ids is None:
+            rows = await con.fetch(
+                "SELECT id, servings_per_day FROM supplement WHERE user_id=$1 AND active", user_id
+            )
+        else:
+            rows = await con.fetch(
+                """SELECT id, servings_per_day FROM supplement
+                    WHERE user_id=$1 AND id = ANY($2::bigint[])""",
+                user_id, list(supplement_ids),
+            )
+        for r in rows:
+            await con.execute(
+                """INSERT INTO supplement_log (user_id, supplement_id, local_date, servings)
+                   VALUES ($1,$2,$3,$4)
+                   ON CONFLICT (user_id, supplement_id, local_date)
+                   DO UPDATE SET servings = EXCLUDED.servings, taken_at = now()""",
+                user_id, r["id"], day, r["servings_per_day"],
+            )
+        return len(rows)
+
+
+async def supplements_logged_on(user_id: int, day: dt.date) -> list[asyncpg.Record]:
+    p = await pool()
+    return await p.fetch(
+        """SELECT s.name, sl.servings FROM supplement_log sl
+             JOIN supplement s ON s.id = sl.supplement_id
+            WHERE sl.user_id = $1 AND sl.local_date = $2 ORDER BY s.name""",
+        user_id, day,
+    )
+
+
+async def unlog_supplements(user_id: int, day: dt.date) -> int:
+    p = await pool()
+    return int(
+        (await p.execute(
+            "DELETE FROM supplement_log WHERE user_id = $1 AND local_date = $2", user_id, day
+        )).split()[-1]
+    )

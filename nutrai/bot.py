@@ -73,6 +73,7 @@ COMMANDS: list[tuple[str, str]] = [
     ("/f", "rate your focus now, e.g. <code>/f 8</code>"),
     ("/rate", "energy, mood, hunger, sleep or rpe — <code>/rate energy 6</code>"),
     ("/weight", "log a weigh-in, e.g. <code>/weight 78.2</code>"),
+    ("/supp", "log today's supplement stack · <code>/supp add</code> to set one up"),
     ("/undo", "unlog the last thing you logged today"),
     ("/audit", "check the last week's entries for wrong matches"),
     ("/insight", "fat-loss rate and what the data actually supports"),
@@ -327,6 +328,56 @@ async def weight(msg: Message) -> None:
     await msg.answer("\n".join(lines), parse_mode="HTML")
 
 
+@dp.message(Command("supp", "supplements"))
+async def supp(msg: Message) -> None:
+    """`/supp` logs today's stack · `/supp list` shows it · `/supp add` + photo.
+
+    Logging is a deliberate daily act rather than an assumption. A stack you
+    usually take is not a stack you always took, and the difference is a
+    micronutrient total nobody confirmed — invariant 5 applies to a capsule
+    exactly as it applies to a meal.
+    """
+    u = await _user(msg)
+    arg = (msg.text or "").split(maxsplit=1)
+    sub = arg[1].strip().lower() if len(arg) > 1 else ""
+    day = _today(u)
+    stack = await db.supplement_stack(u["id"])
+
+    if sub.startswith("add"):
+        await db.put_pending(u["id"], "supp_label", {"awaiting": True})
+        await msg.answer(
+            "📸 Send a photo of the supplement's nutrition panel.\n\n"
+            "<i>Get the whole panel in frame and in focus. I transcribe what is "
+            "printed — I will not fill in what I think the product contains.</i>",
+            parse_mode="HTML",
+        )
+        return
+
+    if not stack:
+        await msg.answer(
+            "No supplements set up yet. <code>/supp add</code>, then send a photo "
+            "of the label.",
+            parse_mode="HTML",
+        )
+        return
+
+    if sub.startswith("list"):
+        await msg.answer(render.supplement_stack_card(stack), parse_mode="HTML")
+        return
+
+    if sub.startswith(("skip", "clear", "none")):
+        n = await db.unlog_supplements(u["id"], day)
+        await msg.answer(f"Cleared {n} supplement record(s) for today.")
+        return
+
+    n = await db.log_supplements(u["id"], day)
+    taken = await db.supplements_logged_on(u["id"], day)
+    lines = [f"💊 <b>Stack logged</b> — {n} supplement{'s' if n != 1 else ''}"]
+    lines += [f"   • {escape(t['name'])}" for t in taken]
+    await msg.answer("\n".join(lines), parse_mode="HTML")
+    await _send_day(msg, u, day)
+
+
 @dp.message(Command("undo"))
 async def undo(msg: Message) -> None:
     """Unlog the last thing logged today."""
@@ -439,6 +490,11 @@ async def _handle_photos(msgs: list[Message]) -> None:
     u = await _user(msg)
     bot: Bot = msg.bot
     caption = next((m.caption for m in msgs if m.caption), None)
+
+    # A photo sent after `/supp add` is a label, not a meal.
+    if await db.latest_pending(u["id"], "supp_label"):
+        await _handle_supplement_label(msg, u)
+        return
 
     # The largest PhotoSize is the last element. Anything smaller loses the
     # scale display, which is the one thing worth reading precisely.
@@ -847,6 +903,105 @@ async def unknown_command(msg: Message) -> None:
         f"{escape(typed)} is not a command here.\n\n" + command_list(),
         parse_mode="HTML",
     )
+
+
+async def _handle_supplement_label(msg: Message, u: Any) -> None:
+    """Transcribe a panel, show it, save nothing until it is confirmed.
+
+    The confirm gate matters more here than on a meal. A meal's numbers are
+    checked against a plate you are looking at; a supplement's numbers go
+    straight into every future daily total with nothing to contradict them. This
+    card, read against the packet in your hand, is the only check there is.
+    """
+    from .core import supplements
+
+    f = await msg.bot.get_file(msg.photo[-1].file_id)
+    buf = await msg.bot.download_file(f.file_path)
+    b64, _w, _h = llm.prepare_image(buf.read())
+
+    note = await msg.answer("reading the label…")
+    try:
+        data, cost = await llm.read_supplement_label(b64, user_id=u["id"])
+    except Exception as exc:
+        await _parse_failed(note, exc)
+        return
+
+    units = await db.nutrient_units()
+    kept, dropped = supplements.normalise(list(data.get("nutrients", [])), units)
+    if not kept:
+        await note.edit_text(
+            "I could not read any nutrient lines I recognise from that panel. "
+            "Try a straighter, closer photo of the table itself.",
+        )
+        return
+
+    p = await db.pool()
+    names = {
+        r["id"]: r["name"]
+        for r in await p.fetch(
+            "SELECT id, name FROM nutrient WHERE id = ANY($1::int[])",
+            [c.nutrient_id for c in kept] + [d.nutrient_id for d in dropped],
+        )
+    }
+    action_id = await db.put_pending(u["id"], "supp_confirm", {
+        "name": data.get("name") or "supplement",
+        "brand": data.get("brand"),
+        "serving_desc": data.get("serving_desc") or "1 serving",
+        "servings_per_day": float(data.get("servings_per_day") or 1),
+        "photo_file_id": msg.photo[-1].file_id,
+        "nutrients": [[c.nutrient_id, c.amount] for c in kept],
+    })
+    await db.clear_pending(u["id"], "supp_label")
+
+    text = render.supplement_confirm_card(
+        data.get("name") or "supplement",
+        data.get("serving_desc") or "1 serving",
+        kept, dropped, names, units,
+    )
+    if data.get("unreadable"):
+        text += f"\n\n⚠️ {escape(str(data['unreadable']))}"
+    text += f"\n\n<i>💸 {cost*100:.2f}¢</i>"
+    await note.edit_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ save", callback_data=f"supok:{action_id}"),
+            InlineKeyboardButton(text="🗑 discard", callback_data=f"supno:{action_id}"),
+        ]]),
+    )
+
+
+@dp.callback_query(F.data.startswith("supok:"))
+async def cb_supp_ok(cq: CallbackQuery) -> None:
+    payload = await db.take_pending(int(cq.data.split(":")[1]))
+    await cq.answer("saved" if payload else "expired")
+    if not payload:
+        await cq.message.edit_text("That expired. Send the label again.")
+        return
+    u = await db.get_or_create_user(cq.from_user.id)
+    await db.upsert_supplement(
+        u["id"], payload["name"],
+        [(int(n), float(a)) for n, a in payload["nutrients"]],
+        brand=payload.get("brand"),
+        serving_desc=payload["serving_desc"],
+        servings_per_day=payload["servings_per_day"],
+        photo_file_id=payload.get("photo_file_id"),
+    )
+    await cq.message.edit_text(
+        (cq.message.text or "") + "\n\n✅ saved to your stack",
+    )
+    await cq.message.answer(
+        "Added. <code>/supp</code> logs the whole stack for today, "
+        "<code>/supp list</code> shows it.",
+        parse_mode="HTML",
+    )
+
+
+@dp.callback_query(F.data.startswith("supno:"))
+async def cb_supp_no(cq: CallbackQuery) -> None:
+    await db.take_pending(int(cq.data.split(":")[1]))
+    await cq.message.edit_text((cq.message.text or "") + "\n\n🗑 discarded")
+    await cq.answer("discarded")
 
 
 # ---------------------------------------------------------------- callbacks

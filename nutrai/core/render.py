@@ -372,6 +372,12 @@ def _row(r: Any, covered: float | None = None) -> str:
         f"{flag} {_esc(name)} {fmt_amount(amount, unit):>12}"
         f"  {pct:>5.0f}% {bar(pct, 8)}"
     )
+    # A micronutrient met by a capsule is different information from one met by
+    # food, and the difference has to survive to the screen or it may as well
+    # not be stored.
+    supp = r["amount_supplement"] if "amount_supplement" in r else None
+    if supp is not None and float(supp) > 0:
+        line += f"  (+{fmt_amount(float(supp), unit)} 💊)"
     # Below full coverage the figure is a lower bound, not a total. Say so, or
     # the number reads as a measurement of the plate rather than of part of it.
     # Plain parentheses, not <i>: this line lives inside a <pre> block, and
@@ -485,3 +491,43 @@ def _esc(s: str) -> str:
     makes the source unreadable for no gain.
     """
     return escape(str(s), quote=False)
+
+
+def supplement_stack_card(stack: Sequence[Any]) -> str:
+    lines = ["💊 <b>Your daily stack</b>", ""]
+    for s in stack:
+        serving = f"{float(s['servings_per_day']):g} × {s['serving_desc']}"
+        mark = "" if s["verified_at"] else "  <i>(unverified)</i>"
+        lines.append(f"   • <b>{_esc(s['name'])}</b> — {_esc(serving)}{mark}")
+        lines.append(f"     {s['n_nutrients']} nutrient(s) from its label")
+    lines += ["", "<code>/supp</code> logs the lot for today."]
+    return "\n".join(lines)
+
+
+def supplement_confirm_card(
+    name: str, serving_desc: str, kept: Sequence[Any], dropped: Sequence[Any],
+    names: dict[int, str], units: dict[int, str],
+) -> str:
+    """What was read off the label, before it is saved.
+
+    Everything downstream trusts these numbers completely — they go straight
+    into a daily total with no plate to check them against — so this card is the
+    only place a misread digit can be caught. It shows every line, including the
+    ones that were rejected, because a nutrient silently missing from a panel is
+    indistinguishable from one the product does not contain.
+    """
+    lines = [f"💊 <b>{_esc(name)}</b>", f"per {_esc(serving_desc)}", ""]
+    for c in kept:
+        unit = units.get(c.nutrient_id, "")
+        lines.append(
+            f"   • {_esc(names.get(c.nutrient_id, str(c.nutrient_id)))} — "
+            f"{fmt_amount(c.amount, unit)}"
+        )
+    if dropped:
+        lines.append("")
+        lines.append("⚠️ <b>Not recorded</b>")
+        for d in dropped:
+            label = d.printed_label or names.get(d.nutrient_id, str(d.nutrient_id))
+            lines.append(f"   • {_esc(label)} — {_esc(d.reason)}")
+    lines += ["", "Check these against the packet. Nothing is saved until you confirm."]
+    return "\n".join(lines)

@@ -148,11 +148,48 @@ dead disk — copy them somewhere else too.
   have not priced is a startup failure, by design. That check validates the
   pricing table, not the id: only the call above tells you the id is real.
 
+## Supplements and label-derived nutrients
+
+`sql/005_supplements.sql`. Supplements are their own tables rather than food
+rows: taken by count not mass, and their authority is a printed label rather
+than a USDA assay.
+
+**The contract in ARCHITECTURE.md §1 is amended, not broken.** The model may
+*transcribe* a nutrient value from a photographed panel. It may never *estimate*
+one. The difference is that a transcription is checkable at the moment it is
+made — against the packet in your hand, at the confirm gate — and an estimate is
+checkable against nothing. Enforcement is threefold: the tool is given the exact
+list of nutrient ids it may use, so an unlisted line is omitted rather than
+approximated onto a neighbour; units are converted in Python and refused where
+ambiguous (vitamin D IU is exact, vitamin A IU is not); and nothing is saved
+until a human confirms the panel. `supplement.source` records which route the
+numbers came in by, and must never say `model_estimate`.
+
+`day_progress()` returns `amount`, `amount_food` and `amount_supplement`.
+Supplements count toward targets — that is what they are for — but the split
+must survive to the screen. A micronutrient met by a capsule is different
+information from one met by food, and blending them lets `/improve` recommend
+fixing a deficiency that is already treated.
+
+Photo retention is *not* required for labels, and an earlier claim in this file
+that it was has been removed. §12's argument is about meal photos, where
+portion estimation is uncertain and re-scoring against a better parser later is
+the point. A label is exact and finite: once transcribed and confirmed the
+numbers are the record, and if one is wrong the packet is still in the cupboard.
+
 ## Decided, not yet done
 
 Agreed changes with the reasoning already settled. Do them when next in the
 area; do not re-litigate them.
 
+- **Remembered products.** Photograph a product's label once (panko, sauces,
+  branded staples) and reuse the panel thereafter. These *are* meal components,
+  so unlike supplements they belong in `food` with `data_type = 'user_product'`
+  and their panel in `food_nutrient` — which keeps `log_component.fdc_id`,
+  `profiles_for`, coverage, `portion_history` and the audit working unchanged,
+  and lets `precedence` rank your own label above USDA's generic row. Decided:
+  **ask every time** before reusing a saved product, rather than resolving to it
+  silently.
 - **`llm/client.py:price()` must return `None`, not a Sonnet-priced guess.**
   Not raising is right — aborting after the API call has been made loses the
   parse and the money both. But a silent fallback in the cost layer is the same

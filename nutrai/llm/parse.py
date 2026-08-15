@@ -29,6 +29,8 @@ from .schemas import (
     MODIFIER_TOOL,
     PARSE_SYSTEM,
     PARSE_TOOL,
+    SUPPLEMENT_SYSTEM,
+    SUPPLEMENT_TOOL,
 )
 
 
@@ -421,3 +423,62 @@ async def _log(res: ToolResult, purpose: str, user_id: int | None) -> None:
         cost_usd=res.cost_usd,
         ok=True,
     )
+
+
+# --------------------------------------------------------------- supplements
+
+
+async def read_supplement_label(image_b64: str, *, user_id: int) -> tuple[dict[str, Any], float]:
+    """Transcribe a supplement panel. Returns (data, cost).
+
+    Uses the photo model rather than the cheap one. A misread digit here is not
+    one wrong meal — the value goes into every day the supplement is logged,
+    with no plate to check it against and no Atwater relationship to betray it.
+    That asymmetry is worth two pence, once, per product.
+    """
+    res = await call_tool(
+        model=MODEL_PHOTO,
+        tool=SUPPLEMENT_TOOL,
+        system=[cached(SUPPLEMENT_SYSTEM)],
+        content=[
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": "image/jpeg", "data": image_b64},
+            },
+            {
+                "type": "text",
+                "text": (
+                    "Transcribe this panel. Use only these nutrient ids:\n"
+                    + _nutrient_menu()
+                ),
+            },
+        ],
+        max_tokens=1500,
+    )
+    await _log(res, "supplement_label", user_id)
+    return res.data, res.cost_usd
+
+
+def _nutrient_menu() -> str:
+    """The ids the model is allowed to use, with their units.
+
+    Supplied rather than left to the model's memory: this is the mechanism that
+    keeps a transcription from becoming a guess. An id it was not given is an id
+    it cannot return, so "vitamin B6" cannot quietly land on B12's row.
+    """
+    from ..config import CORE_NUTRIENTS
+
+    names = {
+        1008: "Energy (kcal)", 1003: "Protein (g)", 1004: "Fat (g)", 1005: "Carbohydrate (g)",
+        1079: "Fibre (g)", 2000: "Sugars (g)", 1258: "Saturated fat (g)", 1093: "Sodium (mg)",
+        1092: "Potassium (mg)", 1087: "Calcium (mg)", 1089: "Iron (mg)", 1090: "Magnesium (mg)",
+        1095: "Zinc (mg)", 1178: "Vitamin B-12 (ug)", 1114: "Vitamin D (ug)",
+        1162: "Vitamin C (mg)", 1106: "Vitamin A RAE (ug)", 1177: "Folate (ug)",
+        1253: "Cholesterol (mg)", 1272: "DHA (g)", 1109: "Vitamin E (mg)",
+        1183: "Vitamin K (ug)", 1165: "Thiamin (mg)", 1166: "Riboflavin (mg)",
+        1167: "Niacin (mg)", 1175: "Vitamin B-6 (mg)", 1170: "Pantothenic acid (mg)",
+        1176: "Biotin (ug)", 1098: "Copper (mg)", 1101: "Manganese (mg)",
+        1103: "Selenium (ug)", 1100: "Iodine (ug)", 1091: "Phosphorus (mg)",
+    }
+    del CORE_NUTRIENTS
+    return "\n".join(f"  {nid} = {label}" for nid, label in sorted(names.items()))
