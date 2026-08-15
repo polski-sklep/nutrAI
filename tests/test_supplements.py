@@ -69,3 +69,22 @@ def test_duplicate_lines_do_not_double_count():
 def test_a_garbled_line_is_rejected_rather_than_zeroed():
     kept, dropped = normalise([{"nutrient_id": 1087, "printed_label": "Calcium"}], UNITS)
     assert not kept and dropped
+
+
+def test_the_nutrient_menu_disambiguates_vitamin_k_forms():
+    """FDC has no id for menaquinone-7, which is what K2 supplements contain.
+
+    1183 is menaquinone-4 — a different molecule with a 1-2 hour half-life
+    against MK-7's ~68, trialled at 450x the dose. A menu line reading plain
+    "Vitamin K" invites the collapse, and the result would look entirely normal
+    on the card and in every total thereafter.
+    """
+    from nutrai.llm.parse import _nutrient_menu
+
+    menu = _nutrient_menu()
+    assert "menaquinone-4 ONLY" in menu
+    assert "phylloquinone / K1 ONLY" in menu
+    # No unqualified "Vitamin K" line for a model to reach for.
+    assert not any(
+        line.strip().endswith("= Vitamin K (ug)") for line in menu.splitlines()
+    )

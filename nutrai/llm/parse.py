@@ -484,7 +484,13 @@ def _nutrient_menu() -> str:
         1095: "Zinc (mg)", 1178: "Vitamin B-12 (ug)", 1114: "Vitamin D (ug)",
         1162: "Vitamin C (mg)", 1106: "Vitamin A RAE (ug)", 1177: "Folate (ug)",
         1253: "Cholesterol (mg)", 1272: "DHA (g)", 1109: "Vitamin E (mg)",
-        1183: "Vitamin K (ug)", 1165: "Thiamin (mg)", 1166: "Riboflavin (mg)",
+        # Named precisely. FDC has no id for menaquinone-7, which is what most
+        # K2 supplements contain, and 1183 is specifically MK-4 — a different
+        # molecule with a 1-2 hour half-life against MK-7's ~68, trialled at
+        # 450x the dose. Labelling this "Vitamin K" invites exactly the
+        # collapse rule 3 forbids, and the result would look entirely normal.
+        1183: "Vitamin K, menaquinone-4 ONLY (ug)",
+        1185: "Vitamin K, phylloquinone / K1 ONLY (ug)", 1165: "Thiamin (mg)", 1166: "Riboflavin (mg)",
         1167: "Niacin (mg)", 1175: "Vitamin B-6 (mg)", 1170: "Pantothenic acid (mg)",
         1176: "Biotin (ug)", 1098: "Copper (mg)", 1101: "Manganese (mg)",
         1103: "Selenium (ug)", 1100: "Iodine (ug)", 1091: "Phosphorus (mg)",
