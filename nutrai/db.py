@@ -318,6 +318,44 @@ async def _profiles_con(con: Any, fdc_ids: Iterable[int]) -> dict[int, dict[int,
     return {fid: normalise_energy(prof) for fid, prof in out.items()}
 
 
+async def last_confirmed_entry(user_id: int, day: dt.date) -> asyncpg.Record | None:
+    """Peek at what /undo would take, without taking it."""
+    p = await pool()
+    return await p.fetchrow(
+        """SELECT e.*, COALESCE(k.amount, 0) AS kcal
+             FROM log_entry e
+             LEFT JOIN log_nutrient k ON k.entry_id = e.id AND k.nutrient_id = 1008
+            WHERE e.user_id = $1 AND e.local_date = $2 AND e.status = 'confirmed'
+         ORDER BY e.logged_at DESC, e.id DESC LIMIT 1""",
+        user_id, day,
+    )
+
+
+async def undo_entry(user_id: int, entry_id: int) -> asyncpg.Record | None:
+    """Discard one confirmed entry by id, and correct its dish's counter."""
+    p = await pool()
+    async with p.acquire() as con, con.transaction():
+        entry = await con.fetchrow(
+            """SELECT * FROM log_entry
+                WHERE id = $1 AND user_id = $2 AND status = 'confirmed' FOR UPDATE""",
+            entry_id, user_id,
+        )
+        if not entry:
+            return None
+        await con.execute("UPDATE log_entry SET status = 'discarded' WHERE id = $1", entry_id)
+        if entry["dish_id"]:
+            await con.execute(
+                """UPDATE dish d
+                      SET times_logged = GREATEST(d.times_logged - 1, 0),
+                          last_logged_at = (
+                              SELECT max(e.logged_at) FROM log_entry e
+                               WHERE e.dish_id = d.id AND e.status = 'confirmed')
+                    WHERE d.id = $1""",
+                entry["dish_id"],
+            )
+        return entry
+
+
 async def undo_last_entry(user_id: int, day: dt.date) -> asyncpg.Record | None:
     """Discard the most recent confirmed entry of a day. Returns it, or None.
 

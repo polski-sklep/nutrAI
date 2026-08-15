@@ -1299,3 +1299,59 @@ def test_text_after_supp_add_is_a_label_not_a_meal(harness):
         assert harness.llm.calls[-1] != "read_supplement_label"
 
     run(scenario())
+
+
+def test_rate_offers_buttons_and_records_a_tap(harness):
+    """Typing `/rate energy 6` on a phone is the point of failure.
+
+    A rating you have to stop and type is one you postpone, and a rating
+    invented later is exactly the noise the refusal gate exists to keep out.
+    """
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await p.execute("DELETE FROM observation WHERE user_id = $1", uid)
+
+        # /rate bare offers the kinds.
+        harness.sent.clear()
+        await harness.feed("/rate")
+        card = harness.sent.last()
+        assert "What are you rating?" in card.text
+        kinds = [b for b in card.buttons if b.startswith("ratek:")]
+        assert len(kinds) == 6, kinds
+
+        # Choosing one offers a 1-10 keypad.
+        await harness.press("ratek:energy", card.message_id)
+        card = harness.sent.last()
+        values = [b for b in card.buttons if b.startswith("ratev:")]
+        assert len(values) == 10, values
+
+        # Tapping records it.
+        await harness.press("ratev:energy:7", card.message_id)
+        rows = await p.fetch(
+            "SELECT kind, value FROM observation WHERE user_id=$1", uid
+        )
+        assert len(rows) == 1
+        assert rows[0]["kind"] == "energy" and float(rows[0]["value"]) == 7.0
+
+        # /f alone goes straight to the focus keypad, no kind picker.
+        harness.sent.clear()
+        await harness.feed("/f")
+        card = harness.sent.last()
+        assert "focus" in card.text
+        assert all(b.startswith("ratev:focus:") for b in card.buttons), card.buttons
+
+        # And typing still works.
+        await harness.feed("/f 9")
+        assert float(
+            await p.fetchval(
+                "SELECT value FROM observation WHERE user_id=$1 AND kind='focus'", uid
+            )
+        ) == 9.0
+
+        assert not harness.llm.calls
+
+    run(scenario())

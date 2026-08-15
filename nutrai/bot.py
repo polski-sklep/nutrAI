@@ -70,8 +70,8 @@ COMMANDS: list[tuple[str, str]] = [
     ("/yesterday", "the same, for yesterday"),
     ("/fast", "current fast, duration and phase"),
     ("/window", "your eating window, midpoint and stability"),
-    ("/f", "rate your focus now, e.g. <code>/f 8</code>"),
-    ("/rate", "energy, mood, hunger, sleep or rpe — <code>/rate energy 6</code>"),
+    ("/f", "rate your focus now — tap a number"),
+    ("/rate", "rate focus, energy, mood, hunger, sleep or rpe"),
     ("/weight", "log a weigh-in, e.g. <code>/weight 78.2</code>"),
     ("/supp", "log today's supplement stack · <code>/supp add</code> to set one up"),
     ("/undo", "unlog the last thing you logged today"),
@@ -238,34 +238,133 @@ async def window(msg: Message) -> None:
     await msg.answer("\n".join(lines), parse_mode="HTML")
 
 
+RATE_KINDS: dict[str, tuple[str, str]] = {
+    "focus": ("🧠", "how sharp you feel right now"),
+    "energy": ("⚡", "physical energy, not mood"),
+    "mood": ("🙂", "how you feel in yourself"),
+    "hunger": ("🍽", "how hungry, 1 full to 10 ravenous"),
+    "sleep": ("😴", "last night's sleep quality"),
+    "rpe": ("🏋", "how hard the session felt, 1 easy to 10 maximal"),
+}
+
+
+def _rate_kind_keyboard() -> InlineKeyboardMarkup:
+    kinds = list(RATE_KINDS.items())
+    rows = [
+        [InlineKeyboardButton(text=f"{icon} {k}", callback_data=f"ratek:{k}")
+         for k, (icon, _) in kinds[i:i + 3]]
+        for i in range(0, len(kinds), 3)
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _rate_value_keyboard(kind: str) -> InlineKeyboardMarkup:
+    """A keypad, because the friction is the point of failure.
+
+    `/rate energy 6` is three words and a number on a phone keyboard, at the
+    moment you noticed something worth recording. Ratings you have to stop and
+    type are ratings you postpone, and a rating invented later is the noise the
+    whole refusal gate exists to keep out of the correlation.
+    """
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=str(n), callback_data=f"ratev:{kind}:{n}") for n in range(1, 6)],
+        [InlineKeyboardButton(text=str(n), callback_data=f"ratev:{kind}:{n}") for n in range(6, 11)],
+    ])
+
+
 @dp.message(Command("rate", "f"))
 async def rate(msg: Message) -> None:
-    """`/rate focus 8`, or `/f 8` for focus. Five seconds, and it is the only
-    reason any question about timing can ever be answered."""
+    """`/f` for focus, `/rate` to choose. A number may be typed or tapped."""
     u = await _user(msg)
-    parts = (msg.text or "").split()[1:]
-    kinds = {"focus", "energy", "mood", "hunger", "sleep", "rpe"}
-    if len(parts) == 1 and parts[0].replace(".", "").isdigit():
-        kind, value = "focus", float(parts[0])
-    elif len(parts) >= 2 and parts[0].lower() in kinds:
-        kind, value = parts[0].lower(), float(parts[1])
-    else:
+    parts = (msg.text or "").split()
+    is_focus_shortcut = parts[0].lstrip("/").split("@")[0] in ("f",)
+    args = parts[1:]
+
+    kind, value = None, None
+    if is_focus_shortcut:
+        kind = "focus"
+        if args and args[0].replace(".", "").isdigit():
+            value = float(args[0])
+    elif args and args[0].lower() in RATE_KINDS:
+        kind = args[0].lower()
+        if len(args) > 1 and args[1].replace(".", "").isdigit():
+            value = float(args[1])
+    elif args and args[0].replace(".", "").isdigit():
+        kind, value = "focus", float(args[0])
+
+    if kind and value is not None:
+        await _record_rating(msg, u, kind, value)
+        return
+    if kind:
+        icon, gloss = RATE_KINDS[kind]
         await msg.answer(
-            "<code>/rate focus 8</code> · <code>/rate energy 6</code> · "
-            "<code>/rate rpe 9</code> · <code>/f 8</code> is focus\n"
-            "Rate when you notice, not on a schedule. Ratings you invent at the"
-            " end of the day are noise you will later mistake for signal.",
+            f"{icon} <b>{kind}</b> — {gloss}\n<i>1 lowest, 10 highest.</i>",
             parse_mode="HTML",
+            reply_markup=_rate_value_keyboard(kind),
         )
         return
+
+    await msg.answer(
+        "📊 <b>What are you rating?</b>\n\n"
+        "<i>Rate when you notice, not on a schedule. A rating invented at the "
+        "end of the day is noise you will later mistake for signal.</i>",
+        parse_mode="HTML",
+        reply_markup=_rate_kind_keyboard(),
+    )
+
+
+@dp.callback_query(F.data.startswith("ratek:"))
+async def cb_rate_kind(cq: CallbackQuery) -> None:
+    kind = cq.data.split(":")[1]
+    icon, gloss = RATE_KINDS.get(kind, ("📊", ""))
+    await cq.answer()
+    await cq.message.edit_text(
+        f"{icon} <b>{kind}</b> — {gloss}\n<i>1 lowest, 10 highest.</i>",
+        parse_mode="HTML",
+        reply_markup=_rate_value_keyboard(kind),
+    )
+
+
+@dp.callback_query(F.data.startswith("ratev:"))
+async def cb_rate_value(cq: CallbackQuery) -> None:
+    _, kind, value = cq.data.split(":")
+    u = await db.get_or_create_user(cq.from_user.id)
+    await cq.answer("recorded")
+    await cq.message.edit_text(
+        await _rating_text(u, kind, float(value)), parse_mode="HTML"
+    )
+
+
+async def _record_rating(msg: Message, u: Any, kind: str, value: float) -> None:
+    await msg.answer(await _rating_text(u, kind, value), parse_mode="HTML")
+
+
+async def _rating_text(u: Any, kind: str, value: float) -> str:
+    """Log it and say what it bought.
+
+    The old reply was "focus 9 at 4.8h fasted · 19 more before this can be
+    analysed", which reads as a rebuke. The gate is real — a correlation on ten
+    points is noise — but the useful framing is how far along you are, not how
+    far short.
+    """
     h = await db.current_fast_hours(u["id"])
     await db.log_observation(
         u["id"], kind, value, tz=u["tz"], rollover_hour=u["day_rollover_hour"]
     )
-    n = len(await db.observations(u["id"], kind))
-    need = max(0, insight.MIN_PAIRS - n)
-    tail = f" · {need} more before this can be analysed" if need else " · analysable"
-    await msg.answer(f"{kind} {value:g} at {h:.1f}h fasted{tail}")
+    obs = await db.observations(u["id"], kind)
+    n = len(obs)
+    icon, _gloss = RATE_KINDS.get(kind, ("📊", ""))
+
+    lines = [f"{icon} <b>{kind} {value:g}</b> · {h:.1f}h since you last ate"]
+    if n >= insight.MIN_PAIRS:
+        lines.append(f"📈 {n} ratings — <code>/insight</code> can analyse this.")
+    else:
+        done = "▓" * n + "░" * (insight.MIN_PAIRS - n)
+        lines.append(f"<code>{done}</code> {n}/{insight.MIN_PAIRS} before this can be analysed")
+    if n >= 3:
+        recent = ", ".join(f"{float(o['value']):g}" for o in obs[-5:])
+        lines.append(f"<i>last few: {recent}</i>")
+    return "\n".join(lines)
 
 
 @dp.message(Command("weight", "w"))
@@ -474,25 +573,75 @@ async def cb_supp_none(cq: CallbackQuery) -> None:
 
 @dp.message(Command("undo"))
 async def undo(msg: Message) -> None:
-    """Unlog the last thing logged today."""
+    """Unlog the last thing logged today.
+
+    Asks first when the target is not recent. "Undo" implies the thing you just
+    did, but the last *confirmed* entry of a day can be hours old — typing
+    /undo at 20:58 silently removed a meal logged at 14:10. In a system where
+    nothing is logged without a confirm, unlogging something from seven hours
+    ago without one is the wrong way round.
+    """
     u = await _user(msg)
     day = _today(u)
-    entry = await db.undo_last_entry(u["id"], day)
+    entry = await db.last_confirmed_entry(u["id"], day)
     if not entry:
         await msg.answer("Nothing logged today to undo.")
         return
 
-    kcal = await (await db.pool()).fetchval(
-        "SELECT amount FROM log_nutrient WHERE entry_id = $1 AND nutrient_id = 1008",
-        entry["id"],
+    import zoneinfo
+
+    local = entry["logged_at"].astimezone(zoneinfo.ZoneInfo(u["tz"]))
+    age_min = (dt.datetime.now(dt.timezone.utc) - entry["logged_at"]).total_seconds() / 60
+    label = (
+        f"<b>{escape(entry['name'])}</b> — {float(entry['kcal']):,.0f} kcal, "
+        f"logged {local:%H:%M}"
     )
+
+    if age_min <= UNDO_ASK_AFTER_MIN:
+        await _do_undo(msg, u, entry["id"], label, day)
+        return
+
     await msg.answer(
-        f"↩️ <b>Unlogged</b> — {escape(entry['name'])}"
-        + (f" ({float(kcal):,.0f} kcal)" if kcal else "")
-        + "\n\nIt is marked discarded, not deleted, so it counts towards nothing.",
+        f"↩️ The last thing logged today is {label} — "
+        f"{int(age_min // 60)}h {int(age_min % 60)}m ago. Undo that?",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="↩️ undo it", callback_data=f"undook:{entry['id']}"),
+            InlineKeyboardButton(text="✕ keep it", callback_data=f"undono:{entry['id']}"),
+        ]]),
+    )
+
+
+# Beyond this, /undo asks rather than acts.
+UNDO_ASK_AFTER_MIN = 60
+
+
+async def _do_undo(msg: Message, u: Any, entry_id: int, label: str, day: dt.date) -> None:
+    entry = await db.undo_entry(u["id"], entry_id)
+    if not entry:
+        await msg.answer("That was already undone.")
+        return
+    await msg.answer(
+        f"↩️ <b>Unlogged</b> — {label}\n\n"
+        "Marked discarded, not deleted, so it counts towards nothing.",
         parse_mode="HTML",
     )
     await _send_day(msg, u, day)
+
+
+@dp.callback_query(F.data.startswith("undook:"))
+async def cb_undo_ok(cq: CallbackQuery) -> None:
+    entry_id = int(cq.data.split(":")[1])
+    u = await db.get_or_create_user(cq.from_user.id)
+    await cq.answer("undone")
+    await cq.message.edit_text((cq.message.text or "") + "\n\n↩️ undone")
+    await _do_undo(cq.message, u, entry_id, "that entry", _today(u))
+
+
+@dp.callback_query(F.data.startswith("undono:"))
+async def cb_undo_no(cq: CallbackQuery) -> None:
+    await cq.answer("kept")
+    await cq.message.edit_text((cq.message.text or "") + "\n\n✕ kept")
 
 
 @dp.message(Command("audit"))
