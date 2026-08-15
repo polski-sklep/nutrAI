@@ -88,19 +88,29 @@ class StubLLM:
         if name == "record_meal":
             data = self.meal
         elif name == "choose_food":
-            # Take the head of the candidate list, which is what a
+            # Takes the head of the candidate list, which is what a
             # correctly-behaving Haiku does when the list is ranked best-first.
-            # This is also why db.search_foods must rank by relevance: a stub
-            # this obedient logs whatever the resolver put in position one.
+            # This is why db.search_foods must rank by relevance: a stub this
+            # obedient logs whatever the resolver put in position one.
+            #
+            # It also echoes the *whole* prompt line back as `label`, because
+            # that is what the real model does — "pickle (dill gherkin) (logged
+            # as as_sold, 45 g)". The old stub helpfully trimmed at the first
+            # bracket, which made a label-keyed lookup look like it worked while
+            # in production it matched nothing and discarded every correct
+            # answer this tier produced. A stub better behaved than the thing it
+            # stands in for tests nothing.
             data = {"choices": []}
             for line in content[0]["text"].splitlines():
-                if line.strip().startswith("- label:"):
-                    label = line.split("- label:")[1].split("(")[0].strip()
-                    self.pending_labels.append(label)
-                elif line.strip().startswith("candidates:") and self.pending_labels:
-                    first = line.split("candidates:")[1].split("|")[0].strip()
+                stripped = line.strip()
+                if re.match(r"^\[\d+\]", stripped):
+                    self.pending_labels.append(stripped)
+                elif stripped.startswith("candidates:") and self.pending_labels:
+                    echoed = self.pending_labels.pop(0)
+                    first = stripped.split("candidates:")[1].split("|")[0].strip()
                     data["choices"].append({
-                        "label": self.pending_labels.pop(0),
+                        "index": int(re.match(r"^\[(\d+)\]", echoed).group(1)),
+                        "label": echoed.split("]", 1)[1].strip(),
                         "fdc_id": int(first.split(":")[0]),
                         "yield_factor": 1.0,
                         "confidence": 0.8,

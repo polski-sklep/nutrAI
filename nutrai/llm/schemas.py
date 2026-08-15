@@ -95,6 +95,12 @@ DISAMBIGUATE_TOOL = {
                 "items": {
                     "type": "object",
                     "properties": {
+                        # Results are matched back by index, not by label. The
+                        # label is free text the model re-types, and it reliably
+                        # echoes more of the prompt line than just the name —
+                        # "pickle (dill gherkin) (logged as as_sold, 45 g)" —
+                        # which silently loses a correct match on lookup.
+                        "index": {"type": "integer", "description": "The [n] of the item this choice is for."},
                         "label": {"type": "string"},
                         "fdc_id": {"type": "integer", "description": "Chosen candidate's fdc_id, or 0 if none is acceptable."},
                         "yield_factor": {
@@ -103,7 +109,7 @@ DISAMBIGUATE_TOOL = {
                         },
                         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                     },
-                    "required": ["label", "fdc_id", "yield_factor", "confidence"],
+                    "required": ["index", "label", "fdc_id", "yield_factor", "confidence"],
                 },
             }
         },
@@ -113,7 +119,14 @@ DISAMBIGUATE_TOOL = {
 
 DISAMBIGUATE_SYSTEM = """You map ingredient names to rows in USDA FoodData Central.
 
-Prefer Foundation and SR Legacy rows over Branded rows unless a specific brand was named. Prefer the row whose preparation state matches the logged state; when it does not match, set yield_factor to convert. Return fdc_id 0 rather than forcing a bad match — a wrong row is worse than a missing one, because a wrong row is silently counted forever."""
+Each item is numbered [1], [2], .... Return the matching `index` for every item you were given.
+
+Prefer Foundation and SR Legacy rows over Branded rows unless a specific brand was named. Prefer the row whose preparation state matches the logged state; when it does not match, set yield_factor to convert.
+
+Choosing nothing is not the safe option. An unmatched ingredient is dropped from the meal entirely and contributes zero of every nutrient — a 100% error on that item, invisible in the total. A near neighbour of the same food is usually a few percent out. So:
+
+- Match when a candidate is the same food in a different variety, cut, brand or preparation. "Salami, Italian, pork and beef" is a match for Italian salami. "Pickles, cucumber, dill or kosher dill" is a match for a dill gherkin. Set confidence to reflect the distance — 0.6 for a near neighbour is honest and useful.
+- Return fdc_id 0 only when no candidate is the same food at all, or when the candidates are so different that a wrong nutrient profile would be worse than nothing. A cut of beef offered for a slice of bread is a refusal; a different fat percentage of the same mince is not."""
 
 MODIFIER_TOOL = {
     "name": "modify_dish",

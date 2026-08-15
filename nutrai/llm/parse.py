@@ -163,6 +163,37 @@ async def _mass_for(user_id: int, fdc_id: int, it: dict[str, Any]) -> MassEstima
     return choose_mass(grams, source, low=low, high=high, history=history)
 
 
+async def _candidates(it: dict[str, Any], label: str) -> list[Any]:
+    """Search on the model's `search_terms` *and* on the user's own label.
+
+    Trigram similarity punishes a descriptive query. `PARSE_SYSTEM` asks for "a
+    precise USDA-style phrase", so the model writes several clauses, and every
+    clause the target row happens to lack drags the score down — the better the
+    description, the worse it scores. Measured on a real meal:
+
+        salami, Italian, organic, sliced  -> Salami, Italian, pork and beef  0.34
+        Italian salami slices             -> Salami, Italian, pork           0.58
+
+    Same food, same database, and only the short query is anywhere near the
+    auto-match threshold. Both are asked, the union is ranked by the best score
+    either achieved, and the threshold itself is untouched — it is eval-set
+    work, not something to tune against one plate.
+    """
+    queries = [q for q in (str(it.get("search_terms") or "").strip(), label.strip()) if q]
+    pooled: dict[int, Any] = {}
+    for q in dict.fromkeys(queries):
+        for c in await db.search_foods(q, limit=5):
+            best = pooled.get(c["fdc_id"])
+            if best is None or float(c["sim"] or 0) > float(best["sim"] or 0):
+                pooled[c["fdc_id"]] = c
+    # Rank by similarity, precedence breaking ties — the same order
+    # db.search_foods uses, applied across the pooled result.
+    return sorted(
+        pooled.values(),
+        key=lambda c: (-float(c["sim"] or 0), int(c["precedence"] or 9)),
+    )[:5]
+
+
 async def resolve_items(user_id: int, items: list[dict[str, Any]]) -> Resolution:
     """Ingredient names to USDA rows.
 
@@ -200,8 +231,7 @@ async def resolve_items(user_id: int, items: list[dict[str, Any]]) -> Resolution
             await _accept(label, alias["fdc_id"], it)
             continue
 
-        query = str(it.get("search_terms") or label)
-        cands = await db.search_foods(query, limit=5)
+        cands = await _candidates(it, label)
         if cands and float(cands[0]["sim"] or 0) >= AUTO_MATCH_SIMILARITY:
             await _accept(label, cands[0]["fdc_id"], it)
             await db.upsert_alias(user_id, label, cands[0]["fdc_id"], float(it.get("grams", 0) or 0))
@@ -213,13 +243,13 @@ async def resolve_items(user_id: int, items: list[dict[str, Any]]) -> Resolution
 
     if need_model:
         lines = []
-        for it, cands in need_model:
+        for n, (it, cands) in enumerate(need_model, 1):
             opts = " | ".join(
                 f"{c['fdc_id']}: {c['description']} [{c['data_type']}]" for c in cands
             )
             lines.append(
-                f"- label: {it.get('label')} (logged as {it.get('state','unknown')}, "
-                f"{it.get('grams')} g)\n  candidates: {opts}"
+                f"[{n}] {it.get('label')} — logged as {it.get('state','unknown')}, "
+                f"{it.get('grams')} g\n  candidates: {opts}"
             )
         res = await call_tool(
             model=MODEL_CHEAP,
@@ -230,10 +260,18 @@ async def resolve_items(user_id: int, items: list[dict[str, Any]]) -> Resolution
         )
         await _log(res, "disambiguate", user_id)
         cost += res.cost_usd
-        by_label = {str(c.get("label", "")).lower(): c for c in res.data.get("choices", [])}
-        for it, _cands in need_model:
+        # Matched by index. Matching by label looked reasonable and silently
+        # threw away every correct answer this tier produced: the model echoes
+        # the prompt line rather than the bare name, so the exact-string lookup
+        # never hit and a confident, correct match ("Salami, Italian, pork",
+        # confidence 0.9) was recorded as unresolved. The label is kept only as
+        # a fallback for a response that omits the index.
+        choices = list(res.data.get("choices", []))
+        by_index = {int(c["index"]): c for c in choices if c.get("index") is not None}
+        by_label = {str(c.get("label", "")).lower(): c for c in choices}
+        for n, (it, _cands) in enumerate(need_model, 1):
             label = str(it.get("label", ""))
-            pick = by_label.get(label.lower())
+            pick = by_index.get(n) or by_label.get(label.lower())
             if not pick or not pick.get("fdc_id"):
                 unresolved.append(label)
                 continue
