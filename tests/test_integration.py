@@ -345,9 +345,11 @@ def test_repeat_is_zero_token(harness):
 
         assert len(harness.llm.calls) == calls_before, "the repeat path called a model"
         # An unmodified repeat of a confirmed dish logs immediately, no button.
-        # Threshold notifications fire straight after the write, so the ✓ line
+        # Threshold notifications fire straight after the write, so the summary
         # is not necessarily the last thing on screen.
-        confirmation = next((s for s in harness.sent.sent if s.text.startswith("✓")), None)
+        confirmation = next(
+            (s for s in harness.sent.sent if s.text.startswith("✅ <b>Logged</b>")), None
+        )
         assert confirmation, harness.sent.texts()
         assert not confirmation.buttons
 
@@ -361,6 +363,95 @@ def test_repeat_is_zero_token(harness):
             CHAT_ID,
         )
         assert n == 2
+
+    run(scenario())
+
+
+def test_a_discarded_dish_cannot_be_repeated_without_a_gate(harness):
+    """Invariant 5. `_present` upserts the dish before the entry exists, so a
+    meal you look at and discard still leaves a repeatable dish behind. That
+    dish has never been through a human, and repeating it must not log."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        await harness.feed("250 g minced beef, 164 g rice, a splash of olive oil")
+        card = harness.sent.last()
+        await harness.press(f"no:{_confirm_id(card)}", card.message_id)
+
+        p = await db.pool()
+        assert await p.fetchval(
+            "SELECT count(*) FROM dish WHERE user_id=$1", uid
+        ) == 1, "discarding should still leave the dish for later"
+
+        await harness.feed("/r")
+        harness.sent.clear()
+        await harness.feed("1")
+
+        # It must offer a confirm gate, not log.
+        gated = harness.sent.last()
+        assert [b for b in gated.buttons if b.startswith("ok:")], gated.text
+        assert "never been confirmed" in gated.text
+        assert await p.fetchval(
+            "SELECT count(*) FROM log_entry WHERE user_id=$1 AND status='confirmed'", uid
+        ) == 0, "a never-confirmed dish was logged with no gate"
+
+        # Confirm it once, and the repeat becomes instant from then on.
+        await harness.press(f"ok:{_confirm_id(gated)}", gated.message_id)
+        harness.sent.clear()
+        await harness.feed("1")
+        assert not harness.sent.last().buttons
+        assert await p.fetchval(
+            "SELECT count(*) FROM log_entry WHERE user_id=$1 AND status='confirmed'", uid
+        ) == 2
+
+    run(scenario())
+
+
+def test_every_logging_path_reports_progress(harness):
+    """The post-log summary must follow a zero-token repeat too, not just ✓."""
+
+    async def scenario():
+        await _reset()
+        await harness.feed("250 g minced beef, 164 g rice, a splash of olive oil")
+        card = harness.sent.last()
+        await harness.press(f"ok:{_confirm_id(card)}", card.message_id)
+        assert any("Today so far" in s.text for s in harness.sent.sent)
+
+        await harness.feed("/r")
+        harness.sent.clear()
+        await harness.feed("1")
+        assert any("Today so far" in s.text for s in harness.sent.sent), harness.sent.texts()
+        assert any("Still to go today" in s.text for s in harness.sent.sent)
+
+    run(scenario())
+
+
+def test_escalation_cost_is_not_under_reported(harness):
+    """The card used to show only the winning call's cost, hiding the escalation."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai.config import CONFIDENCE_ESCALATE
+        from nutrai import db
+        from nutrai.bot import dp
+
+        harness.llm.meal = dict(MEAL, overall_confidence=CONFIDENCE_ESCALATE - 0.2)
+        await dp.feed_update(harness.tg.bot, harness.tg.photo_update(_jpeg()))
+
+        p = await db.pool()
+        billed = float(
+            await p.fetchval(
+                "SELECT sum(cost_usd) FROM llm_call WHERE user_id=$1 AND purpose LIKE 'photo_parse%'",
+                uid,
+            )
+        )
+        # Two calls at the stub's 0.0038 each.
+        assert billed == pytest.approx(0.0076)
+        shown = harness.sent.last().text
+        # 0.76 cents, not 0.38.
+        assert "0.76¢" in shown, shown
 
     run(scenario())
 

@@ -98,6 +98,13 @@ async def parse_photo(
     )
     await _log(res, "photo_parse", user_id)
 
+    # Cost is accumulated across both calls, not taken from whichever won.
+    # `_to_meal` reads it off a single ToolResult, so an escalation that lost
+    # was billed and then not shown: a card read 1.47p for a parse that actually
+    # cost 5.63p. /spend was right the whole time, because llm_call records
+    # every request — but the two disagreeing is worse than either being wrong,
+    # since the card is the number you see six times a day.
+    spent = res.cost_usd
     conf = float(res.data.get("overall_confidence", 0) or 0)
     if escalate and conf < CONFIDENCE_ESCALATE:
         res2 = await call_tool(
@@ -107,10 +114,13 @@ async def parse_photo(
             content=content,
         )
         await _log(res2, "photo_parse_escalated", user_id)
+        spent += res2.cost_usd
         if float(res2.data.get("overall_confidence", 0) or 0) > conf:
             res = res2
 
-    return _to_meal(res)
+    meal = _to_meal(res)
+    meal.cost_usd = spent
+    return meal
 
 
 async def parse_text(text: str, *, user_id: int) -> ParsedMeal:

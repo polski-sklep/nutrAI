@@ -553,19 +553,37 @@ async def _try_repeat(msg: Message, u: Any, cmd: dsl.RepeatCommand) -> bool:
 
     # An unmodified repeat of a dish you have confirmed before is not a claim
     # about the world that needs re-checking. It logs immediately.
-    if not ops and not cmd.needs_model:
+    #
+    # "Confirmed before" is the load-bearing half, and it was missing.
+    # `_present` upserts the dish before the entry exists, so a meal you look at
+    # and *discard* still leaves a repeatable dish behind. Discarding a photo
+    # and then sending `1` logged 947 kcal with no gate at all — the exact thing
+    # invariant 5 forbids. times_logged only increments in confirm_entry, so a
+    # dish at zero has never been through a human, and its repeat goes through
+    # the gate like any other new claim.
+    never_confirmed = int(dish["times_logged"] or 0) == 0
+    if not ops and not cmd.needs_model and not never_confirmed:
         totals = await db.confirm_entry(entry_id)
         await msg.answer(
-            f"✓ {dish['name']} — {totals.get(1008,0):,.0f} kcal, "
-            f"{totals.get(1003,0):.0f} g protein",
+            render.logged_card(
+                dish["name"], totals, await db.day_progress(u["id"], _today(u))
+            ),
+            parse_mode="HTML",
         )
         await _check_thresholds(msg, u)
         return True
 
     profs = await db.profiles_for([c.fdc_id for c in resolved])
     totals = total_nutrients(resolved, profs)
+    warnings = (
+        ["this dish has never been confirmed — check it once and repeats are instant"]
+        if never_confirmed
+        else []
+    )
     await msg.answer(
-        render.confirm_card(dish["name"], new_comps, totals, confidence=None, warnings=[]),
+        render.confirm_card(
+            dish["name"], new_comps, totals, confidence=None, warnings=warnings
+        ),
         parse_mode="HTML",
         reply_markup=kb_confirm(entry_id),
     )
