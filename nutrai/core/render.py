@@ -516,12 +516,22 @@ def supplement_batch_card(parsed: Sequence[Any], names: dict, units: dict) -> st
     lines = [f"💊 <b>{len(parsed)} product(s) read</b>", ""]
     for sup in parsed:
         if not sup["nutrients"]:
-            lines.append(f"⬜️ <b>{_esc(sup['name'])}</b> — nothing I track; not saved")
+            lines.append(
+                f"◽️ <b>{_esc(sup['name'])}</b> — saved, but nothing here maps to "
+                f"a tracked nutrient"
+            )
             if sup.get("not_tracked"):
                 lines.append(f"     <i>{_esc(sup['not_tracked'])}</i>")
             lines.append("")
             continue
-        lines.append(f"✅ <b>{_esc(sup['name'])}</b> — per {_esc(sup['serving_desc'])}")
+        cadence = {"alternate": " · every other day", "occasional": " · occasional"}.get(
+            sup.get("schedule", "daily"), ""
+        )
+        dose = float(sup.get("servings_per_day", 1) or 1)
+        taken = f"{dose:g} × {sup['serving_desc']}" if dose != 1 else sup["serving_desc"]
+        lines.append(f"✅ <b>{_esc(sup['name'])}</b> — {_esc(taken)}{cadence}")
+        if sup.get("note"):
+            lines.append(f"     <i>{_esc(sup['note'])}</i>")
         for c in sup["_kept"]:
             lines.append(
                 f"     • {_esc(names.get(c.nutrient_id, str(c.nutrient_id)))} — "

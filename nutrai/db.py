@@ -711,7 +711,7 @@ async def upsert_supplement(
     user_id: int, name: str, nutrients: list[tuple[int, float]], *,
     brand: str | None = None, serving_desc: str = "1 serving",
     servings_per_day: float = 1.0, photo_file_id: str | None = None,
-    source: str = "label_photo",
+    source: str = "label_photo", schedule: str = "daily", note: str | None = None,
 ) -> int:
     """Create or replace one supplement and its whole panel.
 
@@ -724,19 +724,21 @@ async def upsert_supplement(
         sup_id = await con.fetchval(
             """INSERT INTO supplement
                  (user_id, name, brand, serving_desc, servings_per_day,
-                  photo_file_id, source, verified_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7, now())
+                  photo_file_id, source, schedule, note, verified_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, now())
                ON CONFLICT (user_id, name) DO UPDATE
                  SET brand = EXCLUDED.brand,
                      serving_desc = EXCLUDED.serving_desc,
                      servings_per_day = EXCLUDED.servings_per_day,
                      photo_file_id = EXCLUDED.photo_file_id,
                      source = EXCLUDED.source,
+                     schedule = EXCLUDED.schedule,
+                     note = COALESCE(EXCLUDED.note, supplement.note),
                      verified_at = now(),
                      active = true
                RETURNING id""",
             user_id, name.strip(), brand, serving_desc, servings_per_day,
-            photo_file_id, source,
+            photo_file_id, source, schedule, note,
         )
         await con.execute("DELETE FROM supplement_nutrient WHERE supplement_id = $1", sup_id)
         await con.executemany(
@@ -800,3 +802,31 @@ async def unlog_supplements(user_id: int, day: dt.date) -> int:
             "DELETE FROM supplement_log WHERE user_id = $1 AND local_date = $2", user_id, day
         )).split()[-1]
     )
+
+
+async def supplements_due(user_id: int, day: dt.date) -> list[int]:
+    """Which of the stack to pre-tick for a day.
+
+    daily      always · alternate  only if it was not taken yesterday ·
+    occasional never, because "occasional" pre-ticked every day is just daily
+    with extra steps.
+
+    Pre-ticking everything trains you to untick, and the day you forget is the
+    day an untaken capsule lands in your totals.
+    """
+    p = await pool()
+    rows = await p.fetch(
+        """SELECT s.id, s.schedule,
+                  EXISTS (SELECT 1 FROM supplement_log l
+                           WHERE l.supplement_id = s.id AND l.local_date = $2::date - 1) AS took_yesterday
+             FROM supplement s
+            WHERE s.user_id = $1 AND s.active""",
+        user_id, day,
+    )
+    due = []
+    for r in rows:
+        if r["schedule"] == "daily":
+            due.append(r["id"])
+        elif r["schedule"] == "alternate" and not r["took_yesterday"]:
+            due.append(r["id"])
+    return due

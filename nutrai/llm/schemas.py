@@ -260,6 +260,15 @@ SUPPLEMENT_TOOL = {
                                 "required": ["nutrient_id", "printed_label", "amount", "unit"],
                             },
                         },
+                        "schedule": {
+                            "type": "string",
+                            "enum": ["daily", "alternate", "occasional"],
+                            "description": "How often it is taken. 'alternate' for every other day. Default 'daily' if the source does not say.",
+                        },
+                        "note": {
+                            "type": "string",
+                            "description": "Anything about how it is actually taken that the panel does not say: 'with the largest fat-containing meal', 'before sleep', a dose that differs from the label serving.",
+                        },
                         "not_tracked": {
                             "type": "string",
                             "description": "Actives with no nutrient id — ashwagandha, CoQ10, collagen, curcumin, alpha-GPC. Name them so the user can see they were read and deliberately not counted.",
@@ -285,4 +294,6 @@ This is transcription, not estimation. The difference matters more here than any
 5. Amounts are per serving as the panel states them, not per daily dose, unless the panel only gives a daily dose — in which case set serving_desc to that dose.
 6. Where a line gives both a compound weight and an elemental weight — "82 mg zinc gluconate, of which 10 mg elemental zinc", "1667 mg magnesium bisglycinate providing 350 mg elemental magnesium" — record the elemental figure. That is what the body receives and what a nutrient target is expressed in; the compound weight is several times larger and recording it would overstate the dose by that factor.
 7. Many supplement actives have no nutrient id here: ashwagandha, CoQ10, collagen, curcumin, alpha-GPC, piperine, hyaluronic acid. Name them in `not_tracked` rather than omitting them silently, so the user can see they were read and deliberately not counted.
-8. The source may be a photograph of one packet or a written description of several products. Return one entry per distinct product either way."""
+8. The source may be a photograph of one packet or a written description of several products. Return one entry per distinct product either way.
+9. The dose someone takes is not always the label's serving. "Magnesium 175 mg, 1 capsule" against a panel stating 350 mg per 2-capsule serving means half a serving: set servings_per_day to 0.5 and leave the per-serving amounts as printed. Getting this backwards doubles the recorded dose every day.
+10. Record cadence where the source gives it. "Zinc 22 mg, every other day" is schedule 'alternate', not 'daily'. Assuming daily overstates a nutrient by half, permanently, and nothing downstream can detect it."""

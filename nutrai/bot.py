@@ -370,15 +370,13 @@ async def supp(msg: Message) -> None:
         await msg.answer(f"Cleared {n} supplement record(s) for today.")
         return
 
-    # Ask rather than assume. Yesterday's set is the default because a stack is
-    # a habit, not a rule — and the day you skip one is exactly the day an
-    # assumed log puts a number in your totals that never went in your mouth.
-    yesterday = {
-        r["name"] for r in await db.supplements_logged_on(u["id"], day - dt.timedelta(days=1))
-    }
-    today_logged = {r["name"] for r in await db.supplements_logged_on(u["id"], day)}
-    default = today_logged or yesterday or {s["name"] for s in stack}
-    selected = [s["id"] for s in stack if s["name"] in default]
+    # Ask rather than assume, and pre-tick by each supplement's own cadence:
+    # daily always, alternate only when yesterday was a rest day, occasional
+    # never. Anything already logged today stays ticked.
+    today_names = {r["name"] for r in await db.supplements_logged_on(u["id"], day)}
+    selected = [s["id"] for s in stack if s["name"] in today_names]
+    if not selected:
+        selected = await db.supplements_due(u["id"], day)
 
     action_id = await db.put_pending(u["id"], "supp_pick", {
         "selected": selected, "day": day.isoformat(),
@@ -1117,25 +1115,25 @@ async def _handle_supplement_label(
             "brand": sup.get("brand"),
             "serving_desc": sup.get("serving_desc") or "1 serving",
             "servings_per_day": float(sup.get("servings_per_day") or 1),
+            "schedule": sup.get("schedule") or "daily",
+            "note": sup.get("note") or "",
             "not_tracked": sup.get("not_tracked") or "",
             "nutrients": [[c.nutrient_id, c.amount] for c in kept],
             "_kept": kept,
             "_dropped": dropped,
         })
 
-    if not any(pp["nutrients"] for pp in parsed):
+    if not parsed:
         await db.clear_pending(u["id"], "supp_label")
-        await note.edit_text(
-            "I could not read any nutrient lines I track from that. Supplements "
-            "whose actives are all untracked — ashwagandha, CoQ10, collagen — "
-            "have nothing for me to count against a target.",
-        )
+        await note.edit_text("I could not find a supplement in that.")
         return
 
     action_id = await db.put_pending(u["id"], "supp_confirm", {
+        # Every product, including those with nothing trackable. They are part
+        # of the stack, you want to record having taken them, and a nutrient id
+        # may exist for one of them later — boron does not have one today.
         "supplements": [
-            {k: v for k, v in pp.items() if not k.startswith("_")}
-            for pp in parsed if pp["nutrients"]
+            {k: v for k, v in pp.items() if not k.startswith("_")} for pp in parsed
         ],
         "photo_file_id": photo_id,
     })
@@ -1171,6 +1169,8 @@ async def cb_supp_ok(cq: CallbackQuery) -> None:
             brand=sup.get("brand"),
             serving_desc=sup["serving_desc"],
             servings_per_day=sup["servings_per_day"],
+            schedule=sup.get("schedule", "daily"),
+            note=sup.get("note") or None,
             photo_file_id=payload.get("photo_file_id"),
         )
         saved.append(sup["name"])
