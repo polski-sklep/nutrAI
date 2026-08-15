@@ -603,6 +603,43 @@ async def take_pending(action_id: int) -> dict | None:
     return json.loads(row["payload"]) if row else None
 
 
+async def clear_pending(user_id: int, kind: str) -> None:
+    """Consume every outstanding action of a kind.
+
+    A pending action that is read but never cleared turns into a mode: the next
+    message, and every message after it, gets treated as a correction to a card
+    from an hour ago."""
+    p = await pool()
+    await p.execute("DELETE FROM pending_action WHERE user_id = $1 AND kind = $2", user_id, kind)
+
+
+async def replace_components(entry_id: int, components: list[ResolvedComponent],
+                             grams_sources: list[str] | None = None) -> None:
+    """Swap an entry's components. Only legal while it is still pending."""
+    p = await pool()
+    async with p.acquire() as con, con.transaction():
+        status = await con.fetchval(
+            "SELECT status FROM log_entry WHERE id = $1 FOR UPDATE", entry_id
+        )
+        if status != "pending":
+            raise ValueError(f"entry {entry_id} is {status}, not pending")
+        await con.execute("DELETE FROM log_component WHERE entry_id = $1", entry_id)
+        await con.executemany(
+            """INSERT INTO log_component
+                 (entry_id, position, fdc_id, label, grams, yield_factor,
+                  grams_source, grams_sigma)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8)""",
+            [(entry_id, i, c.fdc_id, c.label, c.grams, c.yield_factor,
+              (grams_sources[i] if grams_sources and i < len(grams_sources) else c.grams_source),
+              c.sigma)
+             for i, c in enumerate(components)],
+        )
+        await con.execute(
+            "UPDATE log_entry SET total_grams = $2 WHERE id = $1",
+            entry_id, sum(c.grams for c in components),
+        )
+
+
 async def latest_pending(user_id: int, kind: str) -> dict | None:
     p = await pool()
     row = await p.fetchrow(

@@ -764,6 +764,134 @@ def test_insight_refuses_until_the_weight_span_is_long_enough(harness):
     run(scenario())
 
 
+def test_the_fix_button_actually_corrects_the_entry(harness):
+    """✎ used to print instructions and ignore the reply.
+
+    Nothing consumed the fix_entry action, so the correction fell through to the
+    text parser, cost a Sonnet call, and logged a *second* meal beside the one
+    being corrected. Inert would have been an improvement.
+    """
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        await harness.feed("250 g minced beef, 164 g rice, a splash of olive oil")
+        card = harness.sent.last()
+        entry_id = _confirm_id(card)
+
+        await harness.press(f"fix:{entry_id}", card.message_id)
+        calls_before = len(harness.llm.calls)
+
+        harness.sent.clear()
+        await harness.feed("rice 200")
+
+        # No new meal, no model call, same entry.
+        assert len(harness.llm.calls) == calls_before, "a correction cost a parse"
+        p = await db.pool()
+        assert await p.fetchval(
+            "SELECT count(*) FROM log_entry WHERE user_id=$1", uid
+        ) == 1, "the correction created a second entry"
+
+        grams = await p.fetchval(
+            "SELECT grams FROM log_component WHERE entry_id=$1 AND label='rice'", entry_id
+        )
+        assert float(grams) == pytest.approx(200.0)
+        assert await p.fetchval(
+            "SELECT status FROM log_entry WHERE id=$1", entry_id
+        ) == "pending"
+
+        # A fresh card comes back, still confirmable.
+        assert _confirm_id(harness.sent.last()) == entry_id
+
+        # The action is consumed: the next message is a normal message again.
+        harness.sent.clear()
+        await harness.feed("oil 30")
+        assert await p.fetchval(
+            "SELECT grams FROM log_component WHERE entry_id=$1 AND label='olive oil'",
+            entry_id,
+        ) == 15, "a second correction applied with no ✎ pressed"
+
+    run(scenario())
+
+
+def test_fix_can_drop_a_component(harness):
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        await harness.feed("250 g minced beef, 164 g rice, a splash of olive oil")
+        card = harness.sent.last()
+        entry_id = _confirm_id(card)
+        await harness.press(f"fix:{entry_id}", card.message_id)
+
+        await harness.feed("-oil")
+        p = await db.pool()
+        labels = [
+            r["label"]
+            for r in await p.fetch(
+                "SELECT label FROM log_component WHERE entry_id=$1", entry_id
+            )
+        ]
+        assert "olive oil" not in labels
+        assert "minced beef" in labels
+
+    run(scenario())
+
+
+def test_fix_on_an_already_confirmed_entry_does_not_log_a_second_meal(harness):
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        await harness.feed("250 g minced beef, 164 g rice, a splash of olive oil")
+        card = harness.sent.last()
+        entry_id = _confirm_id(card)
+        await harness.press(f"fix:{entry_id}", card.message_id)
+        # Confirm it before replying to the fix prompt.
+        await harness.press(f"ok:{entry_id}", card.message_id)
+
+        calls_before = len(harness.llm.calls)
+        harness.sent.clear()
+        await harness.feed("rice 200")
+
+        assert "already dealt with" in harness.sent.last().text
+        assert len(harness.llm.calls) == calls_before
+        p = await db.pool()
+        assert await p.fetchval(
+            "SELECT count(*) FROM log_entry WHERE user_id=$1", uid
+        ) == 1
+
+    run(scenario())
+
+
+def test_an_unreadable_correction_keeps_the_fix_open(harness):
+    async def scenario():
+        await _reset()
+        await harness.feed("250 g minced beef, 164 g rice, a splash of olive oil")
+        card = harness.sent.last()
+        entry_id = _confirm_id(card)
+        await harness.press(f"fix:{entry_id}", card.message_id)
+
+        harness.sent.clear()
+        await harness.feed("hmm actually not sure")
+        assert "could not read that as a correction" in harness.sent.last().text
+
+        # Still in fix mode, so a proper correction lands.
+        await harness.feed("rice 200")
+        from nutrai import db
+
+        p = await db.pool()
+        assert float(
+            await p.fetchval(
+                "SELECT grams FROM log_component WHERE entry_id=$1 AND label='rice'",
+                entry_id,
+            )
+        ) == pytest.approx(200.0)
+
+    run(scenario())
+
+
 def test_llm_calls_are_priced_and_recorded(harness):
     async def scenario():
         uid = await _reset()

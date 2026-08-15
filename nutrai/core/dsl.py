@@ -136,19 +136,38 @@ def parse(text: str) -> RepeatCommand | None:
     else:
         return None
 
-    i = 1
+    cmd.ops, cmd.unparsed = parse_ops(toks[1:])
+    return cmd
+
+
+def parse_ops(toks: list[str]) -> tuple[list[Op], list[str]]:
+    """The operator grammar on its own, with no selector in front of it.
+
+    `parse` is "which dish, then what changed". A correction to a card already
+    on screen is only the second half — the dish is already known — and
+    `rice 200` would otherwise parse as dish "rice" scaled to a 200 g total,
+    which is a different and silently wrong instruction.
+
+    Shared rather than reimplemented so the two can never drift: there is one
+    grammar, and `3 -onion +50 rice` and `-onion +50 rice` mean the same thing
+    by construction.
+    """
+    ops: list[Op] = []
+    unparsed: list[str] = []
+
+    i = 0
     seen_bare_number = False
     while i < len(toks):
         tok = toks[i]
         low = tok.lower()
 
         if m := RE_SCALE.match(tok):
-            cmd.ops.append(Scale(_f(m.group(1))))
+            ops.append(Scale(_f(m.group(1))))
             i += 1
             continue
 
         if low in WORD_SCALE:
-            cmd.ops.append(Scale(WORD_SCALE[low]))
+            ops.append(Scale(WORD_SCALE[low]))
             i += 1
             continue
 
@@ -156,32 +175,32 @@ def parse(text: str) -> RepeatCommand | None:
             hh = int(m.group(1))
             mm = int(m.group(2) or 0)
             if 0 <= hh < 24 and 0 <= mm < 60:
-                cmd.ops.append(SetTime(hh, mm))
+                ops.append(SetTime(hh, mm))
             else:
-                cmd.unparsed.append(tok)
+                unparsed.append(tok)
             i += 1
             continue
 
         if m := RE_SLOT.match(tok):
-            cmd.ops.append(SetSlot(m.group(1).lower()))
+            ops.append(SetSlot(m.group(1).lower()))
             i += 1
             continue
 
         # "no onion" / "without onion"
         if low in ("no", "without", "minus", "skip") and i + 1 < len(toks):
-            cmd.ops.append(DropComponent(toks[i + 1].lower()))
+            ops.append(DropComponent(toks[i + 1].lower()))
             i += 2
             continue
 
         # "-onion"
         if m := RE_DROP.match(tok):
-            cmd.ops.append(DropComponent(m.group(1).lower()))
+            ops.append(DropComponent(m.group(1).lower()))
             i += 1
             continue
 
         # "-" "onion"
         if tok in ("-", "–", "—") and i + 1 < len(toks):
-            cmd.ops.append(DropComponent(toks[i + 1].lower()))
+            ops.append(DropComponent(toks[i + 1].lower()))
             i += 2
             continue
 
@@ -189,10 +208,10 @@ def parse(text: str) -> RepeatCommand | None:
         if m := RE_ADD_QTY.match(tok):
             grams = _f(m.group(1))
             if i + 1 < len(toks) and not _is_op_token(toks[i + 1]):
-                cmd.ops.append(AddComponent(toks[i + 1].lower(), grams))
+                ops.append(AddComponent(toks[i + 1].lower(), grams))
                 i += 2
             else:
-                cmd.unparsed.append(tok)
+                unparsed.append(tok)
                 i += 1
             continue
 
@@ -200,42 +219,42 @@ def parse(text: str) -> RepeatCommand | None:
         if tok.startswith("+") and len(tok) > 1:
             m2 = RE_ADD_LABEL.match(tok)
             assert m2
-            cmd.ops.append(AddComponent(m2.group(1).lower(), None))
+            ops.append(AddComponent(m2.group(1).lower(), None))
             i += 1
             continue
 
         # "+" "50" "rice"  or  "+" "rice"
         if tok == "+" and i + 1 < len(toks):
             if RE_QTY.match(toks[i + 1]) and i + 2 < len(toks):
-                cmd.ops.append(
+                ops.append(
                     AddComponent(toks[i + 2].lower(), _f(RE_QTY.match(toks[i + 1]).group(1)))
                 )
                 i += 3
             else:
-                cmd.ops.append(AddComponent(toks[i + 1].lower(), None))
+                ops.append(AddComponent(toks[i + 1].lower(), None))
                 i += 2
             continue
 
         # bare quantity: first one is the whole-dish target weight
         if m := RE_QTY.match(tok):
             if not seen_bare_number:
-                cmd.ops.append(TotalGrams(_f(m.group(1))))
+                ops.append(TotalGrams(_f(m.group(1))))
                 seen_bare_number = True
             else:
-                cmd.unparsed.append(tok)
+                unparsed.append(tok)
             i += 1
             continue
 
         # "rice 200"
         if i + 1 < len(toks) and (m := RE_QTY.match(toks[i + 1])):
-            cmd.ops.append(SetComponent(low, _f(m.group(1))))
+            ops.append(SetComponent(low, _f(m.group(1))))
             i += 2
             continue
 
-        cmd.unparsed.append(tok)
+        unparsed.append(tok)
         i += 1
 
-    return cmd
+    return ops, unparsed
 
 
 def _is_op_token(tok: str) -> bool:

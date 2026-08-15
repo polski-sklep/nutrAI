@@ -453,6 +453,13 @@ async def on_text(msg: Message) -> None:
     u = await _user(msg)
     text = (msg.text or "").strip()
 
+    # A correction to a card you just pressed ✎ on takes precedence over every
+    # other reading of the message. Checked first because "rice 200" is a valid
+    # repeat command as well as a valid correction, and while a fix is
+    # outstanding the correction is what was meant.
+    if await _try_fix(msg, u, text):
+        return
+
     cmd = dsl.parse(text)
     if cmd and await _try_repeat(msg, u, cmd):
         return
@@ -464,6 +471,94 @@ async def on_text(msg: Message) -> None:
         await _parse_failed(note, exc)
         return
     await _present(msg, u, parsed, source="text", photo_file_id=None, edit=note)
+
+
+async def _try_fix(msg: Message, u: Any, text: str) -> bool:
+    """Apply a correction to the pending entry the ✎ button was pressed on.
+
+    Nothing consumed the `fix_entry` action before this, so ✎ printed
+    instructions and then ignored whatever you replied — the reply fell through
+    to the text parser, cost a Sonnet call, and logged a *second* meal beside
+    the one you were trying to correct. Inert would have been better.
+    """
+    action = await db.latest_pending(u["id"], "fix_entry")
+    if not action:
+        return False
+
+    entry_id = int(action["entry_id"])
+    entry, comps = await db.entry_with_components(entry_id)
+    if not entry or entry["status"] != "pending":
+        # Confirmed or discarded in the meantime; the correction has nothing to
+        # attach to and must not silently become a new meal.
+        await db.clear_pending(u["id"], "fix_entry")
+        await msg.answer(
+            "That card was already dealt with, so there is nothing to correct. "
+            "Send the meal again if you need to.",
+        )
+        return True
+
+    ops, unparsed = dsl.parse_ops(text.split())
+    if not ops:
+        await msg.answer(
+            "I could not read that as a correction. Try "
+            "<code>rice 200</code>, <code>-oil</code>, <code>+30 butter</code> "
+            "or <code>x0.8</code>.",
+            parse_mode="HTML",
+        )
+        return True
+
+    current = [
+        dsl.Component(c["label"], c["fdc_id"], float(c["grams"]), c["state"],
+                      float(c["yield_factor"]), c["grams_source"])
+        for c in comps
+    ]
+    new_comps, to_add = dsl.apply(current, ops)
+
+    # An added component still has to be resolved to a USDA row. Aliases first,
+    # so a food you have logged before costs nothing to add back.
+    for add in to_add:
+        alias = await db.resolve_alias(u["id"], add.label)
+        if alias:
+            await db.bump_alias(alias["id"])
+            grams = add.grams or float(alias["default_grams"] or 100)
+            new_comps.append(
+                dsl.Component(add.label, alias["fdc_id"], grams, grams_source="stated")
+            )
+            continue
+        res = await llm.resolve_items(
+            u["id"],
+            [{"label": add.label, "search_terms": add.label,
+              "grams": add.grams or 100, "grams_source": "stated",
+              "state": "unknown", "confidence": 0.7}],
+        )
+        for c in res.components:
+            new_comps.append(
+                dsl.Component(c.label, c.fdc_id, c.grams, yield_factor=c.yield_factor,
+                              grams_source="stated")
+            )
+
+    resolved = [
+        ResolvedComponent(c.label, c.fdc_id, c.grams, c.yield_factor, 0.0, c.grams_source)
+        for c in new_comps if c.fdc_id
+    ]
+    if not resolved:
+        await msg.answer("That would leave the meal empty, so I have not applied it.")
+        return True
+
+    await db.replace_components(entry_id, resolved)
+    await db.clear_pending(u["id"], "fix_entry")
+
+    profs = await db.profiles_for([c.fdc_id for c in resolved])
+    totals = total_nutrients(resolved, profs)
+    warnings = [f"could not read: {' '.join(unparsed)}"] if unparsed else []
+    await msg.answer(
+        render.confirm_card(
+            entry["name"], new_comps, totals, confidence=None, warnings=warnings
+        ),
+        parse_mode="HTML",
+        reply_markup=kb_confirm(entry_id),
+    )
+    return True
 
 
 async def _try_repeat(msg: Message, u: Any, cmd: dsl.RepeatCommand) -> bool:
