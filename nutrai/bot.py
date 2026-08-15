@@ -382,17 +382,34 @@ async def supp(msg: Message) -> None:
         "selected": selected, "day": day.isoformat(),
     })
     await msg.answer(
-        render.supplement_pick_card(stack, selected, had_yesterday=bool(yesterday)),
+        render.supplement_pick_card(stack, selected),
         parse_mode="HTML",
         reply_markup=_supp_keyboard(action_id, stack, selected),
     )
 
 
 
+def _button_label(sup: Any) -> str:
+    """Telegram truncates a long button, and it truncates the wrong end.
+
+    "HSN EssentialSeries Chelated Magnesium" cut to 28 characters reads "HSN
+    EssentialSeries Chelated" — the brand survives and the actual substance,
+    the only part that identifies it, is what falls off. Drop the brand words
+    first and keep the tail.
+    """
+    name = sup["name"]
+    if len(name) <= 30:
+        return name
+    words = name.split()
+    while len(" ".join(words)) > 30 and len(words) > 2:
+        words.pop(0)
+    return "… " + " ".join(words)
+
+
 def _supp_keyboard(action_id: int, stack: list[Any], selected: list[int]) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(
-            text=f"{'✅' if s['id'] in selected else '⬜️'} {s['name'][:28]}",
+            text=f"{'✅' if s['id'] in selected else '⬜️'} {_button_label(s)}",
             callback_data=f"supt:{action_id}:{s['id']}",
         )]
         for s in stack
@@ -419,7 +436,7 @@ async def cb_supp_toggle(cq: CallbackQuery) -> None:
     new_id = await db.put_pending(u["id"], "supp_pick", {**payload, "selected": selected})
     stack = await db.supplement_stack(u["id"])
     await cq.message.edit_text(
-        render.supplement_pick_card(stack, selected, had_yesterday=True),
+        render.supplement_pick_card(stack, selected),
         parse_mode="HTML",
         reply_markup=_supp_keyboard(new_id, stack, selected),
     )

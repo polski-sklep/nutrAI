@@ -546,30 +546,162 @@ def supplement_batch_card(parsed: Sequence[Any], names: dict, units: dict) -> st
     return "\n".join(lines)
 
 
-def supplement_pick_card(
-    stack: Sequence[Any], selected: Sequence[int], *, had_yesterday: bool
-) -> str:
-    """Ask which of the stack was actually taken.
+def supplement_pick_card(stack: Sequence[Any], selected: Sequence[int]) -> str:
+    """The question and the count. The buttons below are the list.
 
-    Defaulting to yesterday's set and asking is the difference between a record
-    and an assumption. A stack is a habit, not a rule, and the day you skip one
-    is exactly the day a silent auto-log puts a number in your totals that never
-    went in your mouth.
+    This used to render every supplement as text *and* as a button, so a stack
+    of nine appeared twice in one message with the same tick state in both
+    places — which reads as a bug even though both halves were correct, and
+    buries the buttons below a screen of text you have already read.
     """
-    sel = set(selected)
+    n, total = len(set(selected)), len(stack)
     lines = ["💊 <b>Which did you take?</b>", ""]
-    lines.append(
-        "<i>Same as yesterday, pre-ticked. Tap any to remove.</i>"
-        if had_yesterday
-        else "<i>Your whole stack, pre-ticked. Tap any to remove.</i>"
-    )
-    lines.append("")
-    for s in stack:
-        mark = "✅" if s["id"] in sel else "⬜️"
+    if n == total:
+        lines.append(f"<i>All {total} pre-ticked by their schedule. Tap any to remove.</i>")
+    elif n:
         lines.append(
-            f"   {mark} {_esc(s['name'])} — "
-            f"{float(s['servings_per_day']):g} × {_esc(s['serving_desc'])}"
+            f"<i>{n} of {total} pre-ticked by their schedule — the rest are every "
+            f"other day or occasional. Tap to change.</i>"
         )
-    if not sel:
-        lines += ["", "<i>Nothing selected — “log these” would record none.</i>"]
+    else:
+        lines.append(
+            "<i>Nothing pre-ticked. Tap the ones you took, then “log these”.</i>"
+        )
     return "\n".join(lines)
+
+
+def audit_card(findings: Sequence[Any]) -> str:
+    """The daily self-check, grouped by how much it matters.
+
+    Errors first because they mean a number in the log is wrong, not merely
+    uncertain — and a wrong number that nobody corrects becomes a median, then
+    a trend, then a recommendation.
+    """
+    if not findings:
+        return "🩺 <b>Daily check</b>\n\nNothing to flag. The log looks sound."
+
+    icons = {"error": "❌", "warn": "⚠️", "info": "💡"}
+    titles = {
+        "error": "Wrong, not just uncertain",
+        "warn": "Worth a look",
+        "info": "Would pay off later",
+    }
+
+    lines = ["🩺 <b>Daily check</b>"]
+    for severity in ("error", "warn", "info"):
+        group = [f for f in findings if f.severity == severity]
+        if not group:
+            continue
+        lines.append("")
+        lines.append(f"{icons[severity]} <b>{titles[severity]}</b>")
+        for f in group:
+            lines.append(f"   • <b>{_esc(f.summary)}</b>")
+            lines.append(f"     {_esc(f.detail)}")
+
+    if any(f.severity == "error" for f in findings):
+        lines.append("")
+        lines.append(
+            "<i>Fix an entry by sending it again and pressing ✏️, or ignore this "
+            "if the match was right after all.</i>"
+        )
+    return "\n".join(lines)
+
+
+def threshold_message(
+    nutrient_name: str,
+    amount: float,
+    target: float,
+    unit: str,
+    direction: str,
+    nutrient_id: int = 0,
+) -> str:
+    """One threshold crossing, as HTML.
+
+    Two lines rather than one: the headline is what happened, the second line is
+    the number you would act on. A single run-on sentence made a ceiling breach
+    and a floor reminder look identical at a glance, which is the opposite of
+    what a notification is for.
+    """
+    pct = amount / target * 100 if target else 0
+    icon = _emoji(nutrient_id)
+    name = _esc(_short(nutrient_name))
+
+    if direction == "over":
+        over = amount - target
+        return (
+            f"⚠️ <b>{name} — {fmt_amount(amount, unit)}</b>\n"
+            f"{icon} {pct:.0f}% of your {fmt_amount(target, unit)} ceiling"
+            + (f" · {fmt_amount(over, unit)} over" if over > 0 else "")
+        )
+
+    remaining = max(0.0, target - amount)
+    return (
+        f"🔔 <b>{name} — {fmt_amount(amount, unit)}</b>\n"
+        f"{icon} {pct:.0f}% of your {fmt_amount(target, unit)} floor · "
+        f"{fmt_amount(remaining, unit)} to go"
+    )
+
+
+def _esc(s: str) -> str:
+    """Escape text for Telegram HTML.
+
+    quote=False on purpose: only `& < >` carry meaning in Telegram's HTML
+    subset, and turning every apostrophe in "Farmer's cheese" into `&#x27;`
+    makes the source unreadable for no gain.
+    """
+    return escape(str(s), quote=False)
+
+
+def supplement_stack_card(stack: Sequence[Any]) -> str:
+    lines = ["💊 <b>Your daily stack</b>", ""]
+    for s in stack:
+        serving = f"{float(s['servings_per_day']):g} × {s['serving_desc']}"
+        mark = "" if s["verified_at"] else "  <i>(unverified)</i>"
+        lines.append(f"   • <b>{_esc(s['name'])}</b> — {_esc(serving)}{mark}")
+        lines.append(f"     {s['n_nutrients']} nutrient(s) from its label")
+    lines += ["", "<code>/supp</code> logs the lot for today."]
+    return "\n".join(lines)
+
+
+def supplement_batch_card(parsed: Sequence[Any], names: dict, units: dict) -> str:
+    """Every product read, with everything that was *not* counted named.
+
+    A nutrient silently missing from a panel is indistinguishable from one the
+    product does not contain, and this card is the only place the difference can
+    be caught — these numbers go into every future daily total with no plate to
+    check them against. So the rejected lines and the untracked actives are
+    shown as prominently as the accepted ones.
+    """
+    lines = [f"💊 <b>{len(parsed)} product(s) read</b>", ""]
+    for sup in parsed:
+        if not sup["nutrients"]:
+            lines.append(
+                f"◽️ <b>{_esc(sup['name'])}</b> — saved, but nothing here maps to "
+                f"a tracked nutrient"
+            )
+            if sup.get("not_tracked"):
+                lines.append(f"     <i>{_esc(sup['not_tracked'])}</i>")
+            lines.append("")
+            continue
+        cadence = {"alternate": " · every other day", "occasional": " · occasional"}.get(
+            sup.get("schedule", "daily"), ""
+        )
+        dose = float(sup.get("servings_per_day", 1) or 1)
+        taken = f"{dose:g} × {sup['serving_desc']}" if dose != 1 else sup["serving_desc"]
+        lines.append(f"✅ <b>{_esc(sup['name'])}</b> — {_esc(taken)}{cadence}")
+        if sup.get("note"):
+            lines.append(f"     <i>{_esc(sup['note'])}</i>")
+        for c in sup["_kept"]:
+            lines.append(
+                f"     • {_esc(names.get(c.nutrient_id, str(c.nutrient_id)))} — "
+                f"{fmt_amount(c.amount, units.get(c.nutrient_id, ''))}"
+            )
+        for d in sup["_dropped"]:
+            lines.append(f"     ⚠️ {_esc(d.printed_label or '?')} — {_esc(d.reason)}")
+        if sup.get("not_tracked"):
+            lines.append(f"     <i>not counted: {_esc(sup['not_tracked'])}</i>")
+        lines.append("")
+    lines.append("Check these against the packets. Nothing is saved until you confirm.")
+    return "\n".join(lines)
+
+

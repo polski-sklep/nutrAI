@@ -1177,13 +1177,14 @@ def test_supplement_picker_lets_you_drop_one(harness):
         harness.sent.clear()
         await harness.feed("/supp")
         picker = harness.sent.last()
-        # Both pre-ticked.
-        assert picker.text.count("✅") == 2, picker.text
+        # Ticks live on the buttons; the card states the count, and does not
+        # repeat the list the buttons already are.
+        assert "All 2 pre-ticked" in picker.text, picker.text
 
         toggle = next(b for b in picker.buttons if b.startswith("supt:"))
         await harness.press(toggle, picker.message_id)
         picker = harness.sent.last()
-        assert picker.text.count("✅") == 1, picker.text
+        assert "1 of 2 pre-ticked" in picker.text, picker.text
 
         await harness.press(
             next(b for b in picker.buttons if b.startswith("suplog:")), picker.message_id
