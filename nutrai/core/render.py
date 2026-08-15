@@ -60,10 +60,31 @@ def confirm_card(
     warnings: Sequence[str],
     notes: str = "",
     cost_usd: float | None = None,
+    unresolved: Sequence[str] = (),
 ) -> str:
     from ..config import CARB, ENERGY_KCAL, FAT, FIBER, PROTEIN
 
-    lines = [f"<b>{_esc(dish_name)}</b>"]
+    lines = [f"🍽 <b>{_esc(dish_name)}</b>", ""]
+
+    # Unmatched items go first, before any total.
+    #
+    # They used to be one warning line among several, printed *below* a
+    # confident "160 kcal". A real meal went through where three of four items
+    # were missing and the card still led with a tidy number, so it got
+    # confirmed — logging a fifth of what was eaten. A total computed from part
+    # of a plate is not a small error, it is a different meal, and it has to be
+    # impossible to read past.
+    if unresolved:
+        n = len(unresolved)
+        total_items = n + len(components)
+        lines.append(
+            f"❗️ <b>{n} of {total_items} items are not in the food database.</b> "
+            "The totals below do <b>not</b> include them:"
+        )
+        lines += [f"   • {_esc(str(u))}" for u in unresolved]
+        lines.append("")
+        lines.append("<b>Counted:</b>" if components else "")
+
     for c in components:
         label = getattr(c, "label", None) or c["label"]
         grams = float(getattr(c, "grams", None) or c["grams"])
@@ -74,29 +95,175 @@ def confirm_card(
         # "120-260 g" next to the oil is what makes you reach for the scale.
         if sigma > 0 and src in ("estimate", "prior") and sigma / max(grams, 1) > 0.08:
             span = f"{max(0, grams - 2*sigma):.0f}–{grams + 2*sigma:.0f} g"
-            lines.append(f"  {mark} {_esc(str(label))} — {grams:.0f} g  <i>({span})</i>")
+            lines.append(f"   • {mark} {_esc(str(label))} — {grams:.0f} g <i>({span})</i>")
         else:
-            lines.append(f"  {mark} {_esc(str(label))} — {grams:.0f} g")
+            lines.append(f"   • {mark} {_esc(str(label))} — {grams:.0f} g")
 
     lines.append("")
     lines.append(
-        f"{totals.get(ENERGY_KCAL,0):,.0f} kcal · "
-        f"P {totals.get(PROTEIN,0):.0f} g · "
-        f"C {totals.get(CARB,0):.0f} g · "
-        f"F {totals.get(FAT,0):.0f} g · "
-        f"fibre {totals.get(FIBER,0):.0f} g"
+        f"📊 <b>{totals.get(ENERGY_KCAL,0):,.0f} kcal</b>"
+        f" · 🥩 {totals.get(PROTEIN,0):.0f} g protein"
+        f" · 🍞 {totals.get(CARB,0):.0f} g carbs"
+        f" · 🧈 {totals.get(FAT,0):.0f} g fat"
+        f" · 🌾 {totals.get(FIBER,0):.0f} g fibre"
     )
     if confidence is not None:
-        lines.append(f"confidence {confidence:.0%}")
+        lines.append(f"🎯 confidence {confidence:.0%}")
     if notes:
-        lines.append(f"<i>note: {_esc(notes)}</i>")
-    for w in warnings:
-        lines.append(f"⚠ {_esc(w)}")
+        lines.append("")
+        lines.append(f"📝 <i>{_esc(notes)}</i>")
+    if warnings:
+        lines.append("")
+        lines += [f"⚠️ {_esc(w)}" for w in warnings]
     if cost_usd:
-        lines.append(f"<i>{cost_usd*100:.2f}¢</i>")
+        lines.append("")
+        lines.append(f"<i>💸 {cost_usd*100:.2f}¢</i>")
     lines.append("")
     lines.append("Nothing is logged until you confirm.")
     return "\n".join(lines)
+
+
+# ------------------------------------------------------ after the confirm
+
+# Emoji are load-bearing here, not decoration: they let a bulleted list be
+# scanned by shape rather than read word by word. One per nutrient, stable, so
+# the same nutrient always looks the same from one day to the next.
+NUTRIENT_EMOJI: dict[int, str] = {
+    1008: "🔥",  # Energy
+    1003: "🥩",  # Protein
+    1005: "🍞",  # Carbohydrate
+    1004: "🧈",  # Fat
+    1079: "🌾",  # Fibre
+    2000: "🍬",  # Sugar
+    1258: "🥓",  # Saturated fat
+    1093: "🧂",  # Sodium
+    1092: "🍌",  # Potassium
+    1087: "🦴",  # Calcium
+    1089: "🩸",  # Iron
+    1090: "🌰",  # Magnesium
+    1095: "🦪",  # Zinc
+    1178: "🐟",  # B-12
+    1114: "☀️",  # Vitamin D
+    1162: "🍊",  # Vitamin C
+    1106: "🥕",  # Vitamin A
+    1177: "🥬",  # Folate
+    1253: "🥚",  # Cholesterol
+    1272: "🐠",  # DHA
+}
+
+
+def _emoji(nutrient_id: int) -> str:
+    return NUTRIENT_EMOJI.get(nutrient_id, "•")
+
+
+def logged_card(
+    dish_name: str,
+    meal: dict[int, float],
+    progress: Sequence[Any],
+    *,
+    top_n: int = 4,
+    gaps_n: int = 3,
+) -> str:
+    """What to say the moment something is written to the log.
+
+    Three questions, in the order they are actually asked: where am I now, what
+    did this meal do for me, and what is still missing. All of it is one SQL
+    read plus arithmetic — no model, per invariant 4.
+    """
+    from ..config import CARB, ENERGY_KCAL, FAT, FIBER, PROTEIN
+
+    by_id = {r["nutrient_id"]: r for r in progress}
+    lines = [f"✅ <b>Logged</b> — {_esc(dish_name)}", ""]
+
+    # --- where the day stands
+    lines.append("📊 <b>Today so far</b>")
+    for nid in (ENERGY_KCAL, PROTEIN, FIBER, CARB, FAT):
+        r = by_id.get(nid)
+        if not r:
+            continue
+        amount = float(r["amount"])
+        target = r["min_amount"] if r["min_amount"] is not None else r["max_amount"]
+        if target is None:
+            lines.append(f"   • {_emoji(nid)} {_esc(r['nutrient_name'])} — "
+                         f"{fmt_amount(amount, r['unit'])}")
+            continue
+        target = float(target)
+        pct = amount / target * 100 if target else 0
+        cap = "ceiling" if r["min_amount"] is None else "target"
+        lines.append(
+            f"   • {_emoji(nid)} {_esc(_short(r['nutrient_name']))} — "
+            f"<b>{fmt_amount(amount, r['unit'])}</b> of {fmt_amount(target, r['unit'])} "
+            f"{cap} ({pct:.0f}%)"
+        )
+
+    # --- what this meal actually brought
+    # Ranked by share of the day's floor, not by absolute amount: 7 g of fibre
+    # matters more than 300 mg of potassium, and only the target says so.
+    brought = []
+    for nid, amt in meal.items():
+        r = by_id.get(nid)
+        if not r or r["min_amount"] is None or nid == ENERGY_KCAL:
+            continue
+        floor = float(r["min_amount"])
+        if floor <= 0 or amt <= 0:
+            continue
+        brought.append((amt / floor, nid, amt, r))
+    brought.sort(reverse=True)
+    if brought:
+        lines.append("")
+        lines.append("⭐ <b>What this meal brought most</b>")
+        for share, nid, amt, r in brought[:top_n]:
+            lines.append(
+                f"   • {_emoji(nid)} {_esc(_short(r['nutrient_name']))} — "
+                f"{fmt_amount(amt, r['unit'])} ({share*100:.0f}% of today's target)"
+            )
+
+    # --- what is still missing
+    gaps = []
+    for nid, r in by_id.items():
+        if r["min_amount"] is None:
+            continue
+        floor = float(r["min_amount"])
+        remaining = floor - float(r["amount"])
+        if floor <= 0 or remaining <= 0:
+            continue
+        gaps.append((remaining / floor, nid, remaining, r))
+    gaps.sort(reverse=True)
+
+    # Protein and fibre are always named whether or not they are the worst
+    # gaps — they are the two you can still act on with what you eat next.
+    pinned = [g for g in gaps if g[1] in (PROTEIN, FIBER)]
+    others = [g for g in gaps if g[1] not in (PROTEIN, FIBER)][:gaps_n]
+    shown = pinned + others
+    if shown:
+        lines.append("")
+        lines.append("🎯 <b>Still to go today</b>")
+        for _share, nid, remaining, r in shown:
+            lines.append(
+                f"   • {_emoji(nid)} {_esc(_short(r['nutrient_name']))} — "
+                f"{fmt_amount(remaining, r['unit'])}"
+            )
+    elif by_id:
+        lines.append("")
+        lines.append("🎯 Every floor met today.")
+
+    return "\n".join(lines)
+
+
+def _short(name: str) -> str:
+    """USDA names are database entries, not English. Tidy the common ones."""
+    return {
+        "Carbohydrate, by difference": "Carbs",
+        "Total lipid (fat)": "Fat",
+        "Fiber, total dietary": "Fibre",
+        "Fatty acids, total saturated": "Saturated fat",
+        "Vitamin C, total ascorbic acid": "Vitamin C",
+        "Vitamin D (D2 + D3)": "Vitamin D",
+        "Vitamin A, RAE": "Vitamin A",
+        "Folate, total": "Folate",
+        "PUFA 22:6 n-3 (DHA)": "DHA",
+        "Energy": "Energy",
+    }.get(name, name.split(",")[0])
 
 
 # --------------------------------------------------------------- day view

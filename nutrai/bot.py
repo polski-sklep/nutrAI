@@ -585,15 +585,16 @@ async def _present(
     warnings = list(verdict.warnings)
     if parsed.confidence < CONFIDENCE_FLOOR:
         warnings.insert(0, f"low overall confidence ({parsed.confidence:.0%}) — check the masses")
-    if res.unresolved:
-        warnings.append("not matched: " + ", ".join(res.unresolved))
     for note in res.prior_notes or []:
         warnings.append(note)
 
+    # Unresolved items are passed separately rather than appended to warnings:
+    # the card puts them above the totals, because a total computed from part of
+    # a plate must not be readable as the meal's total.
     text = render.confirm_card(
         parsed.dish_name, res.components, totals,
         confidence=parsed.confidence, warnings=warnings, notes=parsed.notes,
-        cost_usd=parsed.cost_usd + res.cost_usd,
+        cost_usd=parsed.cost_usd + res.cost_usd, unresolved=res.unresolved,
     )
     if edit:
         await edit.edit_text(text, parse_mode="HTML", reply_markup=kb_confirm(entry_id))
@@ -633,11 +634,25 @@ async def unknown_command(msg: Message) -> None:
 async def cb_ok(cq: CallbackQuery) -> None:
     entry_id = int(cq.data.split(":")[1])
     totals = await db.confirm_entry(entry_id)
-    await cq.message.edit_text(
-        (cq.message.text or "") + f"\n\n✓ logged — {totals.get(1008,0):,.0f} kcal"
-    )
     await cq.answer("logged")
+
+    entry, _comps = await db.entry_with_components(entry_id)
     u = await db.get_or_create_user(cq.from_user.id)
+
+    # Retire the card. Its text arrives back from Telegram with the markup
+    # already stripped, so it is re-sent as plain text; the detail it held has
+    # served its purpose and the progress card below replaces it.
+    await cq.message.edit_text(
+        (cq.message.text or "") + f"\n\n✅ logged — {totals.get(1008, 0):,.0f} kcal"
+    )
+
+    day = _today(u)
+    await cq.message.answer(
+        render.logged_card(
+            entry["name"], totals, await db.day_progress(u["id"], day)
+        ),
+        parse_mode="HTML",
+    )
     await _check_thresholds(cq.message, u)
 
 

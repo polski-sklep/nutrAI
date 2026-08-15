@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from nutrai.core.render import confirm_card, day_card
+from nutrai.core.render import confirm_card, day_card, logged_card
 
 
 def row(nid, name, unit, amount, lo=None, hi=None, state="ok"):
@@ -91,5 +91,83 @@ def test_confirm_card_marks_provenance_and_shows_a_range_on_guesses():
     assert "≈ olive oil" in out
     # The eyeballed item shows the range it actually is.
     assert "<i>(4–26 g)</i>" in out
-    assert out.startswith("<b>mince and rice</b>")
+    assert out.startswith("🍽 <b>mince and rice</b>")
     assert "Nothing is logged until you confirm." in out
+
+
+def test_unmatched_items_appear_above_the_totals():
+    """A total computed from part of a plate must not read as the meal's total.
+
+    A real meal logged 160 kcal of an ~800 kcal plate because three of four
+    items were missing and the card led with the tidy number, burying the
+    mismatch in a warning underneath.
+    """
+
+    class C:
+        label, grams, sigma, grams_source = "avocado", 100.0, 12.0, "estimate"
+
+    out = confirm_card(
+        "cheesy bread, pickle, avocado, salami", [C()], {1008: 160.0},
+        confidence=0.5, warnings=["low overall confidence (50%)"],
+        unresolved=["cheesy bread rolls", "pickle (dill gherkin)", "Italian salami slices"],
+    )
+    assert "3 of 4 items are not in the food database" in out
+    # Above the number, not below it.
+    assert out.index("not in the food database") < out.index("160 kcal")
+    for missing in ("cheesy bread rolls", "pickle (dill gherkin)", "Italian salami slices"):
+        assert missing in out
+
+
+def test_confirm_card_without_unresolved_says_nothing_about_matching():
+    class C:
+        label, grams, sigma, grams_source = "rice", 164.0, 1.0, "scale"
+
+    out = confirm_card("rice", [C()], {1008: 213.0}, confidence=0.95, warnings=[])
+    assert "not in the food database" not in out
+
+
+LOGGED_PROGRESS = [
+    row(1008, "Energy", "KCAL", 160, hi=2170),
+    row(1003, "Protein", "G", 2, lo=180, state="under"),
+    row(1079, "Fiber, total dietary", "G", 7, lo=38, state="under"),
+    row(1005, "Carbohydrate, by difference", "G", 9, hi=262),
+    row(1004, "Total lipid (fat)", "G", 15, hi=78),
+    row(1087, "Calcium, Ca", "MG", 34, lo=1000, state="under"),
+    row(1177, "Folate, total", "UG", 81, lo=400, state="under"),
+]
+
+
+def test_logged_card_reports_progress_contributions_and_gaps():
+    meal = {1008: 160.0, 1003: 2.0, 1079: 7.0, 1004: 15.0, 1177: 81.0, 1087: 34.0}
+    out = logged_card("avocado on toast", meal, LOGGED_PROGRESS)
+
+    assert out.startswith("✅ <b>Logged</b>")
+    assert "Today so far" in out
+    assert "What this meal brought most" in out
+    assert "Still to go today" in out
+
+    # Ranked by share of the day's floor: folate (20%) beats calcium (3%).
+    assert out.index("Folate") < out.index("Calcium")
+    # Energy is excluded from "brought most" — it is already in the progress block.
+    brought = out.split("brought most")[1].split("Still to go")[0]
+    assert "Energy" not in brought
+
+    # Protein and fibre are always named in the gaps, and the remainder is what
+    # is left, not what was eaten.
+    gaps = out.split("Still to go today")[1]
+    assert "Protein" in gaps and "178 g" in gaps
+    assert "Fibre" in gaps and "31 g" in gaps
+
+
+def test_logged_card_congratulates_rather_than_inventing_gaps():
+    met = [
+        row(1008, "Energy", "KCAL", 1800, hi=2170),
+        row(1003, "Protein", "G", 200, lo=180),
+    ]
+    out = logged_card("big dinner", {1003: 200.0}, met)
+    assert "Every floor met today." in out
+    assert "Still to go today" not in out
+
+
+def test_logged_card_survives_a_user_with_no_targets():
+    assert "Logged" in logged_card("x", {1008: 100.0}, [])
