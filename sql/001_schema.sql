@@ -1,4 +1,4 @@
--- nutribot schema, PostgreSQL 16+
+-- nutrai schema, PostgreSQL 16+
 -- Design rule: the LLM never produces a nutrient number. It produces
 -- (food identity, grams, state). Every nutrient value below comes from USDA
 -- FoodData Central and is computed in SQL. Nutrients are snapshotted at log
