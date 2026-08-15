@@ -78,6 +78,7 @@ class StubLLM:
         self.calls: list[str] = []
         self.meal: dict[str, Any] = {}
         self.pending_labels: list[str] = []
+        self.label: dict[str, Any] = {"supplements": []}
 
     async def __call__(self, *, model: str, tool: dict, system: Any, content: list, **kw: Any):
         from nutrai.llm.client import ToolResult
@@ -117,6 +118,8 @@ class StubLLM:
                     })
         elif name == "modify_dish":
             data = {"operations": []}
+        elif name == "read_supplement_label":
+            data = self.label
         else:
             raise AssertionError(f"stub has no answer for tool {name!r}")
 
@@ -1240,5 +1243,58 @@ def test_backdating_never_goes_forward(harness):
         p = await db.pool()
         today = db.local_date_for(dt.datetime.now(dt.timezone.utc), "Europe/Warsaw", 4)
         assert await p.fetchval("SELECT local_date FROM log_entry WHERE id=$1", entry_id) == today
+
+    run(scenario())
+
+
+def test_text_after_supp_add_is_a_label_not_a_meal(harness):
+    """A prompt that ignores the answer is worse than no prompt.
+
+    `/supp add` awaited a photo, so a written description of eight supplements
+    fell through to the meal parser and became two nonsense meals — 4 kcal and
+    0 kcal, both logged — while the stack stayed empty.
+    """
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await p.execute("DELETE FROM supplement WHERE user_id = $1", uid)
+        harness.llm.label = {
+            "supplements": [
+                {
+                    "name": "Solgar Chelated Zinc 22 mg",
+                    "serving_desc": "1 tablet",
+                    "servings_per_day": 1,
+                    "nutrients": [{"nutrient_id": 1095, "printed_label": "elemental zinc",
+                                   "amount": 22, "unit": "mg"}],
+                    "not_tracked": "",
+                }
+            ],
+            "unreadable": "",
+        }
+
+        await harness.feed("/supp add")
+        harness.sent.clear()
+        await harness.feed("Solgar Chelated Zinc 22 mg, 1 tablet daily, 22 mg elemental zinc")
+
+        assert harness.llm.calls[-1] == "read_supplement_label", harness.llm.calls
+        assert await p.fetchval(
+            "SELECT count(*) FROM log_entry WHERE user_id=$1", uid
+        ) == 0, "a supplement description was logged as a meal"
+
+        card = harness.sent.last()
+        assert "product(s) read" in card.text
+        await harness.press(
+            next(b for b in card.buttons if b.startswith("supok:")), card.message_id
+        )
+        assert await p.fetchval(
+            "SELECT count(*) FROM supplement WHERE user_id=$1", uid
+        ) == 1
+
+        harness.sent.clear()
+        await harness.feed("250 g minced beef, 164 g rice, a splash of olive oil")
+        assert harness.llm.calls[-1] != "read_supplement_label"
 
     run(scenario())

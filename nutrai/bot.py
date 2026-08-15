@@ -631,6 +631,15 @@ async def on_text(msg: Message) -> None:
     u = await _user(msg)
     text = (msg.text or "").strip()
 
+    # `/supp add` awaits a label. Anything sent next is that label — including
+    # text, which used to fall straight through to the meal parser: a written
+    # description of eight supplements became two nonsense meals of 4 kcal and
+    # 0 kcal, logged, while the stack stayed empty. A prompt that ignores the
+    # answer is worse than no prompt.
+    if await db.latest_pending(u["id"], "supp_label"):
+        await _handle_supplement_label(msg, u, text=text)
+        return
+
     # A correction to a card you just pressed ✎ on takes precedence over every
     # other reading of the message. Checked first because "rice 200" is a valid
     # repeat command as well as a valid correction, and while a fix is
@@ -1068,67 +1077,79 @@ async def unknown_command(msg: Message) -> None:
     )
 
 
-async def _handle_supplement_label(msg: Message, u: Any) -> None:
-    """Transcribe a panel, show it, save nothing until it is confirmed.
+async def _handle_supplement_label(
+    msg: Message, u: Any, *, text: str | None = None
+) -> None:
+    """Transcribe one or more panels, show them, save nothing until confirmed.
 
     The confirm gate matters more here than on a meal. A meal's numbers are
-    checked against a plate you are looking at; a supplement's numbers go
-    straight into every future daily total with nothing to contradict them. This
-    card, read against the packet in your hand, is the only check there is.
+    checked against a plate in front of you; a supplement's go into every future
+    daily total with nothing to contradict them.
     """
     from .core import supplements
 
-    f = await msg.bot.get_file(msg.photo[-1].file_id)
-    buf = await msg.bot.download_file(f.file_path)
-    b64, _w, _h = llm.prepare_image(buf.read())
+    photo_id = None
+    b64 = None
+    if msg.photo:
+        f = await msg.bot.get_file(msg.photo[-1].file_id)
+        buf = await msg.bot.download_file(f.file_path)
+        b64, _w, _h = llm.prepare_image(buf.read())
+        photo_id = msg.photo[-1].file_id
 
-    note = await msg.answer("reading the label…")
+    note = await msg.answer("reading…")
     try:
-        data, cost = await llm.read_supplement_label(b64, user_id=u["id"])
+        data, cost = await llm.read_supplement_label(
+            user_id=u["id"], image_b64=b64, text=text
+        )
     except Exception as exc:
         await _parse_failed(note, exc)
         return
 
     units = await db.nutrient_units()
-    kept, dropped = supplements.normalise(list(data.get("nutrients", [])), units)
-    if not kept:
+    p = await db.pool()
+    names = {r["id"]: r["name"] for r in await p.fetch("SELECT id, name FROM nutrient")}
+
+    parsed: list[dict[str, Any]] = []
+    for sup in data.get("supplements", []):
+        kept, dropped = supplements.normalise(list(sup.get("nutrients", [])), units)
+        parsed.append({
+            "name": sup.get("name") or "supplement",
+            "brand": sup.get("brand"),
+            "serving_desc": sup.get("serving_desc") or "1 serving",
+            "servings_per_day": float(sup.get("servings_per_day") or 1),
+            "not_tracked": sup.get("not_tracked") or "",
+            "nutrients": [[c.nutrient_id, c.amount] for c in kept],
+            "_kept": kept,
+            "_dropped": dropped,
+        })
+
+    if not any(pp["nutrients"] for pp in parsed):
+        await db.clear_pending(u["id"], "supp_label")
         await note.edit_text(
-            "I could not read any nutrient lines I recognise from that panel. "
-            "Try a straighter, closer photo of the table itself.",
+            "I could not read any nutrient lines I track from that. Supplements "
+            "whose actives are all untracked — ashwagandha, CoQ10, collagen — "
+            "have nothing for me to count against a target.",
         )
         return
 
-    p = await db.pool()
-    names = {
-        r["id"]: r["name"]
-        for r in await p.fetch(
-            "SELECT id, name FROM nutrient WHERE id = ANY($1::int[])",
-            [c.nutrient_id for c in kept] + [d.nutrient_id for d in dropped],
-        )
-    }
     action_id = await db.put_pending(u["id"], "supp_confirm", {
-        "name": data.get("name") or "supplement",
-        "brand": data.get("brand"),
-        "serving_desc": data.get("serving_desc") or "1 serving",
-        "servings_per_day": float(data.get("servings_per_day") or 1),
-        "photo_file_id": msg.photo[-1].file_id,
-        "nutrients": [[c.nutrient_id, c.amount] for c in kept],
+        "supplements": [
+            {k: v for k, v in pp.items() if not k.startswith("_")}
+            for pp in parsed if pp["nutrients"]
+        ],
+        "photo_file_id": photo_id,
     })
     await db.clear_pending(u["id"], "supp_label")
 
-    text = render.supplement_confirm_card(
-        data.get("name") or "supplement",
-        data.get("serving_desc") or "1 serving",
-        kept, dropped, names, units,
-    )
+    body = render.supplement_batch_card(parsed, names, units)
     if data.get("unreadable"):
-        text += f"\n\n⚠️ {escape(str(data['unreadable']))}"
-    text += f"\n\n<i>💸 {cost*100:.2f}¢</i>"
+        body += f"\n\n⚠️ {escape(str(data['unreadable']))}"
+    body += f"\n\n<i>💸 {cost*100:.2f}¢</i>"
     await note.edit_text(
-        text,
+        body,
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="✅ save", callback_data=f"supok:{action_id}"),
+            InlineKeyboardButton(text="✅ save all", callback_data=f"supok:{action_id}"),
             InlineKeyboardButton(text="🗑 discard", callback_data=f"supno:{action_id}"),
         ]]),
     )
@@ -1139,23 +1160,26 @@ async def cb_supp_ok(cq: CallbackQuery) -> None:
     payload = await db.take_pending(int(cq.data.split(":")[1]))
     await cq.answer("saved" if payload else "expired")
     if not payload:
-        await cq.message.edit_text("That expired. Send the label again.")
+        await cq.message.edit_text("That expired. Send it again.")
         return
     u = await db.get_or_create_user(cq.from_user.id)
-    await db.upsert_supplement(
-        u["id"], payload["name"],
-        [(int(n), float(a)) for n, a in payload["nutrients"]],
-        brand=payload.get("brand"),
-        serving_desc=payload["serving_desc"],
-        servings_per_day=payload["servings_per_day"],
-        photo_file_id=payload.get("photo_file_id"),
-    )
+    saved = []
+    for sup in payload["supplements"]:
+        await db.upsert_supplement(
+            u["id"], sup["name"],
+            [(int(n), float(a)) for n, a in sup["nutrients"]],
+            brand=sup.get("brand"),
+            serving_desc=sup["serving_desc"],
+            servings_per_day=sup["servings_per_day"],
+            photo_file_id=payload.get("photo_file_id"),
+        )
+        saved.append(sup["name"])
     await cq.message.edit_text(
-        (cq.message.text or "") + "\n\n✅ saved to your stack",
+        (cq.message.text or "") + f"\n\n✅ saved {len(saved)} to your stack",
     )
     await cq.message.answer(
-        "Added. <code>/supp</code> logs the whole stack for today, "
-        "<code>/supp list</code> shows it.",
+        "Added. <code>/supp</code> asks which you took today, "
+        "<code>/supp list</code> shows the stack.",
         parse_mode="HTML",
     )
 

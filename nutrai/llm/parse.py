@@ -428,32 +428,41 @@ async def _log(res: ToolResult, purpose: str, user_id: int | None) -> None:
 # --------------------------------------------------------------- supplements
 
 
-async def read_supplement_label(image_b64: str, *, user_id: int) -> tuple[dict[str, Any], float]:
-    """Transcribe a supplement panel. Returns (data, cost).
+async def read_supplement_label(
+    *, user_id: int, image_b64: str | None = None, text: str | None = None
+) -> tuple[dict[str, Any], float]:
+    """Transcribe supplement panels from a photo or from written text.
 
-    Uses the photo model rather than the cheap one. A misread digit here is not
-    one wrong meal — the value goes into every day the supplement is logged,
-    with no plate to check it against and no Atwater relationship to betray it.
-    That asymmetry is worth two pence, once, per product.
+    Text is a first-class source, not a fallback. Someone who has already
+    written down what is on their packets is handing over better data than a
+    photograph of a curved bottle in poor light, and refusing it would only push
+    them to paste it somewhere that treats it as a meal.
+
+    Either way it is transcription rather than estimation: the model is given
+    the exact nutrient ids it may use and told to report what the source states.
     """
+    if not image_b64 and not text:
+        raise ValueError("a photo or some text is required")
+
+    content: list[dict[str, Any]] = []
+    if image_b64:
+        content.append({
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/jpeg", "data": image_b64},
+        })
+    if text:
+        content.append({"type": "text", "text": f"Product information:\n\n{text}"})
+    content.append({
+        "type": "text",
+        "text": "Transcribe every product. Use only these nutrient ids:\n" + _nutrient_menu(),
+    })
+
     res = await call_tool(
         model=MODEL_PHOTO,
         tool=SUPPLEMENT_TOOL,
         system=[cached(SUPPLEMENT_SYSTEM)],
-        content=[
-            {
-                "type": "image",
-                "source": {"type": "base64", "media_type": "image/jpeg", "data": image_b64},
-            },
-            {
-                "type": "text",
-                "text": (
-                    "Transcribe this panel. Use only these nutrient ids:\n"
-                    + _nutrient_menu()
-                ),
-            },
-        ],
-        max_tokens=1500,
+        content=content,
+        max_tokens=4000,
     )
     await _log(res, "supplement_label", user_id)
     return res.data, res.cost_usd

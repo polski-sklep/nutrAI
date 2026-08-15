@@ -224,52 +224,53 @@ Every recommendation must be a concrete, executable change to what is eaten, and
 SUPPLEMENT_TOOL = {
     "name": "read_supplement_label",
     "description": (
-        "Transcribe the nutrition panel printed on a supplement label. Report only "
-        "what is printed. Do not supply typical values for the product from memory."
+        "Transcribe the nutrition panel of every supplement described. Report only "
+        "what the source states. Do not supply typical values from memory."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
-            "name": {"type": "string", "description": "Short name, e.g. 'Vitamin D3 4000 IU'."},
-            "brand": {"type": "string"},
-            "serving_desc": {
-                "type": "string",
-                "description": "The serving the panel is stated per, exactly as printed: '1 capsule', '2 tablets', '1 scoop (5 g)'.",
-            },
-            "servings_per_day": {
-                "type": "number",
-                "description": "Servings in the recommended daily dose, if printed. 1 if not stated.",
-            },
-            "nutrients": {
+            "supplements": {
                 "type": "array",
-                "description": "One entry per line of the panel that maps to a nutrient id you were given. Omit lines you were not given an id for; do not guess an id.",
+                "description": "One entry per distinct product. A photo of one packet gives one; a written list may give several.",
                 "items": {
                     "type": "object",
                     "properties": {
-                        "nutrient_id": {
-                            "type": "integer",
-                            "description": "Must be one of the ids supplied in the user message. Never invent one.",
-                        },
-                        "printed_label": {
+                        "name": {"type": "string", "description": "Product name, e.g. 'Solgar Chelated Zinc 22 mg'."},
+                        "brand": {"type": "string"},
+                        "serving_desc": {
                             "type": "string",
-                            "description": "The line as printed, e.g. 'Vitamin D3 (cholecalciferol)'.",
+                            "description": "The serving the panel is stated per, as printed: '1 capsule', '2 capsules', '1 scoop (5 g)'.",
                         },
-                        "amount": {"type": "number", "description": "The number as printed, per serving."},
-                        "unit": {
+                        "servings_per_day": {
+                            "type": "number",
+                            "description": "Servings in the stated daily dose. 1 if not given.",
+                        },
+                        "nutrients": {
+                            "type": "array",
+                            "description": "Only lines that map to a nutrient id you were given. Omit anything else — do not approximate onto a neighbouring nutrient.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "nutrient_id": {"type": "integer", "description": "Must be one of the ids supplied. Never invent one."},
+                                    "printed_label": {"type": "string", "description": "The line as stated, e.g. 'elemental zinc as bisglycinate'."},
+                                    "amount": {"type": "number", "description": "The number as stated, per serving."},
+                                    "unit": {"type": "string", "enum": ["g", "mg", "ug", "mcg", "iu", "kcal"]},
+                                },
+                                "required": ["nutrient_id", "printed_label", "amount", "unit"],
+                            },
+                        },
+                        "not_tracked": {
                             "type": "string",
-                            "enum": ["g", "mg", "ug", "mcg", "iu", "kcal"],
-                            "description": "The unit as printed. Do not convert; conversion happens downstream.",
+                            "description": "Actives with no nutrient id — ashwagandha, CoQ10, collagen, curcumin, alpha-GPC. Name them so the user can see they were read and deliberately not counted.",
                         },
                     },
-                    "required": ["nutrient_id", "printed_label", "amount", "unit"],
+                    "required": ["name", "serving_desc", "nutrients"],
                 },
             },
-            "unreadable": {
-                "type": "string",
-                "description": "Lines you could see but could not read, or panel areas obscured. Empty string if none.",
-            },
+            "unreadable": {"type": "string", "description": "Anything you could see but not read. Empty string if none."},
         },
-        "required": ["name", "serving_desc", "nutrients"],
+        "required": ["supplements"],
     },
 }
 
@@ -281,4 +282,7 @@ This is transcription, not estimation. The difference matters more here than any
 2. Do not convert units. Report the number and the unit exactly as printed; 'ug' and 'mcg' both mean micrograms and either is fine.
 3. Use only the nutrient ids supplied to you. A panel line with no id in that list is omitted, not approximated onto a neighbouring nutrient. Vitamin B6 is not vitamin B12.
 4. If a digit is unclear, put the line in `unreadable` rather than guessing it. A wrong digit in a supplement panel is a wrong daily total every day thereafter, silently, until somebody notices.
-5. Amounts are per serving as the panel states them, not per daily dose, unless the panel only gives a daily dose — in which case set serving_desc to that dose."""
+5. Amounts are per serving as the panel states them, not per daily dose, unless the panel only gives a daily dose — in which case set serving_desc to that dose.
+6. Where a line gives both a compound weight and an elemental weight — "82 mg zinc gluconate, of which 10 mg elemental zinc", "1667 mg magnesium bisglycinate providing 350 mg elemental magnesium" — record the elemental figure. That is what the body receives and what a nutrient target is expressed in; the compound weight is several times larger and recording it would overstate the dose by that factor.
+7. Many supplement actives have no nutrient id here: ashwagandha, CoQ10, collagen, curcumin, alpha-GPC, piperine, hyaluronic acid. Name them in `not_tracked` rather than omitting them silently, so the user can see they were read and deliberately not counted.
+8. The source may be a photograph of one packet or a written description of several products. Return one entry per distinct product either way."""

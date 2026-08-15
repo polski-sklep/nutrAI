@@ -504,32 +504,35 @@ def supplement_stack_card(stack: Sequence[Any]) -> str:
     return "\n".join(lines)
 
 
-def supplement_confirm_card(
-    name: str, serving_desc: str, kept: Sequence[Any], dropped: Sequence[Any],
-    names: dict[int, str], units: dict[int, str],
-) -> str:
-    """What was read off the label, before it is saved.
+def supplement_batch_card(parsed: Sequence[Any], names: dict, units: dict) -> str:
+    """Every product read, with everything that was *not* counted named.
 
-    Everything downstream trusts these numbers completely — they go straight
-    into a daily total with no plate to check them against — so this card is the
-    only place a misread digit can be caught. It shows every line, including the
-    ones that were rejected, because a nutrient silently missing from a panel is
-    indistinguishable from one the product does not contain.
+    A nutrient silently missing from a panel is indistinguishable from one the
+    product does not contain, and this card is the only place the difference can
+    be caught — these numbers go into every future daily total with no plate to
+    check them against. So the rejected lines and the untracked actives are
+    shown as prominently as the accepted ones.
     """
-    lines = [f"💊 <b>{_esc(name)}</b>", f"per {_esc(serving_desc)}", ""]
-    for c in kept:
-        unit = units.get(c.nutrient_id, "")
-        lines.append(
-            f"   • {_esc(names.get(c.nutrient_id, str(c.nutrient_id)))} — "
-            f"{fmt_amount(c.amount, unit)}"
-        )
-    if dropped:
+    lines = [f"💊 <b>{len(parsed)} product(s) read</b>", ""]
+    for sup in parsed:
+        if not sup["nutrients"]:
+            lines.append(f"⬜️ <b>{_esc(sup['name'])}</b> — nothing I track; not saved")
+            if sup.get("not_tracked"):
+                lines.append(f"     <i>{_esc(sup['not_tracked'])}</i>")
+            lines.append("")
+            continue
+        lines.append(f"✅ <b>{_esc(sup['name'])}</b> — per {_esc(sup['serving_desc'])}")
+        for c in sup["_kept"]:
+            lines.append(
+                f"     • {_esc(names.get(c.nutrient_id, str(c.nutrient_id)))} — "
+                f"{fmt_amount(c.amount, units.get(c.nutrient_id, ''))}"
+            )
+        for d in sup["_dropped"]:
+            lines.append(f"     ⚠️ {_esc(d.printed_label or '?')} — {_esc(d.reason)}")
+        if sup.get("not_tracked"):
+            lines.append(f"     <i>not counted: {_esc(sup['not_tracked'])}</i>")
         lines.append("")
-        lines.append("⚠️ <b>Not recorded</b>")
-        for d in dropped:
-            label = d.printed_label or names.get(d.nutrient_id, str(d.nutrient_id))
-            lines.append(f"   • {_esc(label)} — {_esc(d.reason)}")
-    lines += ["", "Check these against the packet. Nothing is saved until you confirm."]
+    lines.append("Check these against the packets. Nothing is saved until you confirm.")
     return "\n".join(lines)
 
 
