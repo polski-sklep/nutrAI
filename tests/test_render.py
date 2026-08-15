@@ -171,3 +171,25 @@ def test_logged_card_congratulates_rather_than_inventing_gaps():
 
 def test_logged_card_survives_a_user_with_no_targets():
     assert "Logged" in logged_card("x", {1008: 100.0}, [])
+
+
+def test_day_card_shows_entry_times_in_the_users_timezone():
+    """logged_at is UTC; the card was formatting it raw.
+
+    A meal logged at 16:09 Warsaw appeared as 14:09 on the day card while every
+    other message called it 16:09 — and the disagreement read as an entry that
+    had failed to disappear after being undone.
+    """
+    import datetime as dt
+
+    entries = [{
+        "id": 1, "logged_at": dt.datetime(2026, 8, 15, 14, 9, tzinfo=dt.timezone.utc),
+        "slot": "lunch", "name": "rice", "total_grams": 400, "source": "text",
+        "confidence": 0.9, "kcal": 500, "protein": 20,
+    }]
+    warsaw = day_card(DAY, PROGRESS, entries, tz="Europe/Warsaw")
+    assert "16:09" in warsaw, warsaw
+    assert "14:09" not in warsaw
+
+    # And the default stays UTC rather than guessing.
+    assert "14:09" in day_card(DAY, PROGRESS, entries)

@@ -1337,15 +1337,15 @@ def test_rate_offers_buttons_and_records_a_tap(harness):
         assert len(rows) == 1
         assert rows[0]["kind"] == "energy" and float(rows[0]["value"]) == 7.0
 
-        # /f alone goes straight to the focus keypad, no kind picker.
+        # Naming the kind skips the picker.
         harness.sent.clear()
-        await harness.feed("/f")
+        await harness.feed("/rate focus")
         card = harness.sent.last()
         assert "focus" in card.text
         assert all(b.startswith("ratev:focus:") for b in card.buttons), card.buttons
 
-        # And typing still works.
-        await harness.feed("/f 9")
+        # And typing the whole thing still works.
+        await harness.feed("/rate focus 9")
         assert float(
             await p.fetchval(
                 "SELECT value FROM observation WHERE user_id=$1 AND kind='focus'", uid
@@ -1360,8 +1360,8 @@ def test_rate_offers_buttons_and_records_a_tap(harness):
 def test_a_number_after_the_rating_keypad_is_the_rating(harness):
     """A bare number is also the repeat selector, and the keypad invites one.
 
-    /f then "4" pulled up dish 4 from the repeat menu instead of recording
-    focus 4 — the grammar had already claimed bare numbers.
+    A rating prompt then "4" pulled up dish 4 from the repeat menu instead of
+    recording focus 4 — the grammar had already claimed bare numbers.
     """
 
     async def scenario():
@@ -1378,7 +1378,7 @@ def test_a_number_after_the_rating_keypad_is_the_rating(harness):
         await harness.feed("/r")
 
         harness.sent.clear()
-        await harness.feed("/f")
+        await harness.feed("/rate focus")
         await harness.feed("1")
 
         assert float(

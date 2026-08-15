@@ -278,6 +278,7 @@ def day_card(
     pct_measured: float | None = None,
     energy_sigma: float = 0.0,
     coverage: dict[int, float] | None = None,
+    tz: str = "UTC",
 ) -> str:
     from ..config import CARB, ENERGY_KCAL, FAT, PROTEIN
 
@@ -332,8 +333,15 @@ def day_card(
 
     if entries:
         table.append("")
+        import zoneinfo
+
+        zone = zoneinfo.ZoneInfo(tz)
         for e in entries:
-            when = e["logged_at"].strftime("%H:%M")
+            # In the user's own timezone. logged_at is stored in UTC and was
+            # being formatted raw, so the day card said 14:09 for a meal every
+            # other message called 16:09 — and the disagreement looked like an
+            # entry that had failed to disappear.
+            when = e["logged_at"].astimezone(zone).strftime("%H:%M")
             slot = (e["slot"] or "").upper()[:6]
             table.append(
                 f"{when} {slot:<6} {_esc(e['name'])} — "

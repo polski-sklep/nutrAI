@@ -70,7 +70,6 @@ COMMANDS: list[tuple[str, str]] = [
     ("/yesterday", "the same, for yesterday"),
     ("/fast", "current fast, duration and phase"),
     ("/window", "your eating window, midpoint and stability"),
-    ("/f", "rate your focus now — tap a number"),
     ("/rate", "rate focus, energy, mood, hunger, sleep or rpe"),
     ("/weight", "log a weigh-in, e.g. <code>/weight 78.2</code>"),
     ("/supp", "log today's supplement stack · <code>/supp add</code> to set one up"),
@@ -132,6 +131,7 @@ async def _send_day(msg: Message, u: Any, day: dt.date, show_all: bool = False) 
             pct_measured=float(conf["pct_measured"]) if conf and conf["pct_measured"] is not None else None,
             energy_sigma=sigma,
             coverage=coverage,
+            tz=u["tz"],
         ),
         parse_mode="HTML",
     )
@@ -272,20 +272,19 @@ def _rate_value_keyboard(kind: str) -> InlineKeyboardMarkup:
     ])
 
 
-@dp.message(Command("rate", "f"))
+@dp.message(Command("rate"))
 async def rate(msg: Message) -> None:
-    """`/f` for focus, `/rate` to choose. A number may be typed or tapped."""
+    """`/rate` to choose a kind, then tap or type a number.
+
+    Focus had its own `/f` shortcut, inherited from when ratings were typed and
+    `/f 8` was meaningfully shorter than `/rate focus 8`. With a keypad it saved
+    one tap on one of six kinds, which is not enough to justify privileging one
+    outcome variable over the others in the command list."""
     u = await _user(msg)
-    parts = (msg.text or "").split()
-    is_focus_shortcut = parts[0].lstrip("/").split("@")[0] in ("f",)
-    args = parts[1:]
+    args = (msg.text or "").split()[1:]
 
     kind, value = None, None
-    if is_focus_shortcut:
-        kind = "focus"
-        if args and args[0].replace(".", "").isdigit():
-            value = float(args[0])
-    elif args and args[0].lower() in RATE_KINDS:
+    if args and args[0].lower() in RATE_KINDS:
         kind = args[0].lower()
         if len(args) > 1 and args[1].replace(".", "").isdigit():
             value = float(args[1])

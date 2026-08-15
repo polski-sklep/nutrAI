@@ -124,7 +124,7 @@ async def daily_summary(bot) -> None:
         try:
             await bot.send_message(
                 u["telegram_id"],
-                render.day_card(day, prog, entries, coverage=coverage),
+                render.day_card(day, prog, entries, coverage=coverage, tz=u["tz"]),
                 parse_mode="HTML",
             )
         except Exception as exc:
