@@ -54,6 +54,7 @@ b               log a whole meal template         — zero tokens
 /fast           current fast, duration and phase — zero tokens
 /window         eating window, midpoint and stability, 14 days — zero tokens
 /f 8            rate focus now (also /rate energy 6, /rate rpe 9)
+/weight 78.2    log a weigh-in — the only input to the fat-loss rate
 /insight        fat-loss rate from your weight trend; correlations, gated at n=20
 
 /today  /today all  /yesterday

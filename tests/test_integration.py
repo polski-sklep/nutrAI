@@ -596,6 +596,83 @@ def test_an_unresolvable_meal_still_keeps_the_parse(harness):
     run(scenario())
 
 
+def test_weight_is_recorded_and_implausible_values_refused(harness):
+    """The only input to body_metric, and the only thing that makes /insight work.
+
+    A fat-fingered 782 for 78.2 would bend the weight regression for weeks and
+    never look wrong in a list, so the impossible is refused rather than stored.
+    """
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await p.execute("DELETE FROM body_metric WHERE user_id = $1", uid)
+
+        await harness.feed("/weight 78.2")
+        assert "78.2 kg" in harness.sent.last().text
+        rows = await p.fetch(
+            "SELECT kind, value FROM body_metric WHERE user_id = $1", uid
+        )
+        assert len(rows) == 1
+        assert rows[0]["kind"] == "weight_kg"
+        assert float(rows[0]["value"]) == pytest.approx(78.2)
+
+        # A second reading reports the delta against the first.
+        harness.sent.clear()
+        await harness.feed("/weight 77.6")
+        assert "-0.6 kg" in harness.sent.last().text
+
+        # Nonsense is refused, and nothing is written.
+        harness.sent.clear()
+        await harness.feed("/weight 782")
+        assert "Nothing was saved" in harness.sent.last().text
+        assert await p.fetchval(
+            "SELECT count(*) FROM body_metric WHERE user_id = $1", uid
+        ) == 2
+
+        # No argument is a usage hint, not a crash.
+        harness.sent.clear()
+        await harness.feed("/weight")
+        assert "/weight 78.2" in harness.sent.last().text
+
+        # And none of it costs a model call.
+        assert not harness.llm.calls
+
+    run(scenario())
+
+
+def test_insight_refuses_until_the_weight_span_is_long_enough(harness):
+    """Two weeks minimum: glycogen and water swamp fat over anything shorter."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+        from nutrai.core import insight
+
+        p = await db.pool()
+        await p.execute("DELETE FROM body_metric WHERE user_id = $1", uid)
+
+        # Three days of weigh-ins is not a trend, however tidy the numbers.
+        for offset, kg in ((2, 78.4), (1, 78.1), (0, 77.9)):
+            await p.execute(
+                """INSERT INTO body_metric (user_id, measured_at, local_date, kind, value)
+                   VALUES ($1, now() - ($2 || ' days')::interval,
+                           current_date - $2::int, 'weight_kg', $3)""",
+                uid, str(offset), kg,
+            )
+
+        assert await db.weight_span_days(uid) == 3
+        assert insight.fat_loss_rate(await db.weight_series(uid), [2000.0] * 3) is None
+
+        harness.sent.clear()
+        await harness.feed("/insight")
+        assert f"Need {insight.MIN_TREND_DAYS}+ days" in harness.sent.last().text
+
+    run(scenario())
+
+
 def test_llm_calls_are_priced_and_recorded(harness):
     async def scenario():
         uid = await _reset()

@@ -72,6 +72,7 @@ COMMANDS: list[tuple[str, str]] = [
     ("/window", "your eating window, midpoint and stability"),
     ("/f", "rate your focus now, e.g. <code>/f 8</code>"),
     ("/rate", "energy, mood, hunger, sleep or rpe — <code>/rate energy 6</code>"),
+    ("/weight", "log a weigh-in, e.g. <code>/weight 78.2</code>"),
     ("/insight", "fat-loss rate and what the data actually supports"),
     ("/spend", "what this has cost in API calls"),
 ]
@@ -262,6 +263,66 @@ async def rate(msg: Message) -> None:
     need = max(0, insight.MIN_PAIRS - n)
     tail = f" · {need} more before this can be analysed" if need else " · analysable"
     await msg.answer(f"{kind} {value:g} at {h:.1f}h fasted{tail}")
+
+
+@dp.message(Command("weight", "w"))
+async def weight(msg: Message) -> None:
+    """`/weight 78.2`.
+
+    The only input path to `body_metric`, and therefore the only thing that
+    makes `/insight` capable of answering anything. Mifflin-St Jeor is a ±10%
+    population estimate; the slope of your own weight against date is the one
+    energy-balance instrument you actually own, and it needs feeding.
+    """
+    u = await _user(msg)
+    parts = (msg.text or "").replace(",", ".").split()[1:]
+    try:
+        kg = float(parts[0])
+    except (IndexError, ValueError):
+        await msg.answer(
+            "⚖️ <code>/weight 78.2</code> — weigh yourself at the same time of day, "
+            "ideally before breakfast.",
+            parse_mode="HTML",
+        )
+        return
+
+    # A fat-fingered 782 for 78.2 would bend the regression for weeks and never
+    # look wrong in a list. Refuse the impossible rather than store it.
+    if not 20 <= kg <= 400:
+        await msg.answer(
+            f"⚖️ {kg:g} kg is outside anything I will record. Nothing was saved.",
+            parse_mode="HTML",
+        )
+        return
+
+    _id, prev = await db.log_body_metric(
+        u["id"], "weight_kg", kg, tz=u["tz"], rollover_hour=u["day_rollover_hour"]
+    )
+
+    lines = [f"⚖️ <b>{kg:g} kg</b> recorded."]
+    if prev is not None:
+        delta = kg - prev
+        arrow = "▲" if delta > 0 else "▼" if delta < 0 else "▬"
+        lines.append(f"   {arrow} {delta:+.1f} kg since your last weigh-in ({prev:g} kg)")
+        if abs(delta) >= 3:
+            lines.append(
+                "   ⚠️ That is a large jump. Day-to-day swings are mostly water and "
+                "gut content — if it was a typo, send the right number and I will "
+                "use the later reading."
+            )
+
+    span = await db.weight_span_days(u["id"])
+    need = insight.MIN_TREND_DAYS - span
+    if need > 0:
+        lines += [
+            "",
+            f"📈 {need} more day{'s' if need != 1 else ''} of weigh-ins before "
+            "<code>/insight</code> can estimate a rate. Glycogen and water swamp "
+            "fat over anything shorter.",
+        ]
+    else:
+        lines += ["", "📈 <code>/insight</code> has enough to work with."]
+    await msg.answer("\n".join(lines), parse_mode="HTML")
 
 
 @dp.message(Command("insight"))

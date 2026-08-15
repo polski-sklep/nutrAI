@@ -485,6 +485,50 @@ async def observations(user_id: int, kind: str, days: int = 90) -> list[asyncpg.
     )
 
 
+async def log_body_metric(
+    user_id: int, kind: str, value: float, *, note: str | None = None,
+    tz: str = "Europe/Warsaw", rollover_hour: int = 4,
+) -> tuple[int, float | None]:
+    """Write one body measurement. Returns its id and the previous value.
+
+    Generic in `kind` because the table is: weight_kg today, bodyfat_pct and
+    blood markers later, all read by the same window functions.
+
+    The previous value comes back so the caller can show a delta without a
+    second round trip — and so an implausible jump can be pointed out at the
+    moment it is entered, which is the only moment anyone remembers what they
+    actually saw on the scale.
+    """
+    now = dt.datetime.now(dt.timezone.utc)
+    p = await pool()
+    async with p.acquire() as con, con.transaction():
+        prev = await con.fetchval(
+            """SELECT value FROM body_metric
+                WHERE user_id = $1 AND kind = $2
+             ORDER BY measured_at DESC LIMIT 1""",
+            user_id, kind,
+        )
+        new_id = await con.fetchval(
+            """INSERT INTO body_metric (user_id, measured_at, local_date, kind, value, note)
+               VALUES ($1,$2,$3,$4,$5,$6) RETURNING id""",
+            user_id, now, local_date_for(now, tz, rollover_hour), kind, value, note,
+        )
+    return new_id, (float(prev) if prev is not None else None)
+
+
+async def weight_span_days(user_id: int) -> int:
+    """Calendar days between the first and last weigh-in. `/insight` needs 14."""
+    p = await pool()
+    row = await p.fetchrow(
+        """SELECT min(local_date) AS lo, max(local_date) AS hi
+             FROM body_metric WHERE user_id = $1 AND kind = 'weight_kg'""",
+        user_id,
+    )
+    if not row or row["lo"] is None:
+        return 0
+    return (row["hi"] - row["lo"]).days + 1
+
+
 async def weight_series(user_id: int, days: int = 42) -> list[tuple[dt.date, float]]:
     p = await pool()
     rows = await p.fetch(
