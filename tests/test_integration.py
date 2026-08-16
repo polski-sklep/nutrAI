@@ -1856,3 +1856,55 @@ def test_profile_lines_after_the_card_do_not_reach_the_food_parser(harness):
         assert harness.llm.calls, "the meal was swallowed by the profile prompt"
 
     run(scenario())
+
+
+def test_replying_to_the_target_list_sets_a_target(harness):
+    """Third time a card taught one syntax and refused the obvious reply.
+    After reading a list of targets, "Alcohol 0g" is what a person sends."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await harness.feed("/target")
+        harness.llm.calls.clear()
+        harness.sent.clear()
+
+        await harness.feed("Alcohol 0g")
+        assert not harness.llm.calls, harness.llm.calls
+        reply = harness.sent.last().text
+        assert "ceiling" in reply, reply
+
+        row = await p.fetchrow(
+            """SELECT min_amount, max_amount, rationale FROM target
+                WHERE user_id=$1 AND nutrient_id=1018 AND effective_to IS NULL""", uid)
+        # A ceiling, not a floor: the standing target was a ceiling of 16 g and
+        # reading "0" as a minimum would invert the meaning entirely.
+        assert row["min_amount"] is None
+        assert float(row["max_amount"]) == 0.0
+        assert row["rationale"] == "manual"
+
+        # A meal still gets through while the prompt is open.
+        harness.sent.clear()
+        await harness.feed("250 g minced beef, 164 g rice")
+        assert harness.llm.calls, "the meal was swallowed by the target prompt"
+
+    run(scenario())
+
+
+def test_a_bare_number_follows_the_bound_already_there(harness):
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await harness.feed("/target")
+        await harness.feed("Fibre 45")     # standing target is a minimum
+        row = await p.fetchrow(
+            """SELECT min_amount, max_amount FROM target
+                WHERE user_id=$1 AND nutrient_id=1079 AND effective_to IS NULL""", uid)
+        assert float(row["min_amount"]) == 45.0
+        assert row["max_amount"] is None
+
+    run(scenario())

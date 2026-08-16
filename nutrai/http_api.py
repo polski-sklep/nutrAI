@@ -35,6 +35,11 @@ BIND = os.getenv("NUTRAI_HTTP_BIND", "127.0.0.1")
 PORT = int(os.getenv("NUTRAI_HTTP_PORT", "8081"))
 
 KINDS = {"lifting", "cardio", "cycling", "running", "walk", "swim", "sport", "rest", "other"}
+# Intensity is a small closed set on purpose. A 1-10 RPE from one client and a
+# "hard" from another are not comparable, and averaging them would invent a
+# precision neither has — so both are accepted, separately, and neither is
+# derived from the other. Absent means unknown, never moderate.
+INTENSITIES = {"easy", "moderate", "hard", "max"}
 
 
 def _authorised(request: web.Request) -> bool:
@@ -84,6 +89,19 @@ async def post_activity(request: web.Request) -> web.Response:
     if kcal is not None and not 0 <= kcal <= 10000:
         return web.json_response({"error": "kcal_burned out of range"}, status=400)
 
+    intensity = body.get("intensity")
+    if intensity is not None:
+        intensity = str(intensity).lower().strip()
+        if intensity not in INTENSITIES:
+            return web.json_response(
+                {"error": f"intensity must be one of {sorted(INTENSITIES)}"}, status=400)
+    try:
+        rpe = float(body["rpe"]) if body.get("rpe") is not None else None
+    except (TypeError, ValueError):
+        return web.json_response({"error": "rpe must be a number"}, status=400)
+    if rpe is not None and not 1 <= rpe <= 10:
+        return web.json_response({"error": "rpe must be between 1 and 10"}, status=400)
+
     # Every field is validated before the database is touched. Reaching
     # get_or_create_user first meant a request with a malformed date still
     # created an app_user row on its way to being rejected — a write performed
@@ -102,6 +120,7 @@ async def post_activity(request: web.Request) -> web.Response:
 
     activity_id, created = await db.record_activity(
         user["id"], day, kind, minutes=minutes, kcal_burned=kcal,
+        intensity=intensity, rpe=rpe,
         note=(str(body["note"])[:500] if body.get("note") else None),
     )
     log.info("activity %s %s %s (%s)", user["id"], day, kind, "new" if created else "duplicate")

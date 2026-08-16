@@ -551,6 +551,120 @@ async def _apply_profile_edits(msg: Message, u: Any, edits: list[tuple[int, str]
 # Not aliased to /targets: that name is reserved for core/plan.py, which is
 # written and deliberately unwired until stage 5. Squatting on it would make
 # the eventual wiring a rename with muscle memory already attached.
+TARGET_LINE = re.compile(
+    r"^\s*(?P<name>[A-Za-z][A-Za-z0-9 ,\-]*?)\s+"
+    r"(?:(?P<bound>max|min|ceiling|floor|at most|at least|under|over)\s+)?"
+    r"(?P<value>\d+(?:\.\d+)?|clear|none|off|reset)\s*"
+    r"(?P<unit>kcal|kj|mg|ug|µg|mcg|g|iu)?\s*$",
+    re.IGNORECASE,
+)
+
+
+async def _set_one_target(msg: Message, u: Any, term: str, bound: str | None,
+                          value_tok: str) -> bool:
+    """Resolve a nutrient and set or clear one target. False if unresolvable."""
+    # Search the word the card printed, not only the word USDA stores.
+    matches = await db.find_nutrients(render.usda_name_for(term) or term)
+    if not matches:
+        return False
+    today = _today(u)
+    standing = {r["nutrient_id"]: r for r in await db.standing_targets(u["id"])}
+
+    # Match what the card actually shows. It prints "Alcohol"; the column is
+    # "Alcohol, ethyl"; and asking the user to choose between that and "Total
+    # sugar alcohols" after they typed the word on screen is the card refusing
+    # its own vocabulary.
+    exact = [m for m in matches
+             if term.lower() in (m["name"].lower(), render._short(m["name"]).lower())]
+    if len(exact) == 1:
+        matches = exact
+    elif len(matches) > 1:
+        # Otherwise prefer something you already have a target for: those are
+        # the rows the list you just read was made of.
+        owned = [m for m in matches if m["id"] in standing]
+        if len(owned) == 1:
+            matches = owned
+
+    if len(matches) > 1:
+        shown = "\n".join(f"• {render._esc(render._short(m['name']))}" for m in matches)
+        await msg.answer(f"{render._esc(term)} matches several — say which:\n{shown}",
+                         parse_mode="HTML")
+        return True
+    n = matches[0]
+    current = standing.get(n["id"])
+
+    if value_tok.lower() in ("clear", "reset", "none", "off"):
+        row = await db.profile(u["id"])
+        try:
+            targets, _w = profile_mod.derive_targets(
+                sex=row["user"]["sex"], weight_kg=row["weight_kg"],
+                height_cm=float(row["user"]["height_cm"]) if row["user"]["height_cm"] else None,
+                age=profile_mod.age_years(row["user"]["birth_date"], today),
+                activity=float(row["user"]["activity_factor"]) if row["user"]["activity_factor"] else None,
+                deficit=float(row["user"]["deficit_kcal"] or 0), goal=row["user"]["goal"],
+            )
+            restored = targets.get(n["id"])
+        except (profile_mod.IncompleteProfile, TypeError):
+            restored = None
+        if restored:
+            await db.apply_targets(u["id"], {n["id"]: restored}, today, "profile recalculation")
+            lo, hi = restored
+            what = f"back to the derived {lo:g} {n['unit']} minimum" if lo is not None \
+                else f"back to the derived {hi:g} {n['unit']} ceiling"
+        else:
+            what = "not cleared — the profile is too incomplete to derive a default"
+        await msg.answer(f"🎯 <b>{render._esc(render._short(n['name']))}</b> {render._esc(what)}.",
+                         parse_mode="HTML")
+        return True
+
+    value = float(value_tok)
+    if bound:
+        is_max = bound.lower() in ("max", "ceiling", "at most", "under")
+    elif current is not None:
+        # Follow the target that is already there. Replying "Alcohol 0" to a
+        # list showing "Alcohol max 16 G" plainly means a ceiling of nothing,
+        # and reading it as a floor would invert it.
+        is_max = current["min_amount"] is None
+    else:
+        is_max = False
+
+    await db.set_manual_target(
+        u["id"], n["id"], today,
+        minimum=None if is_max else value,
+        maximum=value if is_max else None,
+    )
+    word = "ceiling" if is_max else "minimum"
+    extra = ""
+    if is_max and value == 0:
+        extra = "\n<i>Zero is a real ceiling: anything at all will now flag.</i>"
+    await msg.answer(
+        f"🎯 <b>{render._esc(render._short(n['name']))}</b> daily {word} set to "
+        f"<b>{value:g} {render._esc(n['unit'].lower())}</b>.{extra}\n\n"
+        "<i>Yesterday is still judged against what it was set to then — "
+        "targets are versioned, not rewritten.</i>",
+        parse_mode="HTML",
+    )
+    return True
+
+
+async def _try_target_lines(msg: Message, u: Any, text: str) -> bool:
+    """"Alcohol 0g", one per line. False if it does not name a nutrient."""
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    parsed = [TARGET_LINE.match(ln) for ln in lines]
+    if not lines or not all(parsed):
+        return False
+    # Resolve every name before changing anything: a message that is really a
+    # meal must fall through whole, not half-applied.
+    for m in parsed:
+        term = m.group("name").strip()
+        if not await db.find_nutrients(render.usda_name_for(term) or term):
+            return False
+    for m in parsed:
+        await _set_one_target(msg, u, m.group("name").strip(),
+                              m.group("bound"), m.group("value"))
+    return True
+
+
 @dp.message(Command("target"))
 async def target_cmd(msg: Message) -> None:
     """`/target` lists · `/target fibre 40` sets a floor · `max 2000` a ceiling.
@@ -566,79 +680,22 @@ async def target_cmd(msg: Message) -> None:
     if not args:
         await msg.answer(render.target_list_card(await db.standing_targets(u["id"])),
                          parse_mode="HTML")
+        # Having just read a list, the natural next message is "Alcohol 0g",
+        # not "/target alcohol max 0". Third time a card has taught one format
+        # and refused the obvious one; the gate is the same gate.
+        await db.put_pending(u["id"], "target_await", {})
         return
 
-    # Trailing token is the value (or `clear`); `max`/`min` may precede it.
-    value_tok = args[-1].lower().replace(",", ".")
-    bound = "max" if len(args) > 1 and args[-2].lower() in ("max", "ceiling", "under") else "min"
-    name_toks = args[:-2] if bound == "max" or (
-        len(args) > 1 and args[-2].lower() in ("min", "floor", "least")) else args[:-1]
-    term = " ".join(name_toks).strip()
-    if not term:
-        await msg.answer("Name a nutrient — <code>/target fibre 40</code>.", parse_mode="HTML")
+    joined = " ".join(args)
+    if await _try_target_lines(msg, u, joined):
         return
-
-    matches = await db.find_nutrients(term)
-    if not matches:
-        await msg.answer(
-            f"No nutrient matches {render._esc(term)}. Try <code>/target</code> to see "
-            "the names as they are stored.", parse_mode="HTML")
+    m = TARGET_LINE.match(joined)
+    if m and await _set_one_target(msg, u, m.group("name").strip(),
+                                   m.group("bound"), m.group("value")):
         return
-    if len(matches) > 1 and matches[0]["name"].lower() != term.lower():
-        shown = "\n".join(f"• {render._esc(m['name'])}" for m in matches)
-        await msg.answer(
-            f"{render._esc(term)} matches several — say which:\n{shown}", parse_mode="HTML")
-        return
-    n = matches[0]
-    today = _today(u)
-
-    if value_tok in ("clear", "reset", "none", "off"):
-        # Re-derive rather than leaving a hole: removing your override should
-        # restore the default, not delete the target entirely.
-        row = await db.profile(u["id"])
-        restored = None
-        try:
-            targets, _w = profile_mod.derive_targets(
-                sex=row["user"]["sex"], weight_kg=row["weight_kg"],
-                height_cm=float(row["user"]["height_cm"]) if row["user"]["height_cm"] else None,
-                age=profile_mod.age_years(row["user"]["birth_date"], today),
-                activity=float(row["user"]["activity_factor"]) if row["user"]["activity_factor"] else None,
-                deficit=float(row["user"]["deficit_kcal"] or 0),
-            )
-            restored = targets.get(n["id"])
-        except (profile_mod.IncompleteProfile, TypeError):
-            pass
-        if restored:
-            await db.apply_targets(u["id"], {n["id"]: restored}, today, "profile recalculation")
-            lo, hi = restored
-            what = f"back to {lo:g} {n['unit']} minimum" if lo else f"back to {hi:g} {n['unit']} ceiling"
-        else:
-            await db.set_manual_target(u["id"], n["id"], today, None, None) if False else None
-            what = "cleared — the profile is too incomplete to derive a default"
-        await msg.answer(f"🎯 <b>{render._esc(n['name'])}</b> {render._esc(what)}.",
-                         parse_mode="HTML")
-        return
-
-    try:
-        value = float(value_tok)
-        assert value > 0
-    except (ValueError, AssertionError):
-        await msg.answer(
-            f"<code>{render._esc(value_tok)}</code> is not a number. "
-            f"<code>/target {render._esc(term)} 40</code>.", parse_mode="HTML")
-        return
-
-    await db.set_manual_target(
-        u["id"], n["id"], today,
-        minimum=value if bound == "min" else None,
-        maximum=value if bound == "max" else None,
-    )
-    word = "daily minimum" if bound == "min" else "daily ceiling"
     await msg.answer(
-        f"🎯 <b>{render._esc(n['name'])}</b> {word} set to "
-        f"<b>{value:g} {render._esc(n['unit'])}</b>.\n\n"
-        "<i>Yesterday is still judged against what it was set to then — "
-        "targets are versioned, not rewritten.</i>",
+        f"I could not find a nutrient in {render._esc(joined)}. "
+        "Try <code>/target</code> to see the names as they are stored.",
         parse_mode="HTML",
     )
 
@@ -1314,7 +1371,8 @@ async def _apply_when(entry_id: int, ops: list[Any], u: Any) -> dt.date | None:
 # dutifully spent a Sonnet call establishing that "78.4" is not a food. A prompt
 # that ignores its own answer is worse than no prompt, so a fifth prompt now
 # inherits the behaviour instead of repeating the bug.
-AWAITING_KINDS = ("supp_label", "fix_entry", "weight_await", "rate_await", "profile_await")
+AWAITING_KINDS = ("supp_label", "fix_entry", "weight_await", "rate_await",
+                  "profile_await", "target_await")
 
 
 async def _consume_awaited_reply(msg: Message, u: Any, text: str) -> bool:
@@ -1343,6 +1401,11 @@ async def _consume_awaited_reply(msg: Message, u: Any, text: str) -> bool:
             return False   # not numbered lines, so it is a meal: let it through
         await _apply_profile_edits(msg, u, edits)
         return True
+
+    if kind == "target_await":
+        # Falls through to the meal parser when the line does not name a
+        # nutrient, so "chicken 200g" is still dinner.
+        return await _try_target_lines(msg, u, text)
 
     # The numeric prompts decline anything that is not a number, so a message
     # that happens to arrive while one is open is still read as a meal.

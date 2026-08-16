@@ -901,6 +901,7 @@ async def supplements_due(user_id: int, day: dt.date) -> list[int]:
 async def record_activity(
     user_id: int, day: dt.date, kind: str, *,
     minutes: int | None = None, kcal_burned: float | None = None,
+    intensity: str | None = None, rpe: float | None = None,
     note: str | None = None,
 ) -> tuple[int, bool]:
     """Append one session. Returns (id, created).
@@ -914,15 +915,17 @@ async def record_activity(
         existing = await con.fetchval(
             """SELECT id FROM activity
                 WHERE user_id = $1 AND local_date = $2 AND kind = $3
-                  AND minutes IS NOT DISTINCT FROM $4""",
-            user_id, day, kind, minutes,
+                  AND minutes IS NOT DISTINCT FROM $4
+                  AND intensity IS NOT DISTINCT FROM $5""",
+            user_id, day, kind, minutes, intensity,
         )
         if existing:
             return existing, False
         new_id = await con.fetchval(
-            """INSERT INTO activity (user_id, local_date, kind, minutes, kcal_burned, note)
-               VALUES ($1,$2,$3,$4,$5,$6) RETURNING id""",
-            user_id, day, kind, minutes, kcal_burned, note,
+            """INSERT INTO activity
+                 (user_id, local_date, kind, minutes, kcal_burned, intensity, rpe, note)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id""",
+            user_id, day, kind, minutes, kcal_burned, intensity, rpe, note,
         )
         return new_id, True
 
@@ -984,7 +987,12 @@ async def sleep_predictors(user_id: int, days: int = 120) -> list[asyncpg.Record
             SELECT a.local_date,
                    sum(COALESCE(a.minutes, 0))     AS minutes,
                    sum(COALESCE(a.kcal_burned, 0)) AS kcal_burned,
-                   bool_or(a.kind = 'lifting')     AS lifted
+                   bool_or(a.kind = 'lifting')     AS lifted,
+                   -- Hard sessions, not sessions. 45 minutes easy and 45
+                   -- minutes at threshold demand different things afterwards,
+                   -- and pooling them flattens the signal being looked for.
+                   bool_or(a.intensity IN ('hard', 'max')) AS hard_session,
+                   max(a.rpe)                      AS peak_rpe
               FROM activity a WHERE a.user_id = $1
           GROUP BY a.local_date
         )

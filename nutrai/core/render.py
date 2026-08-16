@@ -272,40 +272,74 @@ def logged_card(
     return "\n".join(lines)
 
 
+# USDA names are database entries, not English. The map is a module constant
+# because it has to be invertible: the card prints "Fibre" and the column is
+# "Fiber, total dietary", so anything that lets a user type a nutrient name has
+# to be able to search the word it showed them.
+_SHORT_NAMES: dict[str, str] = {
+    "Carbohydrate, by difference": "Carbs",
+    "Total lipid (fat)": "Fat",
+    "Fiber, total dietary": "Fibre",
+    "Fatty acids, total saturated": "Saturated fat",
+    "Vitamin C, total ascorbic acid": "Vitamin C",
+    "Vitamin D (D2 + D3)": "Vitamin D",
+    "Vitamin A, RAE": "Vitamin A",
+    "Folate, total": "Folate",
+    "PUFA 22:6 n-3 (DHA)": "Omega-3 (DHA)",
+    "Alcohol, ethyl": "Alcohol",
+    "Energy": "Energy",
+    # The chemical symbol is what the USDA column is called, and it reads as a
+    # second word rather than as a restatement of the first.
+    "Calcium, Ca": "Calcium",
+    "Iron, Fe": "Iron",
+    "Magnesium, Mg": "Magnesium",
+    "Potassium, K": "Potassium",
+    "Sodium, Na": "Sodium",
+    "Zinc, Zn": "Zinc",
+    "Phosphorus, P": "Phosphorus",
+    "Selenium, Se": "Selenium",
+    "Copper, Cu": "Copper",
+    "Manganese, Mn": "Manganese",
+    "Vitamin B-12": "Vitamin B12",
+    "Vitamin B-6": "Vitamin B6",
+    "Vitamin E (alpha-tocopherol)": "Vitamin E",
+    "Vitamin K (phylloquinone)": "Vitamin K",
+    "Cholesterol": "Cholesterol",
+    "Sugars, total including NLEA": "Sugars",
+    "Sugars, Total": "Sugars",
+}
+
+# Display name -> the USDA name to search for. Spellings people actually type
+# are folded in: the card says Fibre and the database says Fiber, and a user
+# who types the word on their screen should not be told it does not exist.
+DISPLAY_TO_USDA: dict[str, str] = {v.lower(): k for k, v in _SHORT_NAMES.items()}
+DISPLAY_TO_USDA.update({
+    "fiber": "Fiber, total dietary",
+    "carbs": "Carbohydrate, by difference",
+    "carbohydrate": "Carbohydrate, by difference",
+    "carbohydrates": "Carbohydrate, by difference",
+    "sat fat": "Fatty acids, total saturated",
+    "saturates": "Fatty acids, total saturated",
+    "dha": "PUFA 22:6 n-3 (DHA)",
+    "omega-3": "PUFA 22:6 n-3 (DHA)",
+    "omega 3": "PUFA 22:6 n-3 (DHA)",
+    "calories": "Energy",
+    "kcal": "Energy",
+    "b12": "Vitamin B-12",
+    "b6": "Vitamin B-6",
+    "sugar": "Sugars, total including NLEA",
+    "salt": "Sodium, Na",
+})
+
+
 def _short(name: str) -> str:
     """USDA names are database entries, not English. Tidy the common ones."""
-    return {
-        "Carbohydrate, by difference": "Carbs",
-        "Total lipid (fat)": "Fat",
-        "Fiber, total dietary": "Fibre",
-        "Fatty acids, total saturated": "Saturated fat",
-        "Vitamin C, total ascorbic acid": "Vitamin C",
-        "Vitamin D (D2 + D3)": "Vitamin D",
-        "Vitamin A, RAE": "Vitamin A",
-        "Folate, total": "Folate",
-        "PUFA 22:6 n-3 (DHA)": "Omega-3 (DHA)",
-        "Alcohol, ethyl": "Alcohol",
-        "Energy": "Energy",
-        # The chemical symbol is what the USDA column is called, and it reads
-        # as a second word rather than as a restatement of the first.
-        "Calcium, Ca": "Calcium",
-        "Iron, Fe": "Iron",
-        "Magnesium, Mg": "Magnesium",
-        "Potassium, K": "Potassium",
-        "Sodium, Na": "Sodium",
-        "Zinc, Zn": "Zinc",
-        "Phosphorus, P": "Phosphorus",
-        "Selenium, Se": "Selenium",
-        "Copper, Cu": "Copper",
-        "Manganese, Mn": "Manganese",
-        "Vitamin B-12": "Vitamin B12",
-        "Vitamin B-6": "Vitamin B6",
-        "Vitamin E (alpha-tocopherol)": "Vitamin E",
-        "Vitamin K (phylloquinone)": "Vitamin K",
-        "Cholesterol": "Cholesterol",
-        "Sugars, total including NLEA": "Sugars",
-        "Sugars, Total": "Sugars",
-    }.get(name, name.split(",")[0])
+    return _SHORT_NAMES.get(name, name.split(",")[0])
+
+
+def usda_name_for(term: str) -> str | None:
+    """The database name behind a name shown on a card, if there is one."""
+    return DISPLAY_TO_USDA.get(term.strip().lower())
 
 
 # --------------------------------------------------------------- day view
@@ -1108,7 +1142,9 @@ def target_list_card(rows: Sequence[Any]) -> str:
             v = f"min {float(lo):g}"
         else:
             v = f"max {float(hi):g}"
-        return f"{_short(r['name'])[:20]:<22}{v} {r['unit']}"
+        unit = {"UG": "µg", "MG": "mg", "G": "g", "KCAL": "kcal",
+                "IU": "IU", "KJ": "kJ"}.get(r["unit"], r["unit"].lower())
+        return f"{_short(r['name'])[:20]:<22}{v} {unit}"
 
     out = ["🎯 <b>Your targets</b>"]
     if mine:
