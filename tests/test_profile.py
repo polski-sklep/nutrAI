@@ -216,3 +216,19 @@ def test_the_goal_sets_the_protein_floor():
     assert recomp[1003][0] == round(2.2 * 78)
     assert cut[1003][0] == round(2.0 * 78)
     assert recomp[1003][0] > cut[1003][0]
+
+
+def test_numeric_columns_do_not_store_a_floats_binary_expansion():
+    """75.2 stored itself as
+    75.2000000000000028421709430404007434844970703125, and 1.55 as
+    1.5500000000000000444089209850062616169452667236328125. Rounding the float
+    first cannot fix it — those *are* those values in binary."""
+    from nutrai.db import num
+
+    assert str(num(75.2, 2)) == "75.2"
+    assert str(num(1.55)) == "1.55"
+    assert str(num(9.2, 1)) == "9.2"
+    assert num(None) is None
+    # Integral values normalise without an exponent creeping in.
+    assert str(num(180.0)) == "180"
+    assert str(num(2000.0)) == "2000"

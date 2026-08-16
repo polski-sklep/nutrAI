@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import decimal
 import json
 from typing import Any, Iterable, Sequence
 
@@ -29,6 +30,26 @@ async def close() -> None:
 
 
 # ------------------------------------------------------------------- users
+
+
+def num(v: float | int | None, places: int = 4) -> decimal.Decimal | None:
+    """Float -> Decimal, on the way into a `numeric` column.
+
+    asyncpg hands Postgres the float's exact binary expansion, so 75.2 stores
+    itself as 75.2000000000000028421709430404007434844970703125 and 1.55 as
+    1.5500000000000000444089209850062616169452667236328125. Rounding the float
+    first does not help — those *are* those values in binary — so the fix is to
+    leave float behind before the column, not to tidy it afterwards.
+
+    Nothing measured here has four decimal places of meaning; the point is that
+    a stored number should not claim more precision than the thing it measures.
+    """
+    if v is None:
+        return None
+    d = decimal.Decimal(f"{float(v):.{places}f}")
+    # normalize() alone turns 180 into 1.8E+2, which is the same number and a
+    # worse thing to find in a column you read by eye.
+    return d.quantize(decimal.Decimal(1)) if d == d.to_integral_value() else d.normalize()
 
 
 async def get_or_create_user(telegram_id: int, name: str | None = None) -> asyncpg.Record:
@@ -615,7 +636,7 @@ async def log_body_metric(
         new_id = await con.fetchval(
             """INSERT INTO body_metric (user_id, measured_at, local_date, kind, value, note)
                VALUES ($1,$2,$3,$4,$5,$6) RETURNING id""",
-            user_id, now, local_date_for(now, tz, rollover_hour), kind, value, note,
+            user_id, now, local_date_for(now, tz, rollover_hour), kind, num(value, 2), note,
         )
     return new_id, (float(prev) if prev is not None else None)
 
@@ -1137,7 +1158,7 @@ PROFILE_FIELDS = ("display_name", "sex", "birth_date", "height_cm",
                   "activity_factor", "goal", "goal_weight_kg", "deficit_kcal", "tz")
 
 
-async def mark_targets_derived(user_id: int, weight_kg: float | None, day: dt.date) -> None:
+async def mark_targets_derived(user_id: int, weight_kg: float | None, day: dt.date) -> None:  # noqa: D401
     """Record what the standing targets were computed against.
 
     Separate from `set_profile_field` deliberately: these two are bookkeeping
@@ -1148,7 +1169,7 @@ async def mark_targets_derived(user_id: int, weight_kg: float | None, day: dt.da
     p = await pool()
     await p.execute(
         "UPDATE app_user SET targets_set_at_kg = $2, targets_set_on = $3 WHERE id = $1",
-        user_id, weight_kg, day,
+        user_id, num(weight_kg), day,
     )
 
 
@@ -1161,6 +1182,8 @@ async def set_profile_field(user_id: int, field: str, value: Any) -> None:
     """
     if field not in PROFILE_FIELDS:
         raise ValueError(f"not a profile field: {field!r}")
+    if isinstance(value, float):
+        value = num(value)
     p = await pool()
     await p.execute(f"UPDATE app_user SET {field} = $2 WHERE id = $1", user_id, value)
 
@@ -1232,7 +1255,7 @@ async def apply_targets(
                 """INSERT INTO target
                      (user_id, nutrient_id, min_amount, max_amount, effective_from, rationale)
                    VALUES ($1,$2,$3,$4,$5,$6)""",
-                user_id, nid, lo, hi, day, rationale,
+                user_id, nid, num(lo), num(hi), day, rationale,
             )
             applied += 1
     return applied
@@ -1272,7 +1295,7 @@ async def set_manual_target(
             """INSERT INTO target
                  (user_id, nutrient_id, min_amount, max_amount, effective_from, rationale)
                VALUES ($1,$2,$3,$4,$5,'manual')""",
-            user_id, nutrient_id, minimum, maximum, day,
+            user_id, nutrient_id, num(minimum), num(maximum), day,
         )
 
 
