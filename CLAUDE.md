@@ -200,6 +200,28 @@ area; do not re-litigate them.
   and lets `precedence` rank your own label above USDA's generic row. Decided:
   **ask every time** before reusing a saved product, rather than resolving to it
   silently.
+- **Meal suggestions against the day's remaining gap.** Wanted, and deferred
+  until after the eval fortnight for a reason stronger than the freeze itself:
+  a recommender changes what you eat, and the fortnight exists to collect
+  meals that represent how you *actually* eat. Steer them and the set measures
+  parse accuracy on a diet the recommender invented, with no held-out control
+  to separate the two afterwards. `AUTO_MATCH_SIMILARITY` and the routing
+  table would then be tuned against a distribution that does not exist.
+
+  Two constraints decided in advance. **The model may never emit a nutrient
+  value here either** — invariant 1 applies unchanged. It may propose foods by
+  name; what they contain is the SQL join, as everywhere else. And **v1 needs
+  no model at all**: rank your own `dish` rows by how much of today's
+  outstanding gap each would close, reading the `log_nutrient` snapshots that
+  already exist. That version is free, instant, and recommends food you keep
+  in the house — where a model asked the same question returns grilled salmon
+  and quinoa, which is a healthy-eating cliché rather than a suggestion.
+
+  Gated on the targets meaning something. The standing energy target came from
+  a bootstrap whose inputs were discarded, and until `/profile` is filled in,
+  recalculated, and corrected against a few weeks of weigh-ins, a recommender
+  would be closing a gap derived from a guess with real precision.
+
 - **`llm/client.py:price()` must return `None`, not a Sonnet-priced guess.**
   Not raising is right — aborting after the API call has been made loses the
   parse and the money both. But a silent fallback in the cost layer is the same
