@@ -1398,3 +1398,88 @@ def test_a_number_after_the_rating_keypad_is_the_rating(harness):
             harness.sent.texts()
 
     run(scenario())
+
+
+def test_activity_endpoint_stores_and_deduplicates(harness):
+    """A workout bot that retries on a timeout will eventually retry on a
+    success, and a duplicated training day silently doubles a covariate."""
+
+    async def scenario():
+        uid = await _reset()
+        import importlib
+        from aiohttp.test_utils import TestClient, TestServer
+
+        os.environ["NUTRAI_HTTP_TOKEN"] = "t"
+        import nutrai.http_api as api
+
+        importlib.reload(api)
+
+        from nutrai import db
+
+        p = await db.pool()
+        await p.execute("DELETE FROM activity WHERE user_id = $1", uid)
+        h = {"X-Nutrai-Token": "t"}
+        body = {
+            "telegram_id": CHAT_ID, "kind": "lifting", "minutes": 60,
+            "kcal_burned": 420, "note": "push day", "local_date": "2026-08-16",
+        }
+        async with TestClient(TestServer(api.build_app())) as c:
+            first = await c.post("/activity", json=body, headers=h)
+            assert first.status == 201, await first.text()
+            assert (await first.json())["created"] is True
+            # The same session posted twice is one session.
+            again = await c.post("/activity", json=body, headers=h)
+            assert again.status == 200
+            assert (await again.json())["created"] is False
+
+        rows = await db.activity_on(uid, dt.date(2026, 8, 16))
+        assert len(rows) == 1
+        assert rows[0]["kind"] == "lifting"
+        assert rows[0]["minutes"] == 60
+        assert float(rows[0]["kcal_burned"]) == 420.0
+
+    run(scenario())
+
+
+def test_sleep_is_joined_to_the_day_before_not_the_morning_after(harness):
+    """Sleep is the one rating whose cause precedes it by a day.
+
+    The snapshot taken at rating time records the overnight fast, which says
+    nothing about the dinner that might have disturbed it.
+    """
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        for t in ("observation", "activity"):
+            await p.execute(f"DELETE FROM {t} WHERE user_id = $1", uid)
+
+        # A meal yesterday, a sleep rating this morning.
+        await harness.feed("250 g minced beef, 164 g rice, a splash of olive oil")
+        card = harness.sent.last()
+        entry_id = _confirm_id(card)
+        await harness.press(f"ok:{entry_id}", card.message_id)
+
+        today = db.local_date_for(dt.datetime.now(dt.timezone.utc), "Europe/Warsaw", 4)
+        await p.execute(
+            "UPDATE log_entry SET local_date = $2 WHERE id = $1", entry_id, today - dt.timedelta(days=1)
+        )
+        await p.execute(
+            """INSERT INTO observation (user_id, local_date, kind, value)
+               VALUES ($1, $2, 'sleep', 6)""",
+            uid, today,
+        )
+        await db.record_activity(uid, today - dt.timedelta(days=1), "lifting", minutes=45)
+
+        rows = await db.sleep_predictors(uid)
+        assert len(rows) == 1, rows
+        r = rows[0]
+        assert float(r["sleep"]) == 6.0
+        # Yesterday's food, not this morning's fast.
+        assert float(r["kcal_yesterday"]) > 500, dict(r)
+        assert int(r["training_minutes"]) == 45
+        assert r["lifted"] is True
+
+    run(scenario())

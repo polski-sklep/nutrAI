@@ -743,6 +743,29 @@ async def insight_cmd(msg: Message) -> None:
         if f.caveat:
             out.append(f"⚠ {escape(f.caveat)}")
 
+    rows = await db.sleep_predictors(u["id"])
+    if rows:
+        out.append("")
+        out.append("<b>sleep vs the day before</b>")
+        sleep = [float(r["sleep"]) for r in rows]
+        for label, key in (
+            ("energy eaten", "kcal_yesterday"),
+            ("alcohol", "alcohol_yesterday"),
+            ("training minutes", "training_minutes"),
+        ):
+            xs = [float(r[key]) for r in rows]
+            if len(set(xs)) < 2:
+                continue
+            f = insight.correlate(f"sleep vs {label}", xs, sleep)
+            out.append(f"{escape(f.label)}: {escape(f.verdict)}")
+            if f.caveat:
+                out.append(f"⚠ {escape(f.caveat)}")
+        if len(rows) < insight.MIN_PAIRS:
+            out.append(
+                f"<i>{len(rows)} nights paired so far. Rate sleep in the morning "
+                f"and the day before it is joined automatically.</i>"
+            )
+
     await msg.answer("\n".join(out), parse_mode="HTML")
 
 
@@ -1500,9 +1523,11 @@ async def run() -> None:
     logging.basicConfig(level=logging.INFO)
     bot = Bot(settings.telegram_token)
     bot.session.middleware(resend_unformatted)
+    from .http_api import start as start_http
     from .jobs.notify import start_scheduler
 
     start_scheduler(bot)
+    await start_http()
     await dp.start_polling(bot)
 
 

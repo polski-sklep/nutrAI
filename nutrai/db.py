@@ -881,3 +881,99 @@ async def supplements_due(user_id: int, day: dt.date) -> list[int]:
         elif r["schedule"] == "alternate" and not r["took_yesterday"]:
             due.append(r["id"])
     return due
+
+
+# --------------------------------------------------------------- activity
+
+
+async def record_activity(
+    user_id: int, day: dt.date, kind: str, *,
+    minutes: int | None = None, kcal_burned: float | None = None,
+    note: str | None = None,
+) -> tuple[int, bool]:
+    """Append one session. Returns (id, created).
+
+    Idempotent on (user, date, kind, minutes), because a workout bot that
+    retries on a timeout will eventually retry on a success, and a duplicated
+    training day would quietly double a covariate rather than fail loudly.
+    """
+    p = await pool()
+    async with p.acquire() as con, con.transaction():
+        existing = await con.fetchval(
+            """SELECT id FROM activity
+                WHERE user_id = $1 AND local_date = $2 AND kind = $3
+                  AND minutes IS NOT DISTINCT FROM $4""",
+            user_id, day, kind, minutes,
+        )
+        if existing:
+            return existing, False
+        new_id = await con.fetchval(
+            """INSERT INTO activity (user_id, local_date, kind, minutes, kcal_burned, note)
+               VALUES ($1,$2,$3,$4,$5,$6) RETURNING id""",
+            user_id, day, kind, minutes, kcal_burned, note,
+        )
+        return new_id, True
+
+
+async def activity_on(user_id: int, day: dt.date) -> list[asyncpg.Record]:
+    p = await pool()
+    return await p.fetch(
+        "SELECT * FROM activity WHERE user_id = $1 AND local_date = $2 ORDER BY id",
+        user_id, day,
+    )
+
+
+async def sleep_predictors(user_id: int, days: int = 120) -> list[asyncpg.Record]:
+    """Each sleep rating against the day *before* it.
+
+    Sleep is the one rating whose cause precedes it by a whole day, and the
+    snapshot taken at rating time is the wrong evidence entirely: rate at 08:00
+    and `hours_fasted` records the overnight fast, which says nothing about the
+    dinner that might have disturbed it. So the join goes backwards.
+
+    The rollover hour does the right thing here for free — a 01:00 snack already
+    belongs to the previous local_date, which is exactly the day whose eating
+    could have affected that night.
+    """
+    p = await pool()
+    return await p.fetch(
+        """
+        WITH sleep AS (
+            SELECT o.local_date, o.value, o.observed_at
+              FROM observation o
+             WHERE o.user_id = $1 AND o.kind = 'sleep'
+               AND o.local_date > current_date - $2::int
+        ),
+        intake AS (
+            SELECT e.local_date,
+                   sum(CASE WHEN ln.nutrient_id = 1008 THEN ln.amount END) AS kcal,
+                   sum(CASE WHEN ln.nutrient_id = 1018 THEN ln.amount END) AS alcohol_g,
+                   max(e.logged_at)                                        AS last_meal_at
+              FROM log_entry e
+              JOIN log_nutrient ln ON ln.entry_id = e.id
+             WHERE e.user_id = $1 AND e.status = 'confirmed'
+          GROUP BY e.local_date
+        ),
+        load AS (
+            SELECT a.local_date,
+                   sum(COALESCE(a.minutes, 0))     AS minutes,
+                   sum(COALESCE(a.kcal_burned, 0)) AS kcal_burned,
+                   bool_or(a.kind = 'lifting')     AS lifted
+              FROM activity a WHERE a.user_id = $1
+          GROUP BY a.local_date
+        )
+        SELECT s.local_date,
+               s.value                              AS sleep,
+               COALESCE(i.kcal, 0)                  AS kcal_yesterday,
+               COALESCE(i.alcohol_g, 0)             AS alcohol_yesterday,
+               i.last_meal_at,
+               COALESCE(l.minutes, 0)               AS training_minutes,
+               COALESCE(l.kcal_burned, 0)           AS training_kcal,
+               COALESCE(l.lifted, false)            AS lifted
+          FROM sleep s
+          LEFT JOIN intake i ON i.local_date = s.local_date - 1
+          LEFT JOIN load   l ON l.local_date = s.local_date - 1
+         ORDER BY s.local_date
+        """,
+        user_id, days,
+    )
