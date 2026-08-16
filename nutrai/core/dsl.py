@@ -334,7 +334,11 @@ class Component:
     grams: float
     state: str = "as_logged"
     yield_factor: float = 1.0
-    grams_source: str = "repeat"
+    # Defaults to an estimate rather than to "repeat". "repeat" is a fact
+    # about how the entry was made, which log_entry.source already records;
+    # this column answers how the mass was arrived at. Conflating them made
+    # every repeated portion read as a guess.
+    grams_source: str = "estimate"
 
 
 def apply(components: list[Component], ops: list[Op]) -> tuple[list[Component], list[AddComponent]]:

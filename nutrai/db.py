@@ -182,7 +182,7 @@ async def dish_by_slug(user_id: int, slug: str) -> asyncpg.Record | None:
 async def dish_components(dish_id: int) -> list[asyncpg.Record]:
     p = await pool()
     return await p.fetch(
-        """SELECT fdc_id, label, grams, state, yield_factor, optional
+        """SELECT fdc_id, label, grams, state, yield_factor, optional, grams_source
              FROM dish_component WHERE dish_id = $1 ORDER BY position""",
         dish_id,
     )
@@ -221,9 +221,13 @@ async def upsert_dish(
         await con.execute("DELETE FROM dish_component WHERE dish_id = $1", dish_id)
         await con.executemany(
             """INSERT INTO dish_component
-                 (dish_id, position, fdc_id, label, grams, yield_factor)
-               VALUES ($1, $2, $3, $4, $5, $6)""",
-            [(dish_id, i, c.fdc_id, c.label, c.grams, c.yield_factor)
+                 (dish_id, position, fdc_id, label, grams, yield_factor, grams_source)
+               VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+            # Provenance goes into the snapshot. Without it a repeat had
+            # nothing to inherit, every component was written as a guess, and
+            # the day's measurement quality fell each time a well-specified
+            # dish was correctly reused. See sql/008_repeat_provenance.sql.
+            [(dish_id, i, c.fdc_id, c.label, c.grams, c.yield_factor, c.grams_source)
              for i, c in enumerate(components)],
         )
     return dish_id
@@ -1173,8 +1177,20 @@ async def profile(user_id: int) -> dict[str, Any]:
             WHERE user_id = $1 AND nutrient_id = 1008 AND effective_to IS NULL""",
         user_id,
     )
+    # Targets you set yourself, as opposed to the ones derived from the
+    # profile. Kept apart because a recalculation must not silently overwrite
+    # a number you chose deliberately.
+    custom = await p.fetch(
+        """SELECT t.nutrient_id, n.name, n.unit, t.min_amount, t.max_amount
+             FROM target t JOIN nutrient n ON n.id = t.nutrient_id
+            WHERE t.user_id = $1 AND t.effective_to IS NULL AND t.rationale = 'manual'
+         ORDER BY n.name""",
+        user_id,
+    )
     return {
         "user": u,
+        "supplements": await supplement_stack(user_id),
+        "custom_targets": custom,
         "weight_kg": float(w["value"]) if w else None,
         "weighed_on": w["local_date"] if w else None,
         "energy_target": float(energy["max_amount"]) if energy and energy["max_amount"] else None,
@@ -1212,3 +1228,52 @@ async def apply_targets(
             )
             applied += 1
     return applied
+
+
+async def find_nutrients(term: str, limit: int = 6) -> list[asyncpg.Record]:
+    """Resolve a nutrient by the name a person would type.
+
+    Exact, then prefix, then contains — so "iron" finds Iron rather than
+    "Iron, Fe" losing to some longer row that merely contains the word.
+    """
+    p = await pool()
+    return await p.fetch(
+        """SELECT id, name, unit FROM nutrient
+            WHERE lower(name) LIKE '%' || lower($1) || '%'
+         ORDER BY (lower(name) = lower($1)) DESC,
+                  (lower(name) LIKE lower($1) || '%') DESC,
+                  length(name)
+            LIMIT $2""",
+        term, limit,
+    )
+
+
+async def set_manual_target(
+    user_id: int, nutrient_id: int, day: dt.date,
+    minimum: float | None = None, maximum: float | None = None,
+) -> None:
+    """Invariant 3 again: close the standing row, insert a new one."""
+    p = await pool()
+    async with p.acquire() as con, con.transaction():
+        await con.execute(
+            """UPDATE target SET effective_to = $3
+                WHERE user_id=$1 AND nutrient_id=$2 AND effective_to IS NULL""",
+            user_id, nutrient_id, day,
+        )
+        await con.execute(
+            """INSERT INTO target
+                 (user_id, nutrient_id, min_amount, max_amount, effective_from, rationale)
+               VALUES ($1,$2,$3,$4,$5,'manual')""",
+            user_id, nutrient_id, minimum, maximum, day,
+        )
+
+
+async def standing_targets(user_id: int) -> list[asyncpg.Record]:
+    p = await pool()
+    return await p.fetch(
+        """SELECT t.nutrient_id, n.name, n.unit, t.min_amount, t.max_amount, t.rationale
+             FROM target t JOIN nutrient n ON n.id = t.nutrient_id
+            WHERE t.user_id = $1 AND t.effective_to IS NULL
+         ORDER BY (t.rationale = 'manual') DESC, n.name""",
+        user_id,
+    )

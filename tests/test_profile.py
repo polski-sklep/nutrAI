@@ -139,3 +139,49 @@ def test_labels_do_not_run_into_their_values():
         if line[:1].isdigit() and ". " in line:
             label, _, rest = line.partition(". ")
             assert "  " in rest, line
+
+
+# ------------------------------------------------- what a person actually types
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("M", "male"), ("m", "male"), ("male", "male"), ("Male", "male"),
+    ("F", "female"), ("woman", "female"),
+])
+def test_sex_accepts_the_letter_people_type(raw, expected):
+    from nutrai.bot import PROFILE_VALIDATORS
+    assert PROFILE_VALIDATORS["sex"](raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["21/09/1991", "1991-09-21", "21.09.1991", "21-09-1991"])
+def test_birth_date_accepts_day_first_forms(raw):
+    from nutrai.bot import PROFILE_VALIDATORS
+    assert PROFILE_VALIDATORS["birth_date"](raw) == dt.date(1991, 9, 21)
+
+
+@pytest.mark.parametrize("raw,expected", [("176cm", 176.0), ("176 cm", 176.0), ("176", 176.0)])
+def test_height_tolerates_the_unit(raw, expected):
+    from nutrai.bot import PROFILE_VALIDATORS
+    assert PROFILE_VALIDATORS["height_cm"](raw) == expected
+
+
+def test_a_future_or_absurd_birth_date_is_refused():
+    from nutrai.bot import PROFILE_VALIDATORS
+    with pytest.raises(ValueError):
+        PROFILE_VALIDATORS["birth_date"]("21/09/2099")
+
+
+def test_numbered_lines_are_profile_edits():
+    from nutrai.bot import _profile_edits
+    assert _profile_edits("2. M\n3. 21/09/1991\n4. 176cm") == [
+        (2, "M"), (3, "21/09/1991"), (4, "176cm"),
+    ]
+
+
+def test_a_meal_is_not_mistaken_for_a_profile_edit():
+    """"2 eggs" and "2. M" differ only by punctuation, and guessing wrong
+    either loses a meal or writes nonsense into the profile."""
+    from nutrai.bot import _profile_edits
+    assert _profile_edits("2 eggs, 3 rashers bacon") is None
+    assert _profile_edits("250 g chicken and rice") is None
+    assert _profile_edits("2. M\ngnocchi with pesto") is None   # partial: not profile

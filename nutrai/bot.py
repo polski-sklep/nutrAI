@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+import re
 import zoneinfo
 from collections import defaultdict
 from html import escape
@@ -82,6 +83,7 @@ COMMANDS: list[tuple[str, str]] = [
     ("/window", "your eating window, midpoint and stability"),
     ("/rate", "rate focus, energy, mood, hunger, sleep or rpe"),
     ("/profile", "your details and the targets derived from them"),
+    ("/target", "set a nutrient target yourself, e.g. <code>/target fibre 40</code>"),
     ("/weight", "log a weigh-in, e.g. <code>/weight 78.2</code>"),
     ("/supp", "log today's supplement stack · <code>/supp add</code> to set one up"),
     ("/undo", "unlog the last thing you logged today"),
@@ -410,78 +412,241 @@ async def _rating_text(u: Any, kind: str, value: float) -> str:
     return "\n".join(lines)
 
 
+def _num(v: str, lo: float, hi: float) -> float | None:
+    """A number, tolerating the unit the user naturally typed after it."""
+    cleaned = re.sub(r"[^\d.\-]", "", v.replace(",", "."))
+    n = float(cleaned)
+    return n if lo <= n <= hi else None
+
+
+def _date(v: str) -> dt.date:
+    """ISO, or the day-first forms a European keyboard produces.
+
+    Day-first rather than month-first: the deployment is Europe/Warsaw and
+    locale_units is metric. It is still a guess for 09/05/1991, which is why
+    the reply echoes the date back as "9 May 1991" — a transcription is
+    checkable at the moment it is made, and this one is.
+    """
+    v = v.strip()
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d.%m.%Y", "%d-%m-%Y", "%d %b %Y", "%d %B %Y"):
+        try:
+            d = dt.datetime.strptime(v, fmt).date()
+        except ValueError:
+            continue
+        if dt.date(1900, 1, 1) <= d <= dt.date.today():
+            return d
+        raise ValueError(v)
+    raise ValueError(v)
+
+
+# Accept what a person types, not what a parser would prefer. Every one of
+# these was a real refusal: "M" for male, "21/09/1991" for a birth date,
+# "176cm" for a height.
 PROFILE_VALIDATORS: dict[str, Any] = {
-    "sex": lambda v: v.lower() if v.lower() in ("male", "female") else None,
-    "goal": lambda v: v.lower() if v.lower() in ("lose", "maintain", "gain") else None,
-    "birth_date": lambda v: dt.date.fromisoformat(v),
-    "height_cm": lambda v: float(v) if 100 <= float(v) <= 250 else None,
-    "activity_factor": lambda v: float(v) if 1.0 <= float(v) <= 2.5 else None,
-    "goal_weight_kg": lambda v: float(v) if 20 <= float(v) <= 400 else None,
-    "deficit_kcal": lambda v: float(v) if -1500 <= float(v) <= 1500 else None,
-    "tz": lambda v: v if zoneinfo.ZoneInfo(v) else None,
-    "display_name": lambda v: v[:80],
+    "sex": lambda v: {"m": "male", "male": "male", "man": "male",
+                      "f": "female", "female": "female", "woman": "female"}.get(v.strip().lower()),
+    "goal": lambda v: {"lose": "lose", "lose weight": "lose", "cut": "lose",
+                       "maintain": "maintain", "maintenance": "maintain",
+                       "gain": "gain", "bulk": "gain"}.get(v.strip().lower()),
+    "birth_date": _date,
+    "height_cm": lambda v: _num(v, 100, 250),
+    "activity_factor": lambda v: _num(v, 1.0, 2.5),
+    "goal_weight_kg": lambda v: _num(v, 20, 400),
+    "deficit_kcal": lambda v: _num(v, -1500, 1500),
+    "tz": lambda v: v.strip() if zoneinfo.ZoneInfo(v.strip()) else None,
+    "display_name": lambda v: v.strip()[:80] or None,
 }
 
+# "2. M" is a profile edit. "2 eggs" is breakfast. The punctuation after the
+# number is the whole discriminator, and it has to be required: without it,
+# answering a numbered list and describing a meal are the same string, and
+# guessing wrong either loses a meal or writes nonsense into the profile.
+PROFILE_LINE = re.compile(r"^\s*(\d{1,2})\s*[.):]\s*(\S.*?)\s*$")
 
-@dp.message(Command("profile", "me"))
-async def profile_cmd(msg: Message) -> None:
-    """`/profile` reads · `/profile 4 183` sets line 4.
 
-    These five numbers used to exist only as arguments to a bootstrap script:
-    they were read once, turned into targets, and discarded. That made every
-    target unexplainable — you could see 2,180 kcal and nothing could tell you
-    what it was derived from — and uncorrectable without hand-editing the
-    database.
-    """
-    u = await _user(msg)
-    parts = (msg.text or "").split(maxsplit=2)
+def _profile_edits(text: str) -> list[tuple[int, str]] | None:
+    """Every line numbered, or none. A partial match is not a profile message."""
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return None
+    out = []
+    for ln in lines:
+        m = PROFILE_LINE.match(ln)
+        if not m:
+            return None
+        out.append((int(m.group(1)), m.group(2)))
+    return out
 
-    if len(parts) < 3:
-        data = await db.profile(u["id"])
-        await msg.answer(
-            render.profile_card(data, _today(u)),
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="🔄 recalculate targets", callback_data="precalc:"),
-            ]]),
-        )
-        return
 
-    try:
-        index = int(parts[1])
+async def _apply_profile_edits(msg: Message, u: Any, edits: list[tuple[int, str]]) -> None:
+    """Apply what is valid, refuse what is not, and say which was which."""
+    notes: list[str] = []
+    changed = False
+    for index, raw in edits:
+        if not 1 <= index <= len(render.PROFILE_ROWS):
+            notes.append(f"❌ line {index} — the list runs 1–{len(render.PROFILE_ROWS)}")
+            continue
         field, label, hint = render.PROFILE_ROWS[index - 1]
-        assert index >= 1
-    except (ValueError, IndexError, AssertionError):
-        await msg.answer(
-            f"Line numbers run 1–{len(render.PROFILE_ROWS)}. "
-            "<code>/profile</code> on its own shows them.",
-            parse_mode="HTML",
-        )
-        return
+        try:
+            value = PROFILE_VALIDATORS[field](raw)
+        except Exception:
+            value = None
+        if value is None:
+            # Refused rather than coerced. A height of 0 or a timezone of
+            # "Warsaw" stores happily and then poisons every derived number.
+            notes.append(
+                f"❌ <b>{render._esc(label)}</b> takes {render._esc(hint)} — "
+                f"got {render._esc(raw)}"
+            )
+            continue
+        await db.set_profile_field(u["id"], field, value)
+        changed = True
+        # Echo the interpretation, not the input: "21/09/1991" and
+        # "21 Sep 1991" are the same claim, and only one of them is checkable.
+        shown = f"{value:%-d %b %Y}" if isinstance(value, dt.date) else str(value)
+        notes.append(f"✅ {render._esc(label)} → {render._esc(shown)}")
 
-    try:
-        value = PROFILE_VALIDATORS[field](parts[2].strip())
-    except Exception:
-        value = None
-    if value is None:
-        # Refused rather than coerced: a height of 0 or a timezone of "Warsaw"
-        # would be stored happily and then quietly poison every derived number.
-        await msg.answer(
-            f"❌ <b>{render._esc(label)}</b> takes {render._esc(hint)}. "
-            f"Got {render._esc(parts[2].strip())} — nothing changed.",
-            parse_mode="HTML",
-        )
-        return
-
-    await db.set_profile_field(u["id"], field, value)
     data = await db.profile(u["id"])
     await msg.answer(
-        f"✅ {render._esc(label)} updated.\n\n" + render.profile_card(data, _today(u)),
+        "\n".join(notes) + "\n\n" + render.profile_card(data, _today(u)),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="🔄 recalculate targets", callback_data="precalc:"),
         ]]),
     )
+    if changed:
+        # Keep the prompt open: filling in a profile is a handful of lines, and
+        # closing it after the first would send the second to the food parser.
+        await db.put_pending(u["id"], "profile_await", {})
+
+
+# Not aliased to /targets: that name is reserved for core/plan.py, which is
+# written and deliberately unwired until stage 5. Squatting on it would make
+# the eventual wiring a rename with muscle memory already attached.
+@dp.message(Command("target"))
+async def target_cmd(msg: Message) -> None:
+    """`/target` lists · `/target fibre 40` sets a floor · `max 2000` a ceiling.
+
+    Everything except protein and energy used to be a population RDA you could
+    not touch without editing the database. A target you disagree with and
+    cannot change is worse than no target: it turns every day card into a
+    verdict handed down by nobody.
+    """
+    u = await _user(msg)
+    args = (msg.text or "").split()[1:]
+
+    if not args:
+        await msg.answer(render.target_list_card(await db.standing_targets(u["id"])),
+                         parse_mode="HTML")
+        return
+
+    # Trailing token is the value (or `clear`); `max`/`min` may precede it.
+    value_tok = args[-1].lower().replace(",", ".")
+    bound = "max" if len(args) > 1 and args[-2].lower() in ("max", "ceiling", "under") else "min"
+    name_toks = args[:-2] if bound == "max" or (
+        len(args) > 1 and args[-2].lower() in ("min", "floor", "least")) else args[:-1]
+    term = " ".join(name_toks).strip()
+    if not term:
+        await msg.answer("Name a nutrient — <code>/target fibre 40</code>.", parse_mode="HTML")
+        return
+
+    matches = await db.find_nutrients(term)
+    if not matches:
+        await msg.answer(
+            f"No nutrient matches {render._esc(term)}. Try <code>/target</code> to see "
+            "the names as they are stored.", parse_mode="HTML")
+        return
+    if len(matches) > 1 and matches[0]["name"].lower() != term.lower():
+        shown = "\n".join(f"• {render._esc(m['name'])}" for m in matches)
+        await msg.answer(
+            f"{render._esc(term)} matches several — say which:\n{shown}", parse_mode="HTML")
+        return
+    n = matches[0]
+    today = _today(u)
+
+    if value_tok in ("clear", "reset", "none", "off"):
+        # Re-derive rather than leaving a hole: removing your override should
+        # restore the default, not delete the target entirely.
+        row = await db.profile(u["id"])
+        restored = None
+        try:
+            targets, _w = profile_mod.derive_targets(
+                sex=row["user"]["sex"], weight_kg=row["weight_kg"],
+                height_cm=float(row["user"]["height_cm"]) if row["user"]["height_cm"] else None,
+                age=profile_mod.age_years(row["user"]["birth_date"], today),
+                activity=float(row["user"]["activity_factor"]) if row["user"]["activity_factor"] else None,
+                deficit=float(row["user"]["deficit_kcal"] or 0),
+            )
+            restored = targets.get(n["id"])
+        except (profile_mod.IncompleteProfile, TypeError):
+            pass
+        if restored:
+            await db.apply_targets(u["id"], {n["id"]: restored}, today, "profile recalculation")
+            lo, hi = restored
+            what = f"back to {lo:g} {n['unit']} minimum" if lo else f"back to {hi:g} {n['unit']} ceiling"
+        else:
+            await db.set_manual_target(u["id"], n["id"], today, None, None) if False else None
+            what = "cleared — the profile is too incomplete to derive a default"
+        await msg.answer(f"🎯 <b>{render._esc(n['name'])}</b> {render._esc(what)}.",
+                         parse_mode="HTML")
+        return
+
+    try:
+        value = float(value_tok)
+        assert value > 0
+    except (ValueError, AssertionError):
+        await msg.answer(
+            f"<code>{render._esc(value_tok)}</code> is not a number. "
+            f"<code>/target {render._esc(term)} 40</code>.", parse_mode="HTML")
+        return
+
+    await db.set_manual_target(
+        u["id"], n["id"], today,
+        minimum=value if bound == "min" else None,
+        maximum=value if bound == "max" else None,
+    )
+    word = "daily minimum" if bound == "min" else "daily ceiling"
+    await msg.answer(
+        f"🎯 <b>{render._esc(n['name'])}</b> {word} set to "
+        f"<b>{value:g} {render._esc(n['unit'])}</b>.\n\n"
+        "<i>Yesterday is still judged against what it was set to then — "
+        "targets are versioned, not rewritten.</i>",
+        parse_mode="HTML",
+    )
+
+
+@dp.message(Command("profile", "me"))
+async def profile_cmd(msg: Message) -> None:
+    """`/profile` reads · `/profile 4 183`, or several numbered lines, set.
+
+    These five numbers used to exist only as arguments to a bootstrap script:
+    read once, turned into targets, and discarded. That made every target
+    unexplainable — you could see 2,418 kcal and nothing could tell you what it
+    was derived from — and uncorrectable without hand-editing the database.
+    """
+    u = await _user(msg)
+    text = (msg.text or "")
+    rest = text.split(maxsplit=1)[1] if len(text.split(maxsplit=1)) > 1 else ""
+
+    # `/profile 4 183` and a multi-line block are the same operation.
+    edits = _profile_edits(rest) or (
+        [(int(rest.split()[0]), rest.split(maxsplit=1)[1])]
+        if rest.split() and rest.split()[0].isdigit() and len(rest.split()) > 1
+        else None
+    )
+    if edits:
+        await _apply_profile_edits(msg, u, edits)
+        return
+
+    data = await db.profile(u["id"])
+    await msg.answer(
+        render.profile_card(data, _today(u)),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🔄 recalculate targets", callback_data="precalc:"),
+        ]]),
+    )
+    await db.put_pending(u["id"], "profile_await", {})
 
 
 @dp.callback_query(F.data.startswith("precalc:"))
@@ -1120,7 +1285,7 @@ async def _apply_when(entry_id: int, ops: list[Any], u: Any) -> dt.date | None:
 # dutifully spent a Sonnet call establishing that "78.4" is not a food. A prompt
 # that ignores its own answer is worse than no prompt, so a fifth prompt now
 # inherits the behaviour instead of repeating the bug.
-AWAITING_KINDS = ("supp_label", "fix_entry", "weight_await", "rate_await")
+AWAITING_KINDS = ("supp_label", "fix_entry", "weight_await", "rate_await", "profile_await")
 
 
 async def _consume_awaited_reply(msg: Message, u: Any, text: str) -> bool:
@@ -1313,7 +1478,10 @@ async def _try_repeat(msg: Message, u: Any, cmd: dsl.RepeatCommand) -> bool:
 
     rows = await db.dish_components(dish["id"])
     comps = [
-        dsl.Component(r["label"], r["fdc_id"], float(r["grams"]), r["state"], float(r["yield_factor"]))
+        # The dish now carries provenance, so a repeat inherits it rather than
+        # downgrading a stated portion to a guess every time it is reused.
+        dsl.Component(r["label"], r["fdc_id"], float(r["grams"]), r["state"],
+                      float(r["yield_factor"]), r["grams_source"])
         for r in rows
     ]
 
@@ -1364,7 +1532,9 @@ async def _try_repeat(msg: Message, u: Any, cmd: dsl.RepeatCommand) -> bool:
                   "confidence": 0.7}],
             )
             for c in res.components:
-                new_comps.append(dsl.Component(c.label, c.fdc_id, c.grams, yield_factor=c.yield_factor))
+                new_comps.append(dsl.Component(c.label, c.fdc_id, c.grams,
+                                               yield_factor=c.yield_factor,
+                                               grams_source="stated"))
 
     when = _when_from_ops(ops, u)
     slot = dish["default_slot"]
@@ -1372,7 +1542,13 @@ async def _try_repeat(msg: Message, u: Any, cmd: dsl.RepeatCommand) -> bool:
         if isinstance(op, dsl.SetSlot):
             slot = op.slot
 
-    resolved = [ResolvedComponent(c.label, c.fdc_id, c.grams, c.yield_factor) for c in new_comps if c.fdc_id]
+    # Sigma from the provenance, as on the fix path: a repeated stated mass is
+    # as tight as the statement was, and a repeated guess is still a guess.
+    resolved = [
+        ResolvedComponent(c.label, c.fdc_id, c.grams, c.yield_factor,
+                          estimate.sigma_for(c.grams, c.grams_source), c.grams_source)
+        for c in new_comps if c.fdc_id
+    ]
     entry_id = await db.create_pending_entry(
         u["id"], dish["name"], resolved, source="repeat", slot=slot, confidence=None,
         model=model_used, parse={"ops": [str(o) for o in ops]}, photo_file_id=None,

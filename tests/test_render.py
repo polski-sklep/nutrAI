@@ -36,25 +36,28 @@ def test_unmeasured_nutrient_is_not_shown_as_a_deficiency():
     out = day_card(DAY, PROGRESS, [], coverage=coverage)
 
     assert "<b>not measured</b>" in out
-    assert "Vitamin B-12" in out.split("<b>not measured</b>")[1]
+    assert "Vitamin B12" in out.split("<b>not measured</b>")[1]
     # It must not also appear in the shortfall list above.
-    assert "▽ Vitamin B-12" not in out
+    assert "▽ Vitamin B12" not in out
     # A genuine shortfall still reads as one.
-    assert "▽ Calcium, Ca" in out
+    # Shown by its plain name: the USDA column is "Calcium, Ca", and the
+    # chemical symbol reads as a second word rather than a restatement.
+    assert "▽ Calcium " in out
+    assert "Calcium, Ca" not in out
 
 
 def test_partial_coverage_is_annotated_rather_than_hidden():
     coverage = {1008: 1.0, 1003: 1.0, 1005: 1.0, 1004: 1.0, 1178: 0.42, 1087: 1.0}
     out = day_card(DAY, PROGRESS, [], coverage=coverage)
-    assert "(42% measured)" in out
-    # Still listed — 42% measured and nothing found is real information.
-    assert "▽ Vitamin B-12" in out
+    assert "(only 42% of food has data)" in out
+    # Still listed — 42% covered and nothing found is real information.
+    assert "▽ Vitamin B12" in out
 
 
 def test_full_coverage_adds_no_noise():
     coverage = {nid: 1.0 for nid in (1008, 1003, 1005, 1004, 1178, 1087)}
     out = day_card(DAY, PROGRESS, [], coverage=coverage)
-    assert "measured)" not in out
+    assert "of food has data" not in out
     assert "not measured" not in out
 
 
@@ -234,7 +237,7 @@ def test_score_line_names_the_misses_rather_than_hiding_them():
     ]
     out = score_line(prog, {1008: 1.0, 1003: 1.0})
     # Energy is a ceiling and is not counted as an achievement for being under it.
-    assert "0 of 1 floors reached" in out
+    assert "0 of 1 daily minimums met" in out
     assert "Protein" in out
 
 
@@ -253,7 +256,7 @@ def test_a_ceiling_is_not_an_achievement():
         row(1079, "Fiber, total dietary", "G", 0.2, lo=38, state="under"),
     ]
     out = score_line(barely_eaten, {n: 1.0 for n in (1008, 1005, 1004, 1093, 1003, 1079)})
-    assert "0 of 2 floors reached" in out, out
+    assert "0 of 2 daily minimums met" in out, out
     assert "7 of" not in out
     assert "over:" not in out
 
@@ -273,7 +276,7 @@ def test_a_ceiling_is_flagged_before_it_is_crossed():
     assert "over:" in out and "Fat 111%" in out
     assert "close:" in out and "Energy 92%" in out
     assert "Sodium" not in out
-    assert "1 of 1 floors reached" in out
+    assert "1 of 1 daily minimums met" in out
 
 
 def test_a_count_is_shown_so_the_reading_can_be_checked():
@@ -294,3 +297,29 @@ def test_no_count_means_no_multiplier_shown():
 
     assert "×" not in confirm_card("rice", [C()], {1008: 213.0},
                                    confidence=0.95, warnings=[])
+
+
+def test_database_column_names_never_reach_the_screen():
+    """"Carbohydrate, by diffe" and "Vitamin C, total ascor" were raw USDA
+    column names truncated mid-word. _short() existed the whole time; the row
+    builder simply never called it."""
+    from nutrai.core.render import _short
+
+    for raw, expected in [
+        ("Carbohydrate, by difference", "Carbs"),
+        ("Vitamin C, total ascorbic acid", "Vitamin C"),
+        ("PUFA 22:6 n-3 (DHA)", "Omega-3 (DHA)"),
+        ("Iron, Fe", "Iron"),
+        ("Fiber, total dietary", "Fibre"),
+        ("Total lipid (fat)", "Fat"),
+        ("Vitamin B-12", "Vitamin B12"),
+    ]:
+        assert _short(raw) == expected
+
+    out = day_card(DAY, PROGRESS, [], coverage={nid: 1.0 for nid in
+                                                (1008, 1003, 1005, 1004, 1178, 1087)})
+    # Whole names, not substrings: ", Ca" also matches the comma in a list
+    # like "Vitamin B12, Calcium".
+    for leak in ("Carbohydrate, by diff", "Vitamin C, total ascor", "PUFA",
+                 "Calcium, Ca", "Iron, Fe", "Total lipid", "Fiber, total"):
+        assert leak not in out, leak

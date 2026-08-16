@@ -310,7 +310,7 @@ def test_text_message_to_confirmed_entry_in_today(harness):
         day = harness.sent.find("kcal")
         assert day, harness.sent.texts()
         assert "mince and rice" in day.text
-        assert "% of today's mass was weighed or stated" in day.text
+        assert "was weighed or you told me the amount" in day.text
 
         # Energy actually landed, and is in the right ballpark for
         # 250 g raw mince + 164 g cooked rice + 15 g oil.

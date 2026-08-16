@@ -47,23 +47,31 @@ RDA_FEMALE: dict[int, tuple[float | None, float | None]] = RDA_MALE | {
     1106: (700, 3000),
 }
 
-# What an activity factor means, for a card that has to explain itself.
-ACTIVITY_LABELS: list[tuple[float, str]] = [
-    (1.30, "desk-bound, little exercise"),
-    (1.45, "light — a walk most days"),
-    (1.60, "moderate — training 3-4x a week"),
-    (1.75, "high — training 5-6x a week"),
-    (99.0, "very high — physical job or two-a-days"),
+# Activity describes your ORDINARY DAY, deliberately excluding workouts.
+#
+# The textbook Mifflin multipliers fold exercise into the same number ("1.55 =
+# training 3-5x a week"), which is fine when nothing else knows about your
+# training. Workouts now arrive over HTTP, and the moment anything consumes
+# activity.kcal_burned a multiplier that already contains them counts them
+# twice. Splitting the two is the only version that stays correct as the
+# system grows: this is your baseline life, and training is recorded separately.
+#
+# So the labels talk about how you spend the hours you are not training in.
+ACTIVITY_LEVELS: list[tuple[float, str, str]] = [
+    (1.25, "Seated",   "desk job, car, little walking"),
+    (1.40, "Light",    "some walking, mostly seated"),
+    (1.55, "Moderate", "on your feet a fair amount"),
+    (1.70, "Active",   "on your feet most of the day"),
+    (1.85, "Heavy",    "physical/manual work"),
 ]
 
 
 def activity_label(factor: float | None) -> str:
     if factor is None:
         return "not set"
-    for ceiling, label in ACTIVITY_LABELS:
-        if factor <= ceiling:
-            return label
-    return "very high"
+    # Nearest level, so a hand-typed 1.5 still reads as something.
+    _f, name, gloss = min(ACTIVITY_LEVELS, key=lambda lv: abs(lv[0] - float(factor)))
+    return f"{name} — {gloss}"
 
 
 def age_years(birth_date: dt.date | None, on: dt.date | None = None) -> int | None:

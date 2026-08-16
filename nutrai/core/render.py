@@ -202,7 +202,7 @@ def logged_card(
         amount = float(r["amount"])
         target = r["min_amount"] if r["min_amount"] is not None else r["max_amount"]
         if target is None:
-            lines.append(f"   • {_emoji(nid)} {_esc(r['nutrient_name'])} — "
+            lines.append(f"   • {_emoji(nid)} {_esc(_short(r['nutrient_name']))} — "
                          f"{fmt_amount(amount, r['unit'])}")
             continue
         target = float(target)
@@ -283,9 +283,28 @@ def _short(name: str) -> str:
         "Vitamin D (D2 + D3)": "Vitamin D",
         "Vitamin A, RAE": "Vitamin A",
         "Folate, total": "Folate",
-        "PUFA 22:6 n-3 (DHA)": "DHA",
+        "PUFA 22:6 n-3 (DHA)": "Omega-3 (DHA)",
         "Alcohol, ethyl": "Alcohol",
         "Energy": "Energy",
+        # The chemical symbol is what the USDA column is called, and it reads
+        # as a second word rather than as a restatement of the first.
+        "Calcium, Ca": "Calcium",
+        "Iron, Fe": "Iron",
+        "Magnesium, Mg": "Magnesium",
+        "Potassium, K": "Potassium",
+        "Sodium, Na": "Sodium",
+        "Zinc, Zn": "Zinc",
+        "Phosphorus, P": "Phosphorus",
+        "Selenium, Se": "Selenium",
+        "Copper, Cu": "Copper",
+        "Manganese, Mn": "Manganese",
+        "Vitamin B-12": "Vitamin B12",
+        "Vitamin B-6": "Vitamin B6",
+        "Vitamin E (alpha-tocopherol)": "Vitamin E",
+        "Vitamin K (phylloquinone)": "Vitamin K",
+        "Cholesterol": "Cholesterol",
+        "Sugars, total including NLEA": "Sugars",
+        "Sugars, Total": "Sugars",
     }.get(name, name.split(",")[0])
 
 
@@ -350,8 +369,8 @@ def day_card(
 
     if rest:
         table.append("")
-        table.append("attention" if not show_all else "micronutrients")
-        for r in sorted(rest, key=lambda x: (x["state"] == "ok", x["nutrient_name"])):
+        table.append("Worth a look" if not show_all else "Vitamins and minerals")
+        for r in sorted(rest, key=lambda x: (x["state"] == "ok", _short(x["nutrient_name"]))):
             table.append(_row(r, cov.get(r["nutrient_id"])))
 
     if entries:
@@ -380,13 +399,20 @@ def day_card(
 
     if pct_measured is not None:
         # The number that decides whether anything above it is worth reading.
-        verdict = "" if pct_measured >= 80 else "  ← weigh more" if pct_measured < 50 else ""
-        lines.append(f"<i>{pct_measured:.0f}% of today's mass was weighed or stated{verdict}</i>")
+        # Said plainly: "mass was weighed or stated" is precise and opaque, and
+        # the reader has to work out that the rest of it was guesswork.
+        if pct_measured >= 80:
+            note = f"⚖️ <b>{pct_measured:.0f}%</b> of today's food was weighed or you told me the amount — the numbers above are solid."
+        elif pct_measured >= 50:
+            note = f"⚖️ <b>{pct_measured:.0f}%</b> of today's food was weighed or you told me the amount. The rest is my estimate."
+        else:
+            note = f"⚖️ only <b>{pct_measured:.0f}%</b> of today's food was weighed or stated, so most of the above is guesswork. Stating amounts will sharpen it."
+        lines.append(f"<i>{note}</i>")
 
     if unmeasured:
         lines.append("")
         lines.append("<b>not measured</b> — no food you logged today reports these")
-        lines.append("  " + _esc(", ".join(sorted(r["nutrient_name"][:24] for r in unmeasured))))
+        lines.append("  " + _esc(", ".join(sorted(_short(r["nutrient_name"]) for r in unmeasured))))
 
     if not entries:
         lines.append("\n<i>nothing logged yet</i>")
@@ -402,7 +428,9 @@ def _row(r: Any, covered: float | None = None) -> str:
     # Pad before escaping. `&` in a nutrient name becomes `&amp;` — five source
     # characters that render as one — so padding the escaped string lines the
     # columns up in the source and not on screen.
-    name = f"{r['nutrient_name'][:22]:<22}"
+    # _short() existed and this never called it, so the raw database column
+    # name was truncated mid-word instead: "Carbohydrate, by diffe".
+    name = f"{_short(r['nutrient_name'])[:22]:<22}"
     line = (
         f"{flag} {_esc(name)} {fmt_amount(amount, unit):>12}"
         f"  {pct:>5.0f}% {bar(pct, 8)}"
@@ -418,7 +446,10 @@ def _row(r: Any, covered: float | None = None) -> str:
     # Plain parentheses, not <i>: this line lives inside a <pre> block, and
     # Telegram does not accept nested tags there.
     if covered is not None and covered < COVERAGE_FULL:
-        line += f"  ({covered:.0%} measured)"
+        # "(60% measured)" was read as "you have eaten 60% of it". It means
+        # something quite different: 40% of what you ate sits in a USDA row
+        # that never had this nutrient assayed, so the figure is a floor.
+        line += f"  (only {covered:.0%} of food has data)"
     return line
 
 
@@ -698,13 +729,16 @@ def score_line(progress: Sequence[Any], coverage: dict[int, float] | None = None
     if assessable:
         pct = reached / assessable * 100
         face = "🟢" if pct >= 80 else "🟡" if pct >= 50 else "🔴"
+        # "floors reached" is the internal word for it, and it reads as
+        # jargon on a phone. What the number means is: of the daily minimums
+        # that can be judged today, how many are already met.
         out.append(
-            f"{face} <b>{reached} of {assessable} floors reached</b>  {bar(pct)}  {pct:.0f}%"
+            f"{face} <b>{reached} of {assessable} daily minimums met</b>  {bar(pct)}  {pct:.0f}%"
         )
         if short:
             shown = ", ".join(_esc(m) for m in short[:6])
-            more = f" +{len(short) - 6} more" if len(short) > 6 else ""
-            out.append(f"<i>short: {shown}{more}</i>")
+            more = f" and {len(short) - 6} more" if len(short) > 6 else ""
+            out.append(f"<i>still to go: {shown}{more}</i>")
 
     if breached:
         out.append(f"⚠️ <b>over:</b> {', '.join(_esc(b) for b in breached)}")
@@ -904,11 +938,11 @@ PROFILE_ROWS: list[tuple[str, str, str]] = [
     # (field, label, hint shown when setting it)
     ("display_name",    "Name",           "text"),
     ("sex",             "Sex",            "male / female"),
-    ("birth_date",      "Born",           "YYYY-MM-DD"),
+    ("birth_date",      "Date of birth",  "21/09/1991"),
     ("height_cm",       "Height",         "cm"),
-    ("activity_factor", "Activity",       "1.3 – 1.9"),
+    ("activity_factor", "Daily activity", "1 – 5, or tap a button below"),
     ("goal",            "Goal",           "lose / maintain / gain"),
-    ("goal_weight_kg",  "Goal weight",    "kg"),
+    ("goal_weight_kg",  "Goal weight",    "kg — optional"),
     ("deficit_kcal",    "Daily deficit",  "kcal"),
     ("tz",              "Timezone",       "e.g. Europe/Warsaw"),
 ]
@@ -927,7 +961,9 @@ def profile_card(data: dict[str, Any], today: dt.date | None = None) -> str:
     for i, (field, label, _hint) in enumerate(PROFILE_ROWS, start=1):
         v = u[field]
         if v is None or v == "":
-            shown = "—"
+            # Not everyone is aiming at a number on a scale, and a bare dash
+            # reads as something you failed to fill in. Say which are optional.
+            shown = "not set (optional)" if field == "goal_weight_kg" else "—"
         elif field == "birth_date":
             shown = f"{v:%-d %b %Y}" + (f"  ({age})" if age is not None else "")
         elif field == "height_cm":
@@ -937,7 +973,7 @@ def profile_card(data: dict[str, Any], today: dt.date | None = None) -> str:
         elif field == "deficit_kcal":
             shown = f"{float(v):g} kcal"
         elif field == "activity_factor":
-            shown = f"{float(v):g} — {prof.activity_label(float(v))}"
+            shown = prof.activity_label(float(v))
         else:
             shown = str(v)
         rows.append((f"{i}. {label}", shown))
@@ -982,11 +1018,53 @@ def profile_card(data: dict[str, Any], today: dt.date | None = None) -> str:
     elif missing:
         lines.append("🔥 No energy target: " + ", ".join(m.lower() for m in missing) + " missing.")
 
-    lines += [
-        "",
-        "• <code>/profile 4 183</code> sets line 4",
-        "• <code>/weight</code> for weigh-ins — it is a measurement, not a setting",
-    ]
+    stack = data.get("supplements") or []
+    if stack:
+        lines.append("")
+        lines.append(f"💊 <b>Supplement stack</b> ({len(stack)})")
+        cadence = {"daily": "every day", "alternate": "every other day",
+                   "occasional": "now and then"}
+        lines.append("<pre>" + "\n".join(
+            f"{_esc(_short(s['name']))[:22]:<24}{cadence.get(s['schedule'], s['schedule'])}"
+            for s in stack
+        ) + "</pre>")
+        lines.append("<i>Manage with <code>/supp</code>.</i>")
+
+    custom = data.get("custom_targets") or []
+    lines.append("")
+    if custom:
+        lines.append(f"🎯 <b>Targets you set yourself</b> ({len(custom)})")
+        rows_t = []
+        for t in custom:
+            lo, hi = t["min_amount"], t["max_amount"]
+            if lo is not None and hi is not None:
+                v = f"{float(lo):g}–{float(hi):g} {t['unit']}"
+            elif lo is not None:
+                v = f"at least {float(lo):g} {t['unit']}"
+            else:
+                v = f"at most {float(hi):g} {t['unit']}"
+            rows_t.append(f"{_esc(_short(t['name']))[:20]:<22}{_esc(v)}")
+        lines.append("<pre>" + "\n".join(rows_t) + "</pre>")
+        lines.append("<i>Everything else is derived. <code>/target</code> to change.</i>")
+    else:
+        lines.append(
+            "🎯 Every target is derived from the profile above. "
+            "<code>/target fibre 40</code> to set one yourself."
+        )
+
+    lines.append("")
+    if missing:
+        nxt = next(i for i, (f, _l, _h) in enumerate(PROFILE_ROWS, 1) if u[f] is None)
+        field, label, hint = PROFILE_ROWS[nxt - 1]
+        lines += [
+            f"<b>Next: {_esc(label.lower())}</b> — reply <code>{nxt}. {_esc(hint)}</code>",
+            "<i>You can send several at once, one per line.</i>",
+        ]
+    else:
+        lines += [
+            "Reply with a numbered line to change anything — "
+            "<code>5. 1.4</code>. Several at once is fine.",
+        ]
     return "\n".join(lines)
 
 
@@ -1009,3 +1087,35 @@ def profile_recalc_card(working: dict[str, float], applied: int, weight: float) 
         "<i>Mifflin-St Jeor carries ~10% error. Treat it as a starting point and "
         "correct it against your weight trend — <code>/insight</code>.</i>",
     ])
+
+
+def target_list_card(rows: Sequence[Any]) -> str:
+    """Every standing target, with derived and chosen kept visibly apart."""
+    if not rows:
+        return "No targets set. <code>/profile</code> derives them from your details."
+    mine = [r for r in rows if r["rationale"] == "manual"]
+    derived = [r for r in rows if r["rationale"] != "manual"]
+
+    def fmt(r: Any) -> str:
+        lo, hi = r["min_amount"], r["max_amount"]
+        if lo is not None and hi is not None:
+            v = f"{float(lo):g}–{float(hi):g}"
+        elif lo is not None:
+            v = f"min {float(lo):g}"
+        else:
+            v = f"max {float(hi):g}"
+        return f"{_short(r['name'])[:20]:<22}{v} {r['unit']}"
+
+    out = ["🎯 <b>Your targets</b>"]
+    if mine:
+        out += ["", "<b>Set by you</b>", "<pre>" + "\n".join(_esc(fmt(r)) for r in mine) + "</pre>"]
+    if derived:
+        out += ["", "<b>Derived from your profile</b>",
+                "<pre>" + "\n".join(_esc(fmt(r)) for r in derived) + "</pre>"]
+    out += [
+        "",
+        "• <code>/target fibre 40</code> — a daily minimum",
+        "• <code>/target sodium max 2000</code> — a daily ceiling",
+        "• <code>/target fibre clear</code> — back to derived",
+    ]
+    return "\n".join(out)
