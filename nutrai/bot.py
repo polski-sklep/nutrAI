@@ -65,7 +65,7 @@ def _today(u: Any) -> dt.date:
 # message. Advertising a command you have not written is a bug you only find by
 # reading, so it is now findable by running the tests instead.
 COMMANDS: list[tuple[str, str]] = [
-    ("/r", "repeat something you have eaten before"),
+    ("/repeat", "repeat something you have eaten before"),
     ("/today", "where you stand · <code>/today all</code> for every nutrient"),
     ("/yesterday", "the same, for yesterday"),
     ("/fast", "current fast, duration and phase"),
@@ -1563,10 +1563,39 @@ async def resend_unformatted(make_request, bot: Bot, method):
         return await make_request(bot, method.model_copy(update={"parse_mode": None}))
 
 
+async def sync_command_menu(bot: Bot) -> None:
+    """Push COMMANDS to Telegram's own menu on every start.
+
+    The menu is server-side state that only setMyCommands changes, so removing
+    a command from the code leaves it in the client indefinitely — /f survived
+    three deploys after being deleted, and its description was two revisions
+    behind. A menu maintained by hand is a menu that is wrong.
+
+    Descriptions are stripped of the markup COMMANDS carries for the /start
+    text; Telegram takes plain text only.
+    """
+    import re
+
+    from aiogram.types import BotCommand
+
+    try:
+        await bot.set_my_commands([
+            BotCommand(
+                command=name.lstrip("/"),
+                description=re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", desc)).strip()[:256],
+            )
+            for name, desc in COMMANDS
+        ])
+        log.info("command menu synced: %d commands", len(COMMANDS))
+    except Exception as exc:  # a stale menu must not stop the bot starting
+        log.warning("could not sync the command menu: %s", exc)
+
+
 async def run() -> None:
     logging.basicConfig(level=logging.INFO)
     bot = Bot(settings.telegram_token)
     bot.session.middleware(resend_unformatted)
+    await sync_command_menu(bot)
     from .http_api import start as start_http
     from .jobs.notify import start_scheduler
 

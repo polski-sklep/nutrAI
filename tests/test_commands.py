@@ -84,3 +84,26 @@ def test_command_list_is_not_empty_and_matches_the_table():
     rendered = command_list()
     for name, _desc in COMMANDS:
         assert name in rendered
+
+
+def test_repeat_is_advertised_by_its_full_name_and_listed_first():
+    """It is the most-used path, and /r is muscle memory rather than a name."""
+    assert COMMANDS[0][0] == "/repeat"
+    assert "/r " not in command_list()
+
+
+def test_the_short_alias_still_works():
+    """Dropping it from the menu must not drop it from the dispatcher."""
+    assert {"/r", "/repeat"} <= registered_commands()
+
+
+def test_menu_descriptions_fit_telegrams_limits():
+    """set_my_commands rejects the whole batch if one entry is malformed, and
+    the failure is a stale menu rather than an error anyone sees."""
+    import re
+
+    for name, desc in COMMANDS:
+        cmd = name.lstrip("/")
+        assert re.fullmatch(r"[a-z0-9_]{1,32}", cmd), cmd
+        plain = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", desc)).strip()
+        assert 1 <= len(plain) <= 256, (cmd, len(plain))
