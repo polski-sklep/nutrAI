@@ -20,89 +20,49 @@ import datetime as dt
 
 import asyncpg
 
-from nutrai.config import (
-    ALCOHOL, CAFFEINE, CARB, DATABASE_URL, ENERGY_KCAL, FAT, FIBER, PROTEIN,
-    SAT_FAT, SODIUM, SUGAR,
-)
-
-# nutrient_id: (min, max) for an adult. None = unbounded on that side.
-# Sex-specific where it matters; the male column is used unless --sex female.
-RDA_MALE = {
-    1092: (3400, None),   # Potassium, AI mg
-    1087: (1000, 2500),   # Calcium mg (UL 2500)
-    1089: (8, 45),        # Iron mg (UL 45)
-    1090: (400, None),    # Magnesium mg (UL applies to supplements only)
-    1095: (11, 40),       # Zinc mg (UL 40)
-    1178: (2.4, None),    # B-12 µg
-    1114: (15, 100),      # Vitamin D µg (UL 100)
-    1162: (90, 2000),     # Vitamin C mg (UL 2000)
-    1106: (900, 3000),    # Vitamin A µg RAE (UL 3000 preformed)
-    1177: (400, None),    # Folate µg
-    1253: (None, 300),    # Cholesterol mg — no RDA; conventional ceiling
-    1272: (0.25, None),   # DHA g — no RDA; 250 mg EPA+DHA is the common floor
-}
-RDA_FEMALE = RDA_MALE | {
-    1089: (18, 45),       # Iron mg, premenopausal
-    1090: (310, None),
-    1095: (8, 40),
-    1162: (75, 2000),
-    1106: (700, 3000),
-}
-
-
-def mifflin_st_jeor(sex: str, kg: float, cm: float, age: int) -> float:
-    """Resting energy expenditure, kcal/day. Standard error is around 10%.
-
-    Do not treat the output as a measurement. It is a starting estimate that
-    you correct against three weeks of weight trend, which is the only
-    energy-balance instrument you actually own."""
-    base = 10 * kg + 6.25 * cm - 5 * age
-    return base + (5 if sex == "male" else -161)
-
+from nutrai.config import CARB, DATABASE_URL, ENERGY_KCAL, FAT, PROTEIN, SODIUM
+from nutrai.core.profile import derive_targets
 
 async def main(a: argparse.Namespace) -> None:
     con = await asyncpg.connect(DATABASE_URL)
+    today = dt.date.today()
+    # Keep the inputs. Deriving targets from them and then discarding them left
+    # the numbers unexplainable and unrecomputable — see sql/007_profile.sql.
+    birth = a.birth_date or dt.date(today.year - a.age, today.month, today.day)
     user_id = await con.fetchval(
-        """INSERT INTO app_user (telegram_id, display_name, tz)
-           VALUES ($1,$2,$3)
-           ON CONFLICT (telegram_id) DO UPDATE SET display_name = EXCLUDED.display_name
+        """INSERT INTO app_user
+             (telegram_id, display_name, tz, sex, birth_date, height_cm,
+              activity_factor, deficit_kcal, goal, targets_set_at_kg, targets_set_on)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+           ON CONFLICT (telegram_id) DO UPDATE SET
+             display_name = EXCLUDED.display_name, sex = EXCLUDED.sex,
+             birth_date = EXCLUDED.birth_date, height_cm = EXCLUDED.height_cm,
+             activity_factor = EXCLUDED.activity_factor,
+             deficit_kcal = EXCLUDED.deficit_kcal, goal = EXCLUDED.goal,
+             targets_set_at_kg = EXCLUDED.targets_set_at_kg,
+             targets_set_on = EXCLUDED.targets_set_on
            RETURNING id""",
-        a.telegram_id, a.name, a.tz,
+        a.telegram_id, a.name, a.tz, a.sex, birth, a.height_cm,
+        a.activity, a.deficit, a.goal, a.weight_kg, today,
     )
 
-    ree = mifflin_st_jeor(a.sex, a.weight_kg, a.height_cm, a.age)
-    tdee = ree * a.activity
-    kcal = tdee - a.deficit
-    protein = a.protein_g or round(1.8 * a.weight_kg)
-    fat = a.fat_g or round(0.8 * a.weight_kg)
-    carb = max(0, round((kcal - protein * 4 - fat * 9) / 4))
+    targets, w = derive_targets(
+        sex=a.sex, weight_kg=a.weight_kg, height_cm=a.height_cm, age=a.age,
+        activity=a.activity, deficit=a.deficit,
+        protein_g=a.protein_g, fat_g=a.fat_g,
+    )
+    print(f"REE {w['ree']:.0f} · TDEE {w['tdee']:.0f} · target {w['kcal']:.0f} kcal")
+    print(f"P {w['protein']:.0f} g · F {w['fat']:.0f} g · C {w['carb']:.0f} g")
 
-    print(f"REE {ree:.0f} · TDEE {tdee:.0f} · target {kcal:.0f} kcal")
-    print(f"P {protein} g · F {fat} g · C {carb} g")
+    # The weigh-in that the targets were computed from belongs in the log too,
+    # so the trend starts on day one rather than on the first manual /weight.
+    await con.execute(
+        """INSERT INTO body_metric (user_id, kind, value, local_date, measured_at)
+           VALUES ($1,'weight_kg',$2,$3, now())
+           ON CONFLICT DO NOTHING""",
+        user_id, a.weight_kg, today,
+    )
 
-    rda = RDA_FEMALE if a.sex == "female" else RDA_MALE
-    targets: dict[int, tuple[float | None, float | None]] = {
-        ENERGY_KCAL: (None, round(kcal)),
-        PROTEIN: (protein, None),
-        FAT: (None, round(fat * 1.3)),
-        CARB: (None, round(carb * 1.15)),
-        FIBER: (38 if a.sex == "male" else 25, None),
-        SUGAR: (None, round(kcal * 0.10 / 4)),      # WHO: <10% of energy
-        SAT_FAT: (None, round(kcal * 0.10 / 9)),    # <10% of energy
-        SODIUM: (None, 2300),
-        # EFSA and Health Canada both put habitual adult intake up to 400 mg/day
-        # in the no-concern range, and 200 mg as a single dose. It is a ceiling
-        # rather than a target: nobody has a caffeine requirement.
-        CAFFEINE: (None, 400),
-        # UK guidance is 14 units a week, about 112 g of ethanol; spread evenly
-        # that is 16 g a day. A daily ceiling on a weekly guideline is a
-        # simplification, and the honest use of this number is to notice a
-        # pattern rather than to pass or fail a Friday.
-        ALCOHOL: (None, 16),
-        **rda,
-    }
-
-    today = dt.date.today()
     async with con.transaction():
         for nid, (lo, hi) in targets.items():
             exists = await con.fetchval("SELECT 1 FROM nutrient WHERE id = $1", nid)
@@ -148,6 +108,9 @@ if __name__ == "__main__":
     p.add_argument("--tz", default="Europe/Warsaw")
     p.add_argument("--sex", choices=["male", "female"], required=True)
     p.add_argument("--age", type=int, required=True)
+    p.add_argument("--birth-date", type=dt.date.fromisoformat, default=None,
+                   help="exact date of birth; --age is used to approximate one if omitted")
+    p.add_argument("--goal", choices=["lose", "maintain", "gain"], default=None)
     p.add_argument("--height-cm", type=float, required=True)
     p.add_argument("--weight-kg", type=float, required=True)
     p.add_argument("--activity", type=float, default=1.5,

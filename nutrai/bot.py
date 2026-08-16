@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+import zoneinfo
 from collections import defaultdict
 from html import escape
 from typing import Any
@@ -19,6 +20,7 @@ from aiogram.types import (
 from . import db
 from .config import CONFIDENCE_FLOOR, settings
 from .core import dsl, estimate, fasting, insight, render
+from .core import profile as profile_mod
 from .core.nutrition import ResolvedComponent, total_nutrients
 from .llm import parse as llm
 
@@ -79,6 +81,7 @@ COMMANDS: list[tuple[str, str]] = [
     ("/fast", "current fast, duration and phase"),
     ("/window", "your eating window, midpoint and stability"),
     ("/rate", "rate focus, energy, mood, hunger, sleep or rpe"),
+    ("/profile", "your details and the targets derived from them"),
     ("/weight", "log a weigh-in, e.g. <code>/weight 78.2</code>"),
     ("/supp", "log today's supplement stack · <code>/supp add</code> to set one up"),
     ("/undo", "unlog the last thing you logged today"),
@@ -405,6 +408,123 @@ async def _rating_text(u: Any, kind: str, value: float) -> str:
         recent = ", ".join(f"{float(o['value']):g}" for o in obs[-5:])
         lines.append(f"<i>last few: {recent}</i>")
     return "\n".join(lines)
+
+
+PROFILE_VALIDATORS: dict[str, Any] = {
+    "sex": lambda v: v.lower() if v.lower() in ("male", "female") else None,
+    "goal": lambda v: v.lower() if v.lower() in ("lose", "maintain", "gain") else None,
+    "birth_date": lambda v: dt.date.fromisoformat(v),
+    "height_cm": lambda v: float(v) if 100 <= float(v) <= 250 else None,
+    "activity_factor": lambda v: float(v) if 1.0 <= float(v) <= 2.5 else None,
+    "goal_weight_kg": lambda v: float(v) if 20 <= float(v) <= 400 else None,
+    "deficit_kcal": lambda v: float(v) if -1500 <= float(v) <= 1500 else None,
+    "tz": lambda v: v if zoneinfo.ZoneInfo(v) else None,
+    "display_name": lambda v: v[:80],
+}
+
+
+@dp.message(Command("profile", "me"))
+async def profile_cmd(msg: Message) -> None:
+    """`/profile` reads · `/profile 4 183` sets line 4.
+
+    These five numbers used to exist only as arguments to a bootstrap script:
+    they were read once, turned into targets, and discarded. That made every
+    target unexplainable — you could see 2,180 kcal and nothing could tell you
+    what it was derived from — and uncorrectable without hand-editing the
+    database.
+    """
+    u = await _user(msg)
+    parts = (msg.text or "").split(maxsplit=2)
+
+    if len(parts) < 3:
+        data = await db.profile(u["id"])
+        await msg.answer(
+            render.profile_card(data, _today(u)),
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="🔄 recalculate targets", callback_data="precalc:"),
+            ]]),
+        )
+        return
+
+    try:
+        index = int(parts[1])
+        field, label, hint = render.PROFILE_ROWS[index - 1]
+        assert index >= 1
+    except (ValueError, IndexError, AssertionError):
+        await msg.answer(
+            f"Line numbers run 1–{len(render.PROFILE_ROWS)}. "
+            "<code>/profile</code> on its own shows them.",
+            parse_mode="HTML",
+        )
+        return
+
+    try:
+        value = PROFILE_VALIDATORS[field](parts[2].strip())
+    except Exception:
+        value = None
+    if value is None:
+        # Refused rather than coerced: a height of 0 or a timezone of "Warsaw"
+        # would be stored happily and then quietly poison every derived number.
+        await msg.answer(
+            f"❌ <b>{render._esc(label)}</b> takes {render._esc(hint)}. "
+            f"Got {render._esc(parts[2].strip())} — nothing changed.",
+            parse_mode="HTML",
+        )
+        return
+
+    await db.set_profile_field(u["id"], field, value)
+    data = await db.profile(u["id"])
+    await msg.answer(
+        f"✅ {render._esc(label)} updated.\n\n" + render.profile_card(data, _today(u)),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🔄 recalculate targets", callback_data="precalc:"),
+        ]]),
+    )
+
+
+@dp.callback_query(F.data.startswith("precalc:"))
+async def cb_profile_recalc(cq: CallbackQuery) -> None:
+    """Recompute every derived target from the current profile and weight.
+
+    Deliberately a button and never automatic. Invariant 3 says targets are
+    versioned rather than updated, and the reason is that a weigh-in must not
+    silently rewrite what yesterday was being judged against — you would open
+    /yesterday and find a different verdict than the one you were given.
+    """
+    u = await db.get_or_create_user(cq.from_user.id)
+    data = await db.profile(u["id"])
+    row = data["user"]
+    today = _today(u)
+
+    try:
+        targets, working = profile_mod.derive_targets(
+            sex=row["sex"],
+            weight_kg=data["weight_kg"],
+            height_cm=float(row["height_cm"]) if row["height_cm"] else None,
+            age=profile_mod.age_years(row["birth_date"], today),
+            activity=float(row["activity_factor"]) if row["activity_factor"] else None,
+            deficit=float(row["deficit_kcal"] or 0),
+        )
+    except (profile_mod.IncompleteProfile, TypeError) as exc:
+        missing = str(exc) if isinstance(exc, profile_mod.IncompleteProfile) else "some fields"
+        await cq.answer()
+        await cq.message.answer(
+            f"❌ Cannot compute targets: {render._esc(missing)} still missing. "
+            "Set them with <code>/profile</code> first — a target derived from a "
+            "guessed height looks exactly like a real one, which is worse than none.",
+            parse_mode="HTML",
+        )
+        return
+
+    applied = await db.apply_targets(u["id"], targets, today, "profile recalculation")
+    await db.mark_targets_derived(u["id"], data["weight_kg"], today)
+    await cq.answer("Recalculated")
+    await cq.message.answer(
+        render.profile_recalc_card(working, applied, data["weight_kg"]),
+        parse_mode="HTML",
+    )
 
 
 @dp.message(Command("weight", "w"))

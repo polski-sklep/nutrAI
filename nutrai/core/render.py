@@ -894,3 +894,118 @@ def weight_card(rows: Sequence[Any], tz: str = "UTC") -> str:
             f"{need} more day{'s' if need != 1 else ''} before a rate means anything",
         ]
     return "\n".join(lines)
+
+
+# The profile is numbered so a correction can name a line rather than a field:
+# `/profile 4 183`. Order is stable — inserting a row in the middle would
+# renumber everything below it and turn last week's muscle memory into a wrong
+# edit — so new fields go on the end.
+PROFILE_ROWS: list[tuple[str, str, str]] = [
+    # (field, label, hint shown when setting it)
+    ("display_name",    "Name",           "text"),
+    ("sex",             "Sex",            "male / female"),
+    ("birth_date",      "Born",           "YYYY-MM-DD"),
+    ("height_cm",       "Height",         "cm"),
+    ("activity_factor", "Activity",       "1.3 – 1.9"),
+    ("goal",            "Goal",           "lose / maintain / gain"),
+    ("goal_weight_kg",  "Goal weight",    "kg"),
+    ("deficit_kcal",    "Daily deficit",  "kcal"),
+    ("tz",              "Timezone",       "e.g. Europe/Warsaw"),
+]
+
+
+def profile_card(data: dict[str, Any], today: dt.date | None = None) -> str:
+    """Who the system thinks you are, and what it derived from that."""
+    from . import profile as prof
+
+    u = data["user"]
+    today = today or dt.date.today()
+    age = prof.age_years(u["birth_date"], today)
+
+    lines = ["👤 <b>Your profile</b>", ""]
+    rows: list[tuple[str, str]] = []
+    for i, (field, label, _hint) in enumerate(PROFILE_ROWS, start=1):
+        v = u[field]
+        if v is None or v == "":
+            shown = "—"
+        elif field == "birth_date":
+            shown = f"{v:%-d %b %Y}" + (f"  ({age})" if age is not None else "")
+        elif field == "height_cm":
+            shown = f"{float(v):g} cm"
+        elif field == "goal_weight_kg":
+            shown = f"{float(v):g} kg"
+        elif field == "deficit_kcal":
+            shown = f"{float(v):g} kcal"
+        elif field == "activity_factor":
+            shown = f"{float(v):g} — {prof.activity_label(float(v))}"
+        else:
+            shown = str(v)
+        rows.append((f"{i}. {label}", shown))
+
+    # Weight is not numbered: it is not edited here. It is a dated measurement
+    # and /weight is where measurements go.
+    w = data["weight_kg"]
+    # Width from the content, not a constant: "8. Daily deficit" is exactly 16
+    # characters, so a hardcoded 16 ran the label straight into its value.
+    pad = max(len(lbl) for lbl, _v in rows) + 2
+    body = [f"{lbl:<{pad}}{_esc(val)}" for lbl, val in rows]
+    body.append("")
+    body.append(
+        f"{'Weight':<{pad}}{w:g} kg  ({data['weighed_on']:%-d %b})" if w
+        else f"{'Weight':<{pad}}— no weigh-ins yet"
+    )
+    lines.append("<pre>" + "\n".join(body) + "</pre>")
+
+    # The derivation inputs, checked independently of whether a target exists.
+    # Bootstrap seeded targets without recording what they came from, so "has a
+    # target" and "can explain it" are different questions and the card has to
+    # answer the second one.
+    missing = [lbl for (f, lbl, _h) in PROFILE_ROWS[:5] if u[f] is None]
+    lines.append("")
+    if data["energy_target"]:
+        lines.append(
+            f"🔥 Energy target <b>{data['energy_target']:,.0f} kcal</b>"
+            + (f", set {data['targets_from']:%-d %b}" if data["targets_from"] else "")
+        )
+        set_at = u["targets_set_at_kg"]
+        if missing:
+            lines.append(
+                "   ⚠️ nothing records what it was derived from — "
+                + ", ".join(m.lower() for m in missing)
+                + " missing. Fill those in to make it recomputable."
+            )
+        elif set_at and w and abs(w - float(set_at)) >= 3:
+            lines.append(
+                f"   ⚠️ derived at {float(set_at):g} kg — you are now {w:g} kg. "
+                "Recalculate below."
+            )
+    elif missing:
+        lines.append("🔥 No energy target: " + ", ".join(m.lower() for m in missing) + " missing.")
+
+    lines += [
+        "",
+        "• <code>/profile 4 183</code> sets line 4",
+        "• <code>/weight</code> for weigh-ins — it is a measurement, not a setting",
+    ]
+    return "\n".join(lines)
+
+
+def profile_recalc_card(working: dict[str, float], applied: int, weight: float) -> str:
+    return "\n".join([
+        "✅ <b>Targets recalculated</b>",
+        "",
+        "<pre>"
+        f"{'At weight':<12}{weight:g} kg\n"
+        f"{'Resting':<12}{working['ree']:,.0f} kcal\n"
+        f"{'Maintenance':<12}{working['tdee']:,.0f} kcal\n"
+        f"{'Target':<12}{working['kcal']:,.0f} kcal\n"
+        f"{'Protein':<12}{working['protein']:,.0f} g\n"
+        f"{'Fat':<12}{working['fat']:,.0f} g\n"
+        f"{'Carbs':<12}{working['carb']:,.0f} g"
+        "</pre>",
+        f"{applied} targets updated. Previous ones are closed, not overwritten — "
+        "past days are still judged against what they were set to at the time.",
+        "",
+        "<i>Mifflin-St Jeor carries ~10% error. Treat it as a starting point and "
+        "correct it against your weight trend — <code>/insight</code>.</i>",
+    ])

@@ -1119,3 +1119,96 @@ async def last_weight(user_id: int) -> list[asyncpg.Record]:
          ORDER BY measured_at DESC LIMIT 10""",
         user_id,
     )
+
+
+PROFILE_FIELDS = ("display_name", "sex", "birth_date", "height_cm",
+                  "activity_factor", "goal", "goal_weight_kg", "deficit_kcal", "tz")
+
+
+async def mark_targets_derived(user_id: int, weight_kg: float | None, day: dt.date) -> None:
+    """Record what the standing targets were computed against.
+
+    Separate from `set_profile_field` deliberately: these two are bookkeeping
+    written by the recalculation, not settings a user edits, and putting them
+    on the editable whitelist would let `/profile 12 60` claim the targets were
+    derived from a weight they were not.
+    """
+    p = await pool()
+    await p.execute(
+        "UPDATE app_user SET targets_set_at_kg = $2, targets_set_on = $3 WHERE id = $1",
+        user_id, weight_kg, day,
+    )
+
+
+async def set_profile_field(user_id: int, field: str, value: Any) -> None:
+    """One field, whitelisted by name.
+
+    The whitelist is the point: the field arrives from a user message, and
+    interpolating it into SQL is the one place in this codebase where that
+    would be possible.
+    """
+    if field not in PROFILE_FIELDS:
+        raise ValueError(f"not a profile field: {field!r}")
+    p = await pool()
+    await p.execute(f"UPDATE app_user SET {field} = $2 WHERE id = $1", user_id, value)
+
+
+async def profile(user_id: int) -> dict[str, Any]:
+    """Everything the profile card shows, including the live weight.
+
+    Weight is read from `body_metric`, never copied onto `app_user`: one
+    weight, one place, and `/weight` updates the profile by construction
+    rather than by a trigger someone has to remember to write.
+    """
+    p = await pool()
+    u = await p.fetchrow("SELECT * FROM app_user WHERE id = $1", user_id)
+    w = await p.fetchrow(
+        """SELECT value, local_date FROM body_metric
+            WHERE user_id = $1 AND kind = 'weight_kg'
+         ORDER BY measured_at DESC LIMIT 1""",
+        user_id,
+    )
+    energy = await p.fetchrow(
+        """SELECT max_amount, effective_from FROM target
+            WHERE user_id = $1 AND nutrient_id = 1008 AND effective_to IS NULL""",
+        user_id,
+    )
+    return {
+        "user": u,
+        "weight_kg": float(w["value"]) if w else None,
+        "weighed_on": w["local_date"] if w else None,
+        "energy_target": float(energy["max_amount"]) if energy and energy["max_amount"] else None,
+        "targets_from": energy["effective_from"] if energy else None,
+    }
+
+
+async def apply_targets(
+    user_id: int,
+    targets: dict[int, tuple[float | None, float | None]],
+    day: dt.date,
+    rationale: str,
+) -> int:
+    """Close the standing rows, open new ones. Invariant 3: never an UPDATE.
+
+    A target you changed on Tuesday must not silently rewrite what Monday was
+    judged against, because `/today` for Monday is still a claim about Monday.
+    """
+    p = await pool()
+    applied = 0
+    async with p.acquire() as con, con.transaction():
+        for nid, (lo, hi) in targets.items():
+            if not await con.fetchval("SELECT 1 FROM nutrient WHERE id = $1", nid):
+                continue
+            await con.execute(
+                """UPDATE target SET effective_to = $3
+                    WHERE user_id=$1 AND nutrient_id=$2 AND effective_to IS NULL""",
+                user_id, nid, day,
+            )
+            await con.execute(
+                """INSERT INTO target
+                     (user_id, nutrient_id, min_amount, max_amount, effective_from, rationale)
+                   VALUES ($1,$2,$3,$4,$5,$6)""",
+                user_id, nid, lo, hi, day, rationale,
+            )
+            applied += 1
+    return applied

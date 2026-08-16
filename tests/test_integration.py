@@ -1718,3 +1718,90 @@ def test_a_command_cancels_an_outstanding_prompt(harness):
         ) == 0
 
     run(scenario())
+
+
+def test_profile_reads_sets_and_refuses_nonsense(harness):
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await p.execute(
+            """UPDATE app_user SET sex=NULL, birth_date=NULL, height_cm=NULL,
+                 activity_factor=NULL, deficit_kcal=NULL WHERE id=$1""", uid)
+
+        await harness.feed("/profile")
+        card = harness.sent.last()
+        assert "Your profile" in card.text
+        # A target exists (bootstrap seeded one) but nothing records what it
+        # came from, and the card has to say so rather than look complete.
+        assert "1." in card.text
+        assert "sex" in card.text and "height" in card.text
+
+        # A refused value changes nothing, rather than storing a plausible zero.
+        harness.sent.clear()
+        await harness.feed("/profile 4 twelve")
+        assert "❌" in harness.sent.last().text
+        assert await p.fetchval("SELECT height_cm FROM app_user WHERE id=$1", uid) is None
+
+        await harness.feed("/profile 4 400")   # out of range
+        assert "❌" in harness.sent.last().text
+        assert await p.fetchval("SELECT height_cm FROM app_user WHERE id=$1", uid) is None
+
+        await harness.feed("/profile 4 183")
+        assert float(await p.fetchval(
+            "SELECT height_cm FROM app_user WHERE id=$1", uid)) == 183.0
+
+    run(scenario())
+
+
+def test_recalculating_targets_needs_a_complete_profile_and_versions_them(harness):
+    """Invariant 3: the old row is closed, never updated. /yesterday must keep
+    saying what it said."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await p.execute(
+            "UPDATE app_user SET sex=NULL, height_cm=NULL WHERE id=$1", uid)
+        await harness.feed("/profile")
+        card = harness.sent.last()
+
+        harness.sent.clear()
+        await harness.press("precalc:", card.message_id)
+        assert "Cannot compute" in harness.sent.last().text, harness.sent.texts()
+
+        await harness.feed("/profile 2 male")
+        await harness.feed("/profile 3 1991-03-02")
+        await harness.feed("/profile 4 183")
+        await harness.feed("/profile 5 1.55")
+        await harness.feed("/profile 8 500")
+        await harness.feed("/weight 78")
+
+        harness.sent.clear()
+        await harness.press("precalc:", card.message_id)
+        assert "recalculated" in harness.sent.last().text.lower(), harness.sent.texts()
+
+        after = await p.fetchrow(
+            """SELECT max_amount, rationale FROM target
+                WHERE user_id=$1 AND nutrient_id=1008 AND effective_to IS NULL""", uid)
+        assert after["rationale"] == "profile recalculation"
+
+        # It matches the shared derivation rather than merely being different:
+        # the test user happens to be bootstrapped with these same numbers, so
+        # "the figure changed" would pass for the wrong reason.
+        from nutrai.core import profile as prof
+        expected, _w = prof.derive_targets(
+            sex="male", weight_kg=78.0, height_cm=183.0,
+            age=prof.age_years(dt.date(1991, 3, 2)), activity=1.55, deficit=500.0,
+        )
+        assert float(after["max_amount"]) == expected[1008][1]
+        # The superseded row still exists, closed rather than deleted.
+        assert await p.fetchval(
+            """SELECT count(*) FROM target
+                WHERE user_id=$1 AND nutrient_id=1008 AND effective_to IS NOT NULL""",
+            uid) >= 1
+
+    run(scenario())
