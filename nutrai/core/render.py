@@ -1717,3 +1717,53 @@ def user_food_made_card(name: str, per_100g: dict, parts: Sequence[str],
         f"used instead of USDA's nearest guess.</i>"
     )
     return "\n".join(lines)
+
+
+def plan_card(data: dict, cost_usd: float | None = None) -> str:
+    """The weekly review. The one card in this system written by a model.
+
+    It says so, because everything else here is arithmetic and the difference
+    matters: a median is a fact and a finding is an argument.
+    """
+    lines = ["🧠 <b>Weekly review</b>", ""]
+
+    findings = data.get("findings") or []
+    if findings:
+        lines.append("<b>What the data says</b>")
+        for f in findings:
+            lines.append(f"   • {_esc(f.get('statement', ''))}  "
+                         f"<i>({_esc(str(f.get('confidence', '')))})</i>")
+            if f.get("evidence"):
+                lines.append(f"     <i>{_esc(f['evidence'])}</i>")
+        lines.append("")
+
+    recs = data.get("recommendations") or []
+    if recs:
+        lines.append("<b>Proposed changes</b>")
+        for r in recs:
+            lines.append(f"   <b>{r.get('n')}.</b> {_esc(r.get('action', ''))}")
+            if r.get("expected_effect"):
+                lines.append(f"       → {_esc(r['expected_effect'])}")
+            if r.get("risk"):
+                lines.append(f"       <i>risk: {_esc(r['risk'])}</i>")
+        lines.append("")
+    else:
+        lines += ["<b>No changes proposed.</b> "
+                  "<i>Recommending nothing is a valid outcome and the honest one "
+                  "when the data supports no change.</i>", ""]
+
+    gap = data.get("what_the_data_cannot_tell_you")
+    if gap:
+        lines += [f"<b>What this cannot tell you</b>\n   <i>{_esc(gap)}</i>", ""]
+
+    if recs:
+        lines.append("Reply <code>apply 1 3</code> to take some, "
+                     "<code>apply all</code>, or ignore this.")
+    lines.append(
+        "<i>Written by a model from 28 days of medians and target comparisons — "
+        "never from your raw log. It is the only card here that is an argument "
+        "rather than arithmetic, and nothing changes until you say so.</i>"
+    )
+    if cost_usd:
+        lines.append(f"<i>💸 {cost_usd*100:.1f}¢</i>")
+    return "\n".join(lines)

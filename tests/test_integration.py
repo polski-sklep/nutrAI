@@ -2076,11 +2076,21 @@ def test_supplement_slots_and_reminders(harness):
                 await db.supplements_in_slot(uid, "breakfast", dt.date.today())] == ["Magnesium"]
         assert (await db.slot_times(uid))["bed"] == dt.time(22, 0)
 
-        # Nothing fires outside the slot's own window.
+        # Nothing fires before a moment's time. Anchored to the clock rather
+        # than to a fixed hour: with "bed 22:00" hardcoded this passed all
+        # afternoon and failed at 22:05, because the reminder was correct and
+        # the test was not.
+        import zoneinfo
+
+        local = dt.datetime.now(dt.timezone.utc).astimezone(zoneinfo.ZoneInfo("Europe/Warsaw"))
+        later = (local + dt.timedelta(hours=2)).time().replace(second=0, microsecond=0)
+        await db.set_slot_time(uid, "bed", later)
+        await p.execute("DELETE FROM supplement_reminder_log WHERE user_id=$1", uid)
+
         harness.sent.clear()
         await notify.supplement_reminders(harness.tg.bot)
-        for sent in harness.sent.sent:
-            assert "before sleeping" not in sent.text or "22:00" in sent.text
+        assert not [x for x in harness.sent.sent if "before sleeping" in x.text], \
+            "a reminder fired before its time"
 
         await p.execute("DELETE FROM supplement_reminder_log WHERE user_id=$1", uid)
         await p.execute("DELETE FROM supplement WHERE user_id=$1", uid)

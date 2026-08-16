@@ -242,5 +242,10 @@ def start_scheduler(bot) -> AsyncIOScheduler:
         weekly_summary, CronTrigger(day_of_week="sun", hour=18, minute=0),
         args=[bot], id="weekly",
     )
+    # The one scheduled job that calls a model, kept in its own module so this
+    # one stays template-and-SQL only — invariant 4.
+    from .report import schedule as schedule_report
+
+    schedule_report(sched, bot)
     sched.start()
     return sched

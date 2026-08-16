@@ -21,9 +21,10 @@ from aiogram.types import (
 
 from . import db
 from .config import CONFIDENCE_FLOOR, settings
-from .core import dsl, estimate, fasting, insight, render, suggest
+from .core import dsl, estimate, fasting, insight, plan, render, suggest
 from .core import profile as profile_mod
 from .core.nutrition import ResolvedComponent, total_nutrients
+from .jobs import report as report_job
 from .llm import parse as llm
 
 log = logging.getLogger("nutrai")
@@ -132,6 +133,7 @@ COMMANDS: list[tuple[str, str]] = [
     ("/undo", "unlog the last thing you logged today"),
     ("/week", "last seven days: excesses and shortfalls"),
     ("/audit", "check the last week's entries for wrong matches"),
+    ("/report", "the weekly review — findings and proposed changes"),
     ("/insight", "fat-loss rate and what the data actually supports"),
     ("/spend", "what this has cost in API calls"),
 ]
@@ -1482,6 +1484,76 @@ async def _consume_food_recipe(msg: Message, u: Any, text: str, payload: dict) -
                      + ", ".join(res.unresolved) + ")")
     await note.edit_text(
         render.user_food_made_card(name, per_100g, parts, yield_g),
+        parse_mode="HTML",
+    )
+    return True
+
+
+@dp.message(Command("report", "review"))
+async def report_cmd(msg: Message) -> None:
+    """The weekly review, on demand. It also arrives on Sunday at 18:00.
+
+    The only path here that calls a large model to reason rather than to
+    extract, and the only card that is an argument rather than arithmetic.
+    """
+    u = await _user(msg)
+    day = _today(u)
+    p = await db.pool()
+    logged = await p.fetchval(
+        """SELECT count(DISTINCT local_date) FROM log_entry
+            WHERE user_id=$1 AND status='confirmed' AND local_date > $2::date - 28""",
+        u["id"], day,
+    )
+    if logged < report_job.MIN_DAYS_LOGGED:
+        await msg.answer(
+            f"📓 {logged} of the last 28 days have anything logged. Below "
+            f"{report_job.MIN_DAYS_LOGGED} there is no pattern to review, and an "
+            "expensive model asked anyway will find one — it would describe a "
+            "diet you do not eat.",
+            parse_mode="HTML")
+        return
+
+    note = await msg.answer("🧠 reading the last four weeks…")
+    try:
+        data, cost = await plan.propose(u["id"], day)
+    except Exception as exc:
+        await _parse_failed(note, exc)
+        return
+    await note.edit_text(render.plan_card(data, cost), parse_mode="HTML")
+    if data.get("recommendations"):
+        await db.put_pending(u["id"], "plan_apply", {})
+
+
+@consumes("plan_apply")
+async def _consume_plan_apply(msg: Message, u: Any, text: str, payload: dict) -> bool:
+    """"apply 1 3" / "apply all". Anything else is a meal and passes through."""
+    words = text.strip().lower().split()
+    if not words or words[0] != "apply":
+        return False
+    action = await db.latest_pending(u["id"], "plan_proposal")
+    if not action:
+        await msg.answer("That proposal has expired. <code>/report</code> for a new one.",
+                         parse_mode="HTML")
+        return True
+    recs = action.get("recommendations") or []
+    if len(words) > 1 and words[1] == "all":
+        numbers = {int(r["n"]) for r in recs}
+    else:
+        numbers = {int(w) for w in words[1:] if w.isdigit()}
+    if not numbers:
+        await msg.answer("Which ones? <code>apply 1 3</code> or <code>apply all</code>.",
+                         parse_mode="HTML")
+        return True
+
+    applied = await plan.apply_recommendations(u["id"], action, numbers, _today(u))
+    await db.clear_pending(u["id"], "plan_apply")
+    if not applied:
+        await msg.answer("Nothing matched those numbers, so nothing changed.")
+        return True
+    await msg.answer(
+        "✅ Applied:\n" + "\n".join(f"   • {render._esc(a)}" for a in applied)
+        + "\n\n<i>Targets are versioned, so past days keep the ones they were "
+          "judged against.</i>",
         parse_mode="HTML",
     )
     return True

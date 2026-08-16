@@ -90,6 +90,59 @@ async def evidence_pack(user_id: int, day: dt.date) -> str:
         lines += ["", "## Weight (kg)"]
         lines.append(", ".join(f"{r['local_date']}:{float(r['value']):.2f}" for r in weights))
 
+    # How much of the intake above was measured rather than guessed. A model
+    # told that sodium is 40% over, on a fortnight where two-thirds of the mass
+    # was eyeballed, should temper the finding — and cannot unless it is told.
+    conf = await p.fetch(
+        """SELECT local_date, pct_measured FROM v_day_mass_confidence
+            WHERE user_id=$1 AND local_date > $2::date - 28 ORDER BY local_date""",
+        user_id, day,
+    )
+    if conf:
+        mean_conf = sum(float(r["pct_measured"] or 0) for r in conf) / len(conf)
+        lines += ["", "## Measurement quality",
+                  f"mean share of daily mass weighed or stated: {mean_conf:.0f}%",
+                  "the rest was estimated from a description or a photo"]
+
+    acts = await p.fetch(
+        """SELECT kind, count(*) AS n, sum(minutes) AS mins,
+                  count(*) FILTER (WHERE intensity IN ('hard','max')) AS hard
+             FROM activity WHERE user_id=$1 AND local_date > $2::date - 28
+         GROUP BY kind ORDER BY 2 DESC""",
+        user_id, day,
+    )
+    if acts:
+        lines += ["", "## Training (28d)", "kind | sessions | minutes | hard_or_max"]
+        lines += [f"{r['kind']} | {r['n']} | {r['mins'] or 0} | {r['hard']}" for r in acts]
+        lines.append("energy targets are NOT raised by training here; this is context only")
+
+    supps = await p.fetch(
+        """SELECT s.name, count(sl.*) AS taken
+             FROM supplement s
+             LEFT JOIN supplement_log sl ON sl.supplement_id = s.id
+                   AND sl.local_date > $2::date - 28
+            WHERE s.user_id = $1 AND s.active
+         GROUP BY s.name ORDER BY 2 DESC""",
+        user_id, day,
+    )
+    if supps:
+        lines += ["", "## Supplements taken in last 28 days", "name | days_taken"]
+        lines += [f"{r['name']} | {r['taken']}" for r in supps]
+        lines.append("micronutrient medians above already include these")
+
+    ratings = await p.fetch(
+        """SELECT kind, count(*) AS n, round(avg(value),1) AS mean
+             FROM observation
+            WHERE user_id=$1 AND local_date > $2::date - 28
+         GROUP BY kind ORDER BY 1""",
+        user_id, day,
+    )
+    if ratings:
+        lines += ["", "## Self-ratings (28d, 1-10)", "kind | n | mean"]
+        lines += [f"{r['kind']} | {r['n']} | {r['mean']}" for r in ratings]
+        lines.append("correlations are computed elsewhere and are NOT in this pack; "
+                     "do not assert a relationship between these and intake")
+
     return "\n".join(lines)
 
 
