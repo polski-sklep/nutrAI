@@ -12,14 +12,30 @@ from ..core import render
 
 log = logging.getLogger("nutrai.notify")
 
+# "Under" rules do not fire before this local hour.
+#
+# A floor is not assessable at breakfast. At 09:17 you are at 4% of a daily
+# protein floor because you have had two coffees, and saying so is the same
+# category error as counting an unbreached ceiling as an achievement: it
+# describes the hour, not the eating. Late enough that a shortfall is real,
+# early enough that there is still a meal left to fix it with.
+UNDER_RULES_FROM_HOUR = 16
 
-async def evaluate_user(user_id: int, day: dt.date) -> list[str]:
+
+async def evaluate_user(user_id: int, day: dt.date, *, now: dt.datetime | None = None) -> list[str]:
     """Evaluate every enabled threshold rule for one user against one day.
 
     Pure SQL and string formatting. No model, no cost, no latency, and no way
     for the text to disagree with the number it is reporting.
     """
+    import zoneinfo
+
     p = await db.pool()
+    user = await p.fetchrow("SELECT tz FROM app_user WHERE id = $1", user_id)
+    local_hour = (now or dt.datetime.now(dt.timezone.utc)).astimezone(
+        zoneinfo.ZoneInfo(user["tz"] if user else "UTC")
+    ).hour
+
     rules = await p.fetch(
         """SELECT r.*, n.name AS nutrient_name, n.unit
              FROM notification_rule r JOIN nutrient n ON n.id = r.nutrient_id
@@ -35,6 +51,8 @@ async def evaluate_user(user_id: int, day: dt.date) -> list[str]:
     # Which rules actually crossed, and by how much.
     crossed: list[tuple[Any, float, float]] = []
     for rule in rules:
+        if rule["direction"] == "under" and local_hour < UNDER_RULES_FROM_HOUR:
+            continue
         row = prog.get(rule["nutrient_id"])
         if not row:
             continue

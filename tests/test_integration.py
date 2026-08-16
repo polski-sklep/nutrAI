@@ -1565,3 +1565,26 @@ def test_afternoon_caffeine_is_measured_in_local_time(harness):
         )
 
     run(scenario())
+
+
+def test_under_rules_do_not_fire_in_the_morning(harness):
+    """At 09:17 you are at 4% of a daily protein floor because you have had two
+    coffees. Saying so describes the hour, not the eating."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai.jobs.notify import evaluate_user
+        from nutrai import db
+
+        today = db.local_date_for(dt.datetime.now(dt.timezone.utc), "Europe/Warsaw", 4)
+        p = await db.pool()
+        await p.execute("DELETE FROM notification_log WHERE user_id = $1", uid)
+
+        morning = dt.datetime(2026, 8, 16, 7, 17, tzinfo=dt.timezone.utc)   # 09:17 Warsaw
+        evening = dt.datetime(2026, 8, 16, 17, 30, tzinfo=dt.timezone.utc)  # 19:30 Warsaw
+
+        assert not [m for m in await evaluate_user(uid, today, now=morning) if "Protein" in m]
+        assert [m for m in await evaluate_user(uid, today, now=evening) if "Protein" in m], \
+            "an evening protein shortfall is real and should be said"
+
+    run(scenario())
