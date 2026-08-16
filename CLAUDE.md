@@ -200,6 +200,61 @@ area; do not re-litigate them.
   and lets `precedence` rank your own label above USDA's generic row. Decided:
   **ask every time** before reusing a saved product, rather than resolving to it
   silently.
+- **NOVA processing score.** Scoped 16 Aug 2026, to be built after the eval
+  fortnight ends (on or after 30 Aug 2026). Decisions below are settled; do not
+  re-litigate them.
+
+  **Classification source: a model, lazily, cached per `fdc_id` forever.** The
+  authoritative mapping is Steele et al.'s FNDDS-to-NOVA work, and NCI
+  distributes it by proposal only — a form, an analysis plan, a steering
+  committee, and unstated redistribution terms. Not usable here. A heuristic on
+  `data_type` was checked and rejected: SR Legacy holds both "Butter, salted"
+  (group 2) and "Cheeseburger, fast food" (group 4), so the column says which
+  USDA dataset a row came from and almost nothing about processing.
+
+  A NOVA group is a *classification*, not a nutrient value, so ARCHITECTURE.md
+  §1 is not breached — same amendment as the supplement panel. But it is weaker
+  than that one and the code must say so: a transcribed label is checkable
+  against the packet in your hand, and "is this group 4" is a judgement
+  checkable against nothing. It is therefore labelled a judgement wherever it
+  is shown, and `/nova <food> <group>` must exist to correct it.
+
+  Volume makes this nearly free. Twelve distinct foods had ever been logged
+  when this was scoped, against 13,636 loaded. Classify at confirm time on
+  first sight of an `fdc_id` and never again. Do not backfill the table.
+
+  **The group is snapshotted onto `log_component`, not read from `food`.** This
+  is the load-bearing decision. Left on `food` alone, correcting one
+  classification silently rewrites what every past day scored — invariant 2's
+  exact failure, arriving through a side door. `food` carries the current
+  classification; the component carries what it was when you ate it, the same
+  treatment `grams_source` has.
+
+  **It does not go in `target`/`nutrient`.** A percentage is not a nutrient and
+  a pseudo-nutrient id would put a non-USDA row into a namespace that
+  `food_nutrient`, `day_progress`, `profiles_for`, coverage and the audit all
+  join against. Separate view, `v_day_processing`.
+
+  **Coverage is shown and never zero-filled**, as for micronutrients. A
+  percentage computed over the classified third of a day and presented as the
+  day's figure is the phantom-deficiency bug wearing a different hat.
+
+  **It gets a ceiling: 20% of daily energy from group 4.** Requested
+  explicitly, over a recorded objection that no defensible individual threshold
+  exists — so be honest about what the number is. It is a convention, not a
+  finding. For scale, ultra-processed food is about 57% of total energy for US
+  adults (NHANES 2017-18), so 20% is demanding rather than typical. Set it as
+  an ordinary editable target row so `/target` can move it, and never present
+  it as evidence-based.
+
+  The more defensible use is as an `/insight` covariate — does processing
+  predict sleep or focus independently of energy? The permutation machinery
+  already handles that correctly, and it asks a question rather than issuing a
+  verdict.
+
+  Building it during the fortnight was declined for the reason `/next` was
+  overridden on: a visible processing score changes what you eat.
+
 - **`llm/client.py:price()` must return `None`, not a Sonnet-priced guess.**
   Not raising is right — aborting after the API call has been made loses the
   parse and the money both. But a silent fallback in the cost layer is the same
