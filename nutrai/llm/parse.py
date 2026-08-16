@@ -421,7 +421,29 @@ async def validate(components: list[ResolvedComponent], parsed: ParsedMeal) -> V
         if c.yield_factor > 3.0 or c.yield_factor < 0.3:
             warnings.append(f"{c.label}: yield factor {c.yield_factor:.2f} is extreme")
 
+    # Which foods the question even applies to. "Was that weighed before or
+    # after cooking?" is a real 2-3x question for rice, pasta and meat, and
+    # nonsense for milk — asked of a cappuccino it makes the system look like it
+    # does not know what milk is. USDA says which foods have the distinction:
+    # if the matched row carries no state qualifier, there is nothing to resolve.
+    STATEFUL = ("raw", "dry", "uncooked", "cooked", "boiled", "roasted", "prepared")
+    descriptions = {}
+    if components:
+        p = await db.pool()
+        descriptions = {
+            r["fdc_id"]: (r["description"] or "").lower()
+            for r in await p.fetch(
+                "SELECT fdc_id, description FROM food WHERE fdc_id = ANY($1::int[])",
+                [c.fdc_id for c in components],
+            )
+        }
+    by_label = {c.label: c.fdc_id for c in components}
+
     for it in parsed.items:
+        fdc = by_label.get(str(it.get("label", "")))
+        desc = descriptions.get(fdc, "")
+        if not any(w in desc for w in STATEFUL):
+            continue
         if str(it.get("state")) == "unknown" and float(it.get("grams", 0) or 0) > 80:
             # Phrased as the question that is actually open. "Raw or cooked is
             # unknown" reads as though you might have eaten it raw, which is

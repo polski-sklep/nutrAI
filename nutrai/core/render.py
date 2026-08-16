@@ -30,6 +30,7 @@ BAR_EMPTY = "░"
 COVERAGE_FULL = 0.995
 
 
+
 def bar(pct: float, width: int = 10) -> str:
     filled = max(0, min(width, round(pct / 100 * width)))
     return BAR_FULL * filled + BAR_EMPTY * (width - filled)
@@ -605,150 +606,14 @@ def supplement_pick_card(stack: Sequence[Any], selected: Sequence[int]) -> str:
     return "\n".join(lines)
 
 
-def audit_card(findings: Sequence[Any]) -> str:
-    """The daily self-check, grouped by how much it matters.
-
-    Errors first because they mean a number in the log is wrong, not merely
-    uncertain — and a wrong number that nobody corrects becomes a median, then
-    a trend, then a recommendation.
-    """
-    if not findings:
-        return "🩺 <b>Daily check</b>\n\nNothing to flag. The log looks sound."
-
-    icons = {"error": "❌", "warn": "⚠️", "info": "💡"}
-    titles = {
-        "error": "Wrong, not just uncertain",
-        "warn": "Worth a look",
-        "info": "Would pay off later",
-    }
-
-    lines = ["🩺 <b>Daily check</b>"]
-    for severity in ("error", "warn", "info"):
-        group = [f for f in findings if f.severity == severity]
-        if not group:
-            continue
-        lines.append("")
-        lines.append(f"{icons[severity]} <b>{titles[severity]}</b>")
-        for f in group:
-            lines.append(f"   • <b>{_esc(f.summary)}</b>")
-            lines.append(f"     {_esc(f.detail)}")
-
-    if any(f.severity == "error" for f in findings):
-        lines.append("")
-        lines.append(
-            "<i>Fix an entry by sending it again and pressing ✏️, or ignore this "
-            "if the match was right after all.</i>"
-        )
-    return "\n".join(lines)
 
 
-def threshold_message(
-    nutrient_name: str,
-    amount: float,
-    target: float,
-    unit: str,
-    direction: str,
-    nutrient_id: int = 0,
-) -> str:
-    """One threshold crossing, as HTML.
-
-    Two lines rather than one: the headline is what happened, the second line is
-    the number you would act on. A single run-on sentence made a ceiling breach
-    and a floor reminder look identical at a glance, which is the opposite of
-    what a notification is for.
-    """
-    pct = amount / target * 100 if target else 0
-    icon = _emoji(nutrient_id)
-    name = _esc(_short(nutrient_name))
-
-    if direction == "over":
-        over = amount - target
-        return (
-            f"⚠️ <b>{name} — {fmt_amount(amount, unit)}</b>\n"
-            f"{icon} {pct:.0f}% of your {fmt_amount(target, unit)} ceiling"
-            + (f" · {fmt_amount(over, unit)} over" if over > 0 else "")
-        )
-
-    remaining = max(0.0, target - amount)
-    return (
-        f"🔔 <b>{name} — {fmt_amount(amount, unit)}</b>\n"
-        f"{icon} {pct:.0f}% of your {fmt_amount(target, unit)} floor · "
-        f"{fmt_amount(remaining, unit)} to go"
-    )
 
 
-def _esc(s: str) -> str:
-    """Escape text for Telegram HTML.
-
-    quote=False on purpose: only `& < >` carry meaning in Telegram's HTML
-    subset, and turning every apostrophe in "Farmer's cheese" into `&#x27;`
-    makes the source unreadable for no gain.
-    """
-    return escape(str(s), quote=False)
 
 
-def supplement_stack_card(stack: Sequence[Any]) -> str:
-    lines = ["💊 <b>Your daily stack</b>", ""]
-    cadence = {"alternate": "every other day", "occasional": "occasional"}
-    for s in stack:
-        serving = f"{float(s['servings_per_day']):g} × {s['serving_desc']}"
-        extra = cadence.get(s["schedule"], "")
-        lines.append(
-            f"   • <b>{_esc(s['name'])}</b> — {_esc(serving)}"
-            + (f" · {extra}" if extra else "")
-        )
-        detail = [f"{s['n_nutrients']} tracked nutrient(s)"]
-        if s["brand"]:
-            detail.insert(0, _esc(s["brand"]))
-        if not s["verified_at"]:
-            detail.append("unverified")
-        lines.append(f"     <i>{' · '.join(detail)}</i>")
-        if s["note"]:
-            lines.append(f"     <i>{_esc(s['note'])}</i>")
-    lines += ["", "<code>/supp</code> logs the lot for today."]
-    return "\n".join(lines)
 
 
-def supplement_batch_card(parsed: Sequence[Any], names: dict, units: dict) -> str:
-    """Every product read, with everything that was *not* counted named.
-
-    A nutrient silently missing from a panel is indistinguishable from one the
-    product does not contain, and this card is the only place the difference can
-    be caught — these numbers go into every future daily total with no plate to
-    check them against. So the rejected lines and the untracked actives are
-    shown as prominently as the accepted ones.
-    """
-    lines = [f"💊 <b>{len(parsed)} product(s) read</b>", ""]
-    for sup in parsed:
-        if not sup["nutrients"]:
-            lines.append(
-                f"◽️ <b>{_esc(sup['name'])}</b> — saved, but nothing here maps to "
-                f"a tracked nutrient"
-            )
-            if sup.get("not_tracked"):
-                lines.append(f"     <i>{_esc(sup['not_tracked'])}</i>")
-            lines.append("")
-            continue
-        cadence = {"alternate": " · every other day", "occasional": " · occasional"}.get(
-            sup.get("schedule", "daily"), ""
-        )
-        dose = float(sup.get("servings_per_day", 1) or 1)
-        taken = f"{dose:g} × {sup['serving_desc']}" if dose != 1 else sup["serving_desc"]
-        lines.append(f"✅ <b>{_esc(sup['name'])}</b> — {_esc(taken)}{cadence}")
-        if sup.get("note"):
-            lines.append(f"     <i>{_esc(sup['note'])}</i>")
-        for c in sup["_kept"]:
-            lines.append(
-                f"     • {_esc(names.get(c.nutrient_id, str(c.nutrient_id)))} — "
-                f"{fmt_amount(c.amount, units.get(c.nutrient_id, ''))}"
-            )
-        for d in sup["_dropped"]:
-            lines.append(f"     ⚠️ {_esc(d.printed_label or '?')} — {_esc(d.reason)}")
-        if sup.get("not_tracked"):
-            lines.append(f"     <i>not counted: {_esc(sup['not_tracked'])}</i>")
-        lines.append("")
-    lines.append("Check these against the packets. Nothing is saved until you confirm.")
-    return "\n".join(lines)
 
 
 
@@ -756,57 +621,102 @@ def supplement_batch_card(parsed: Sequence[Any], names: dict, units: dict) -> st
 # ------------------------------------------------------------- day score
 
 
-def day_score(progress: Sequence[Any], coverage: dict[int, float] | None = None) -> tuple[int, int, int, list[str]]:
-    """(met, assessable, unmeasured, names of the misses).
+def day_score(
+    progress: Sequence[Any], coverage: dict[int, float] | None = None
+) -> tuple[int, int, list[str], list[str], int]:
+    """(floors reached, floors assessable, floors short, ceilings breached, unmeasured).
 
-    A floor is met when you reached it; a ceiling when you stayed under it.
-    Nutrients nothing you ate reports are excluded rather than counted against
-    you — scoring a plate of beef down for the B-12 its USDA row omits would
-    make the score a measure of database coverage rather than of eating.
+    Floors and ceilings are counted separately because they are not the same
+    kind of achievement, and mixing them produces nonsense. A ceiling is
+    satisfied by eating nothing: on a glass of water you are under your energy,
+    fat, carbohydrate, sugar, saturated fat, sodium and cholesterol limits all
+    at once, which the first version of this reported as "7 of 20 targets met"
+    at breakfast. Nor is a ceiling ever really "met" before the day ends — you
+    can still breach it at dinner.
+
+    A floor is different: reaching it is monotonic and means something the
+    moment it happens. So the score counts floors, and ceilings appear only
+    when one has actually been crossed.
     """
     cov = coverage or {}
-    met = assessable = unmeasured = 0
-    missed: list[str] = []
+    reached = assessable = unmeasured = 0
+    short: list[str] = []
+    breached: list[str] = []
 
     for r in progress:
         lo, hi = r["min_amount"], r["max_amount"]
-        if lo is None and hi is None:
-            continue
-        c = cov.get(r["nutrient_id"])
         amount = float(r["amount"])
-        if c is not None and c <= 0 and amount <= 0:
+        c = cov.get(r["nutrient_id"])
+        blind = c is not None and c <= 0 and amount <= 0
+
+        if hi is not None and amount > float(hi):
+            breached.append(_short(r["nutrient_name"]))
+
+        if lo is None:
+            continue
+        if blind:
             unmeasured += 1
             continue
         assessable += 1
-        ok = True
-        if lo is not None and amount < float(lo):
-            ok = False
-        if hi is not None and amount > float(hi):
-            ok = False
-        if ok:
-            met += 1
+        if amount >= float(lo):
+            reached += 1
         else:
-            missed.append(_short(r["nutrient_name"]))
-    return met, assessable, unmeasured, missed
+            short.append(_short(r["nutrient_name"]))
+
+    return reached, assessable, short, breached, unmeasured
 
 
 def score_line(progress: Sequence[Any], coverage: dict[int, float] | None = None) -> str:
-    """One bar for the day, with what it is not counting stated.
+    """One bar for the day, counting the thing worth counting.
 
     Deliberately not a single number in isolation. A score that hides which
     target was missed invites optimising the score, and the number that is
     easiest to move is rarely the one worth moving.
     """
-    met, assessable, unmeasured, missed = day_score(progress, coverage)
-    if not assessable:
-        return ""
-    pct = met / assessable * 100
-    face = "🟢" if pct >= 80 else "🟡" if pct >= 50 else "🔴"
-    out = [f"{face} <b>{met} of {assessable} targets met</b>  {bar(pct)}  {pct:.0f}%"]
-    if missed:
-        shown = ", ".join(_esc(m) for m in missed[:6])
-        more = f" +{len(missed) - 6} more" if len(missed) > 6 else ""
-        out.append(f"<i>short or over: {shown}{more}</i>")
+    reached, assessable, short, breached, unmeasured = day_score(progress, coverage)
+    out: list[str] = []
+
+    if assessable:
+        pct = reached / assessable * 100
+        face = "🟢" if pct >= 80 else "🟡" if pct >= 50 else "🔴"
+        out.append(
+            f"{face} <b>{reached} of {assessable} floors reached</b>  {bar(pct)}  {pct:.0f}%"
+        )
+        if short:
+            shown = ", ".join(_esc(m) for m in short[:6])
+            more = f" +{len(short) - 6} more" if len(short) > 6 else ""
+            out.append(f"<i>short: {shown}{more}</i>")
+
+    if breached:
+        out.append(f"⚠️ <b>over:</b> {', '.join(_esc(b) for b in breached)}")
+
     if unmeasured:
         out.append(f"<i>{unmeasured} not counted — nothing you ate reports them</i>")
     return "\n".join(out)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ------------------------------------------------------------- day score
+
+
+
+

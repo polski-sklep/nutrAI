@@ -206,18 +206,21 @@ def test_day_score_excludes_what_nothing_measured():
         row(1004, "Total lipid (fat)", "G", 100, hi=81, state="over"),
         row(1178, "Vitamin B-12", "UG", 0.0, lo=2.4, state="under"),
     ]
-    met, assessable, unmeasured, missed = day_score(prog, {1178: 0.0})
-    assert (met, assessable, unmeasured) == (2, 3, 1)
-    assert missed == ["Fat"]
+    reached, assessable, short, breached, unmeasured = day_score(prog, {1178: 0.0})
+    # Only Protein has a floor and is measured; B-12's floor is unmeasured.
+    assert (reached, assessable, unmeasured) == (1, 1, 1)
+    assert short == []
+    # Fat is over its ceiling — reported, but not as a failed "target".
+    assert breached == ["Fat"]
 
 
 def test_day_score_counts_a_real_shortfall():
     from nutrai.core.render import day_score
 
     prog = [row(1003, "Protein", "G", 50, lo=180, state="under")]
-    met, assessable, unmeasured, missed = day_score(prog, {1003: 1.0})
-    assert (met, assessable, unmeasured) == (0, 1, 0)
-    assert missed == ["Protein"]
+    reached, assessable, short, breached, unmeasured = day_score(prog, {1003: 1.0})
+    assert (reached, assessable, unmeasured) == (0, 1, 0)
+    assert short == ["Protein"]
 
 
 def test_score_line_names_the_misses_rather_than_hiding_them():
@@ -230,5 +233,26 @@ def test_score_line_names_the_misses_rather_than_hiding_them():
         row(1003, "Protein", "G", 50, lo=180, state="under"),
     ]
     out = score_line(prog, {1008: 1.0, 1003: 1.0})
-    assert "1 of 2 targets met" in out
+    # Energy is a ceiling and is not counted as an achievement for being under it.
+    assert "0 of 1 floors reached" in out
     assert "Protein" in out
+
+
+def test_a_ceiling_is_not_an_achievement():
+    """On a glass of water you are under your energy, fat, carbohydrate, sugar,
+    saturated fat, sodium and cholesterol limits at once. The first version of
+    this reported that as "7 of 20 targets met" at breakfast."""
+    from nutrai.core.render import score_line
+
+    barely_eaten = [
+        row(1008, "Energy", "KCAL", 83, hi=2418),
+        row(1005, "Carbohydrate, by difference", "G", 11, hi=328),
+        row(1004, "Total lipid (fat)", "G", 3.3, hi=81),
+        row(1093, "Sodium, Na", "MG", 55, hi=2300),
+        row(1003, "Protein", "G", 0.2, lo=180, state="under"),
+        row(1079, "Fiber, total dietary", "G", 0.2, lo=38, state="under"),
+    ]
+    out = score_line(barely_eaten, {n: 1.0 for n in (1008, 1005, 1004, 1093, 1003, 1079)})
+    assert "0 of 2 floors reached" in out, out
+    assert "7 of" not in out
+    assert "over:" not in out
