@@ -117,7 +117,7 @@ def test_the_menu_matches_the_command_table_exactly():
     names = [name for name, _d in COMMANDS]
     assert len(names) == len(set(names)), "duplicate entry in COMMANDS"
     for expected in ("/why", "/next", "/stack", "/schedule", "/training",
-                     "/profile", "/target", "/supp"):
+                     "/profile", "/target", "/supp", "/food"):
         assert expected in names, f"{expected} is built but not in the menu"
 
 
@@ -176,3 +176,26 @@ def test_asking_for_an_unregistered_prompt_fails_loudly():
 
     with pytest.raises(KeyError):
         asyncio.run(botmod._ask(None, {"id": 1}, "not_a_real_prompt", "hi"))
+
+
+def test_no_card_teaches_a_syntax_without_opening_a_prompt():
+    """The registry stops a prompt going unconsumed. It cannot stop a card
+    printing "/food new pickle juice" and opening nothing, which is how the
+    eighth instance happened — the reply went to the meal parser and matched
+    "juice" at 51 kcal.
+
+    So: no user-facing card may instruct with a subcommand form. If a card
+    wants input it asks for it plainly and opens a wait via `_ask`.
+    """
+    import inspect
+    import re
+
+    from nutrai.core import render
+
+    src = inspect.getsource(render)
+    # "<code>/something new ...</code>" and friends: a command with a
+    # subcommand argument, printed at the user as an instruction.
+    offenders = re.findall(r"<code>(/[a-z]+ (?:new|add|list|times) [^<]*)</code>", src)
+    assert not offenders, (
+        f"cards instructing with a subcommand instead of asking: {offenders}"
+    )

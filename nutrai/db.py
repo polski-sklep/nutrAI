@@ -124,7 +124,8 @@ async def portion_history(user_id: int, fdc_id: int, limit: int = 30) -> list[fl
     return [float(r["grams"]) for r in rows]
 
 
-async def search_foods(query: str, limit: int = 5, data_types: Sequence[str] | None = None) -> list[asyncpg.Record]:
+async def search_foods(query: str, limit: int = 5, data_types: Sequence[str] | None = None,
+                       user_id: int | None = None) -> list[asyncpg.Record]:
     """Candidate generation for the resolver.
 
     Full-text rank plus trigram similarity, with data-type precedence as the
@@ -143,7 +144,7 @@ async def search_foods(query: str, limit: int = 5, data_types: Sequence[str] | N
     grams" failure that drifts your totals and raises no error anywhere.
     """
     p = await pool()
-    dt_filter = "AND f.data_type = ANY($3::text[])" if data_types else ""
+    dt_filter = "AND f.data_type = ANY($4::text[])" if data_types else ""
     sql = f"""
         SELECT f.fdc_id, f.description, f.data_type, f.brand, f.precedence,
                similarity(f.description, $1) AS sim,
@@ -152,12 +153,15 @@ async def search_foods(query: str, limit: int = 5, data_types: Sequence[str] | N
           FROM food f
          WHERE (to_tsvector('english', f.description) @@ plainto_tsquery('english', $1)
                 OR f.description % $1)
+               -- Somebody else's private food must never be a candidate for
+               -- your meal, and your own must always be one.
+               AND (f.owner_user_id IS NULL OR f.owner_user_id = $3)
                {dt_filter}
       ORDER BY (similarity(f.description, $1) + ts_rank(
                    to_tsvector('english', f.description),
                    plainto_tsquery('english', $1))) DESC, f.precedence ASC
          LIMIT $2"""
-    args: list[Any] = [query, limit]
+    args: list[Any] = [query, limit, user_id]
     if data_types:
         args.append(list(data_types))
     return await p.fetch(sql, *args)
@@ -1573,3 +1577,67 @@ async def supplement_contribution(user_id: int, day: dt.date, nutrient_id: int) 
         user_id, day, nutrient_id,
     )
     return [{"name": r["name"], "amount": float(r["amount"])} for r in rows]
+
+
+async def create_user_food(
+    user_id: int, name: str, per_100g: dict[int, float],
+    *, category: str | None = None, note: str | None = None,
+) -> int:
+    """Store a food you defined. Returns its (negative) fdc_id.
+
+    `per_100g` is nutrient_id -> amount per 100 g, computed from constituents
+    that are themselves USDA rows, or transcribed from a printed panel. It is
+    never estimated by a model: this function is only ever handed arithmetic
+    or a transcription, which is the same line ARCHITECTURE.md §1 draws
+    everywhere else.
+    """
+    p = await pool()
+    async with p.acquire() as con, con.transaction():
+        existing = await con.fetchval(
+            """SELECT fdc_id FROM food
+                WHERE owner_user_id = $1 AND lower(description) = lower($2)""",
+            user_id, name,
+        )
+        fdc_id = existing or -(await con.fetchval("SELECT nextval('user_food_id_seq')"))
+        await con.execute(
+            """INSERT INTO food (fdc_id, data_type, description, category, owner_user_id)
+               VALUES ($1,'user_product',$2,$3,$4)
+               ON CONFLICT (fdc_id) DO UPDATE
+                 SET description = EXCLUDED.description, category = EXCLUDED.category""",
+            fdc_id, name, category or note, user_id,
+        )
+        await con.execute("DELETE FROM food_nutrient WHERE fdc_id = $1", fdc_id)
+        await con.executemany(
+            "INSERT INTO food_nutrient (fdc_id, nutrient_id, amount) VALUES ($1,$2,$3)",
+            [(fdc_id, nid, num(amount)) for nid, amount in per_100g.items()
+             if amount is not None],
+        )
+    return fdc_id
+
+
+async def user_foods(user_id: int) -> list[asyncpg.Record]:
+    p = await pool()
+    return await p.fetch(
+        """SELECT f.fdc_id, f.description, f.category,
+                  (SELECT count(*) FROM food_nutrient fn WHERE fn.fdc_id = f.fdc_id) AS n_nutrients,
+                  (SELECT amount FROM food_nutrient fn
+                    WHERE fn.fdc_id = f.fdc_id AND fn.nutrient_id = 1008) AS kcal_100g,
+                  (SELECT count(*) FROM log_component c WHERE c.fdc_id = f.fdc_id) AS times_used
+             FROM food f
+            WHERE f.owner_user_id = $1 ORDER BY f.description""",
+        user_id,
+    )
+
+
+async def delete_user_food(user_id: int, fdc_id: int) -> str | None:
+    """Only if nothing has been logged against it. A food referenced by a
+    log_component cannot go without taking the entry's history with it."""
+    p = await pool()
+    used = await p.fetchval("SELECT count(*) FROM log_component WHERE fdc_id = $1", fdc_id)
+    if used:
+        return None
+    return await p.fetchval(
+        """DELETE FROM food WHERE fdc_id = $1 AND owner_user_id = $2
+           RETURNING description""",
+        fdc_id, user_id,
+    )

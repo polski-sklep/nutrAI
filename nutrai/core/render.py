@@ -1578,3 +1578,52 @@ def why_card(nutrient_name: str, unit: str, day: dt.date, entries: Sequence[Any]
         "add up to it by construction rather than by luck.</i>"
     )
     return "\n".join(lines)
+
+
+def user_food_list_card(foods: Sequence[Any]) -> str:
+    if not foods:
+        return (
+            "🥫 <b>Your own foods</b>\n\n"
+            "<i>Nothing yet. Some things you eat are not in a national food "
+            "database — home preparations, a local bakery's bun, a brand sold "
+            "in one country — and without a row of their own the resolver has "
+            "to pick the least-bad wrong answer every time.</i>\n\n"
+            "<b>Reply with a name</b> to make one — <code>pickle juice</code>."
+        )
+    lines = ["🥫 <b>Your own foods</b>", ""]
+    rows = []
+    for f in foods:
+        kcal = f"{float(f['kcal_100g']):,.0f} kcal" if f["kcal_100g"] is not None else "no energy"
+        rows.append(f"{_short_note(f['description'])[:22]:<24}{kcal:>12} /100 g")
+        rows.append(f"    {f['n_nutrients']} nutrients · used {f['times_used']}×")
+    lines.append("<pre>" + "\n".join(_esc(r) for r in rows) + "</pre>")
+    lines += ["", "<b>Reply with a name</b> to add another. Your own rows "
+                  "outrank USDA's generic one when you log that name."]
+    return "\n".join(lines)
+
+
+def user_food_made_card(name: str, per_100g: dict, parts: Sequence[str],
+                        yield_g: float) -> str:
+    from ..config import CARB, ENERGY_KCAL, FAT, FIBER, PROTEIN, SODIUM
+
+    lines = [f"🥫 <b>{_esc(name)}</b> saved", ""]
+    lines.append("<i>Made from:</i>")
+    for pline in parts:
+        lines.append(f"   • {_esc(pline)}")
+    lines += ["", f"<i>Yielding {yield_g:,.0f} g, so per 100 g:</i>"]
+    lines.append(
+        "<pre>"
+        f"{'Energy':<10}{per_100g.get(ENERGY_KCAL, 0):>8,.0f} kcal\n"
+        f"{'Protein':<10}{per_100g.get(PROTEIN, 0):>8.1f} g\n"
+        f"{'Carbs':<10}{per_100g.get(CARB, 0):>8.1f} g\n"
+        f"{'Fat':<10}{per_100g.get(FAT, 0):>8.1f} g\n"
+        f"{'Fibre':<10}{per_100g.get(FIBER, 0):>8.1f} g\n"
+        f"{'Sodium':<10}{per_100g.get(SODIUM, 0):>8.0f} mg"
+        "</pre>"
+    )
+    lines.append(
+        f"<i>Every figure is a SQL join against the rows those ingredients "
+        f"matched — nothing here was estimated. Log it by name and it will be "
+        f"used instead of USDA's nearest guess.</i>"
+    )
+    return "\n".join(lines)

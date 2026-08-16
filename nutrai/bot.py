@@ -27,6 +27,38 @@ from .core.nutrition import ResolvedComponent, total_nutrients
 from .llm import parse as llm
 
 log = logging.getLogger("nutrai")
+
+
+# Every prompt that waits for a typed reply, in one registry.
+#
+# Opening a prompt and consuming its reply used to be two edits in two places,
+# and forgetting the second was silent: the bot printed instructions and then
+# fed your answer to the meal parser. That happened with the ✏️ fix button, the
+# rating keypad, /weight, /supp add, /profile and /why — six times, each found
+# by a person rather than by a test.
+#
+# Registering a consumer is now the only way to get a kind into AWAITING_KINDS,
+# because this dict *is* the list. A prompt with no consumer cannot be opened,
+# and `_ask` sends the message and registers the wait in one call so the two
+# cannot drift apart.
+PROMPT_CONSUMERS: dict[str, Any] = {}
+
+
+def consumes(kind: str):
+    def register(fn):
+        PROMPT_CONSUMERS[kind] = fn
+        return fn
+    return register
+
+
+async def _ask(msg: Message, u: Any, kind: str, text: str, **kw) -> None:
+    """Send a prompt and open the wait for its answer. Never one without the other."""
+    if kind not in PROMPT_CONSUMERS:
+        raise KeyError(f"no consumer registered for prompt {kind!r}")
+    await msg.answer(text, parse_mode="HTML", **kw)
+    await db.put_pending(u["id"], kind, {})
+
+
 dp = Dispatcher()
 
 # Telegram delivers each photo of an album as its own update. Without this
@@ -58,7 +90,7 @@ async def _user(msg: Message) -> Any:
     # wrongly. `on_text` never reaches here, so a reply to a prompt is safe;
     # only a command clears one.
     if (msg.text or "").startswith("/"):
-        await db.clear_awaits(u["id"], AWAITING_KINDS)
+        await db.clear_awaits(u["id"], tuple(PROMPT_CONSUMERS))
     return u
 
 
@@ -83,6 +115,7 @@ def _today(u: Any) -> dt.date:
 COMMANDS: list[tuple[str, str]] = [
     ("/repeat", "repeat something you have eaten before"),
     ("/why", "where a nutrient came from today, meal by meal"),
+    ("/food", "your own foods, for things USDA does not have"),
     ("/next", "what would close today's remaining gaps"),
     ("/today", "where you stand · <code>/today all</code> for every nutrient"),
     ("/yesterday", "the same, for yesterday"),
@@ -1293,6 +1326,153 @@ async def _explain_nutrient(msg: Message, u: Any, term: str) -> bool:
     return True
 
 
+@dp.message(Command("food", "foods"))
+async def food_cmd(msg: Message) -> None:
+    """`/food` lists your own foods · `/food new pickle juice` makes one.
+
+    USDA has no row for pickle brine, so "100 ml of pickle juice" matched
+    "Relish, pickle" at 130 kcal and 35 g of carbs. Some things you eat are
+    simply not in a national food database, and without somewhere to put them
+    the resolver has to pick the least-bad wrong answer every single time.
+    """
+    u = await _user(msg)
+    rest = (msg.text or "").split(maxsplit=2)
+
+    if len(rest) >= 3 and rest[1].lower() in ("new", "add"):
+        name = rest[2].strip()
+        await db.put_pending(u["id"], "food_await", {"name": name})
+        await msg.answer(
+            f"🥫 <b>{render._esc(name)}</b> — what goes into it?\n\n"
+            "Reply with the ingredients and amounts, as you would a meal:\n"
+            "<code>1000 ml water, 30 g salt, 100 ml white vinegar</code>\n\n"
+            "<i>I will resolve each one against USDA, add them up, and store "
+            "the result per 100 g. Nothing is estimated — if an ingredient "
+            "has no row, I will say so rather than guess around it.</i>",
+            parse_mode="HTML",
+        )
+        return
+
+    if len(rest) >= 2 and rest[1].lower() in ("new", "add"):
+        await msg.answer(
+            "Name it first — <code>/food new pickle juice</code>.", parse_mode="HTML")
+        return
+
+    # Lists *and* listens. Printing "/food new pickle juice" and then sending
+    # the reply to the meal parser is the eighth instance of a card teaching a
+    # syntax instead of doing the thing.
+    await _ask(
+        msg, u, "food_name_await",
+        render.user_food_list_card(await db.user_foods(u["id"])),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✋ never mind", callback_data="foodcancel:"),
+        ]]),
+    )
+
+
+@consumes("food_name_await")
+async def _consume_food_name(msg: Message, u: Any, text: str, payload: dict) -> bool:
+    """The reply to "what would you like to call it?".
+
+    A food name and a meal description are the same kind of string — "pickle
+    juice" is both — so this cannot be told apart by inspection. It asks
+    instead, and one tap sends it to the meal parser if that is what you meant.
+    """
+    name = text.strip()
+    if not name or len(name) > 60:
+        return False
+    await db.clear_pending(u["id"], "food_name_await")
+    await db.put_pending(u["id"], "food_await", {"name": name})
+    await msg.answer(
+        f"🥫 Making a food called <b>{render._esc(name)}</b>.\n\n"
+        "<b>What goes into it?</b> Reply with ingredients and amounts:\n"
+        "<code>1000 ml water, 30 g salt, 100 ml white vinegar</code>\n\n"
+        "<i>I will resolve each against USDA, add them up and store the result "
+        "per 100 g. Nothing is estimated — an ingredient with no row is left "
+        "out and named, not guessed around.</i>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🍽 no — log it as a meal",
+                                 callback_data="foodmeal:"),
+        ]]),
+    )
+    return True
+
+
+@dp.callback_query(F.data.startswith("foodcancel:"))
+async def cb_food_cancel(cq: CallbackQuery) -> None:
+    u = await db.get_or_create_user(cq.from_user.id)
+    await db.clear_awaits(u["id"], ("food_name_await", "food_await"))
+    await cq.answer("Closed")
+    await cq.message.edit_reply_markup(reply_markup=None)
+
+
+@dp.callback_query(F.data.startswith("foodmeal:"))
+async def cb_food_as_meal(cq: CallbackQuery) -> None:
+    """You meant to log it, not define it. One tap, no retyping."""
+    u = await db.get_or_create_user(cq.from_user.id)
+    pending = await db.latest_pending(u["id"], "food_await")
+    name = (pending or {}).get("name", "")
+    await db.clear_awaits(u["id"], ("food_name_await", "food_await"))
+    await cq.answer()
+    if not name:
+        await cq.message.answer("Nothing to log. Send the meal again.")
+        return
+    await cq.message.edit_reply_markup(reply_markup=None)
+    note = await cq.message.answer("🍽 digesting…")
+    try:
+        parsed = await llm.parse_text(name, user_id=u["id"])
+    except Exception as exc:
+        await _parse_failed(note, exc)
+        return
+    await _present(cq.message, u, parsed, source="text",
+                   photo_file_id=None, edit=note)
+
+
+@consumes("food_await")
+async def _consume_food_recipe(msg: Message, u: Any, text: str, payload: dict) -> bool:
+    """Turn a list of ingredients into one food row, by arithmetic only."""
+    name = payload.get("name") or "unnamed"
+    note = await msg.answer("🥫 working it out…")
+    try:
+        parsed = await llm.parse_text(text, user_id=u["id"])
+    except Exception as exc:
+        await _parse_failed(note, exc)
+        return True
+    res = await llm.resolve_items(u["id"], parsed.items)
+    if not res.components:
+        await note.edit_text(
+            "None of those matched a food row, so there is nothing to build "
+            "from. Try naming the ingredients more plainly.")
+        return True
+
+    profiles = await db.profiles_for({c.fdc_id for c in res.components})
+    totals = total_nutrients(res.components, profiles)
+    yield_g = sum(c.grams for c in res.components)
+    if yield_g <= 0:
+        await note.edit_text("That came to no mass at all, so I cannot store it.")
+        return True
+
+    per_100g = {nid: amount / yield_g * 100 for nid, amount in totals.items()}
+    fdc_id = await db.create_user_food(
+        u["id"], name, per_100g,
+        note=f"made from: {', '.join(f'{c.grams:g} g {c.label}' for c in res.components)}",
+    )
+    # The name becomes an alias too, so the next time you type it the resolver
+    # takes the free path rather than searching for it again.
+    await db.upsert_alias(u["id"], name, fdc_id, None)
+    await db.clear_pending(u["id"], "food_await")
+
+    parts = [f"{c.grams:g} g {c.label}" for c in res.components]
+    if res.unresolved:
+        parts.append("(not found, and therefore not counted: "
+                     + ", ".join(res.unresolved) + ")")
+    await note.edit_text(
+        render.user_food_made_card(name, per_100g, parts, yield_g),
+        parse_mode="HTML",
+    )
+    return True
+
+
 @dp.message(Command("stack"))
 async def supp_stack_cmd(msg: Message) -> None:
     """`/supp list` under its own name.
@@ -1917,36 +2097,6 @@ async def _apply_when(entry_id: int, ops: list[Any], u: Any) -> dt.date | None:
 # dutifully spent a Sonnet call establishing that "78.4" is not a food. A prompt
 # that ignores its own answer is worse than no prompt, so a fifth prompt now
 # inherits the behaviour instead of repeating the bug.
-# Every prompt that waits for a typed reply, in one registry.
-#
-# Opening a prompt and consuming its reply used to be two edits in two places,
-# and forgetting the second was silent: the bot printed instructions and then
-# fed your answer to the meal parser. That happened with the ✏️ fix button, the
-# rating keypad, /weight, /supp add, /profile and /why — six times, each found
-# by a person rather than by a test.
-#
-# Registering a consumer is now the only way to get a kind into AWAITING_KINDS,
-# because this dict *is* the list. A prompt with no consumer cannot be opened,
-# and `_ask` sends the message and registers the wait in one call so the two
-# cannot drift apart.
-PROMPT_CONSUMERS: dict[str, Any] = {}
-
-
-def consumes(kind: str):
-    def register(fn):
-        PROMPT_CONSUMERS[kind] = fn
-        return fn
-    return register
-
-
-async def _ask(msg: Message, u: Any, kind: str, text: str, **kw) -> None:
-    """Send a prompt and open the wait for its answer. Never one without the other."""
-    if kind not in PROMPT_CONSUMERS:
-        raise KeyError(f"no consumer registered for prompt {kind!r}")
-    await msg.answer(text, parse_mode="HTML", **kw)
-    await db.put_pending(u["id"], kind, {})
-
-
 @consumes("supp_label")
 async def _consume_supp_label(msg: Message, u: Any, text: str, payload: dict) -> bool:
     await _handle_supplement_label(msg, u, text=text)
@@ -2008,9 +2158,6 @@ async def _consume_rating(msg: Message, u: Any, text: str, payload: dict) -> boo
     return True
 
 
-AWAITING_KINDS = tuple(PROMPT_CONSUMERS)
-
-
 async def _consume_awaited_reply(msg: Message, u: Any, text: str) -> bool:
     """Route a message to whichever prompt is waiting for it. True if consumed.
 
@@ -2022,7 +2169,7 @@ async def _consume_awaited_reply(msg: Message, u: Any, text: str) -> bool:
     message goes on to the meal parser. That is how "chicken 200g" is still
     dinner while a target prompt is open.
     """
-    pending = await db.latest_await(u["id"], AWAITING_KINDS)
+    pending = await db.latest_await(u["id"], tuple(PROMPT_CONSUMERS))
     if not pending:
         return False
     consumer = PROMPT_CONSUMERS.get(pending["kind"])
@@ -2695,3 +2842,9 @@ async def run() -> None:
 
 if __name__ == "__main__":
     asyncio.run(run())
+
+
+# Every registered prompt, resolved after the whole module has been imported.
+# Assigning it beside the registry captured an empty dict, because the
+# @consumes decorators below had not run yet.
+AWAITING_KINDS = tuple(PROMPT_CONSUMERS)

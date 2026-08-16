@@ -2385,3 +2385,65 @@ def test_why_on_its_own_asks_and_then_listens(harness):
         assert harness.llm.calls, "a meal was swallowed by the why prompt"
 
     run(scenario())
+
+
+def test_food_lists_and_then_listens(harness):
+    """The eighth instance: /food printed "/food new pickle juice" and then
+    sent the reply to the meal parser, which matched "juice" at 51 kcal.
+
+    A registry stops a prompt going unconsumed. It cannot stop a card
+    instructing without opening one at all — that is what this covers.
+    """
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await p.execute("DELETE FROM food WHERE owner_user_id=$1", uid)
+
+        harness.sent.clear()
+        await harness.feed("/food")
+        assert "Reply with a name" in harness.sent.last().text
+
+        harness.llm.calls.clear()
+        harness.sent.clear()
+        await harness.feed("pickle juice")
+        assert not harness.llm.calls, f"the name went to the parser: {harness.llm.calls}"
+        assert "What goes into it" in harness.sent.last().text
+
+        # And the escape hatch, because a name and a meal are the same string.
+        assert [b for b in harness.sent.last().buttons if b.startswith("foodmeal:")]
+
+    run(scenario())
+
+
+def test_a_user_food_is_built_by_arithmetic_and_outranks_usda(harness):
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await p.execute("DELETE FROM food WHERE owner_user_id=$1", uid)
+        fdc = await db.create_user_food(uid, "pickle brine", {1008: 1.0, 1093: 1050.0})
+
+        assert fdc < 0, "user foods take negative ids so they cannot collide"
+        row = await p.fetchrow(
+            "SELECT data_type, precedence, owner_user_id FROM food WHERE fdc_id=$1", fdc)
+        assert row["data_type"] == "user_product"
+        assert row["precedence"] == 0, "your own row must outrank USDA's generic one"
+
+        # Findable by you...
+        hits = await db.search_foods("pickle brine", user_id=uid)
+        assert fdc in [h["fdc_id"] for h in hits]
+        # ...and invisible to anyone else.
+        other = await p.fetchval(
+            """INSERT INTO app_user (telegram_id, tz) VALUES (999000222,'UTC')
+               ON CONFLICT (telegram_id) DO UPDATE SET tz='UTC' RETURNING id""")
+        assert fdc not in [h["fdc_id"] for h in
+                           await db.search_foods("pickle brine", user_id=other)]
+
+        await p.execute("DELETE FROM food WHERE owner_user_id=$1", uid)
+        await p.execute("DELETE FROM app_user WHERE id=$1", other)
+
+    run(scenario())

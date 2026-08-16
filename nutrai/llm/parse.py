@@ -175,7 +175,7 @@ async def _mass_for(user_id: int, fdc_id: int, it: dict[str, Any]) -> MassEstima
     return choose_mass(grams, source, low=low, high=high, history=history)
 
 
-async def _candidates(it: dict[str, Any], label: str) -> list[Any]:
+async def _candidates(it: dict[str, Any], label: str, user_id: int | None = None) -> list[Any]:
     """Search on the model's `search_terms` *and* on the user's own label.
 
     Trigram similarity punishes a descriptive query. `PARSE_SYSTEM` asks for "a
@@ -194,7 +194,7 @@ async def _candidates(it: dict[str, Any], label: str) -> list[Any]:
     queries = [q for q in (str(it.get("search_terms") or "").strip(), label.strip()) if q]
     pooled: dict[int, Any] = {}
     for q in dict.fromkeys(queries):
-        for c in await db.search_foods(q, limit=5):
+        for c in await db.search_foods(q, limit=5, user_id=user_id):
             best = pooled.get(c["fdc_id"])
             if best is None or float(c["sim"] or 0) > float(best["sim"] or 0):
                 pooled[c["fdc_id"]] = c
@@ -307,7 +307,7 @@ async def resolve_items(user_id: int, items: list[dict[str, Any]]) -> Resolution
             await _accept(label, alias["fdc_id"], it)
             continue
 
-        cands = await _candidates(it, label)
+        cands = await _candidates(it, label, user_id)
         # A candidate that negates the food is never auto-matched, however well
         # it scores. It drops to the model instead of being taken on trust —
         # tier 3 costs a fraction of a penny and can read the word "meatless".
