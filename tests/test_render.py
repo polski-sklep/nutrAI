@@ -206,19 +206,19 @@ def test_day_score_excludes_what_nothing_measured():
         row(1004, "Total lipid (fat)", "G", 100, hi=81, state="over"),
         row(1178, "Vitamin B-12", "UG", 0.0, lo=2.4, state="under"),
     ]
-    reached, assessable, short, breached, unmeasured = day_score(prog, {1178: 0.0})
+    reached, assessable, short, breached, nearing, unmeasured = day_score(prog, {1178: 0.0})
     # Only Protein has a floor and is measured; B-12's floor is unmeasured.
     assert (reached, assessable, unmeasured) == (1, 1, 1)
     assert short == []
     # Fat is over its ceiling — reported, but not as a failed "target".
-    assert breached == ["Fat"]
+    assert breached == ["Fat 123%"]
 
 
 def test_day_score_counts_a_real_shortfall():
     from nutrai.core.render import day_score
 
     prog = [row(1003, "Protein", "G", 50, lo=180, state="under")]
-    reached, assessable, short, breached, unmeasured = day_score(prog, {1003: 1.0})
+    reached, assessable, short, breached, nearing, unmeasured = day_score(prog, {1003: 1.0})
     assert (reached, assessable, unmeasured) == (0, 1, 0)
     assert short == ["Protein"]
 
@@ -256,3 +256,21 @@ def test_a_ceiling_is_not_an_achievement():
     assert "0 of 2 floors reached" in out, out
     assert "7 of" not in out
     assert "over:" not in out
+
+
+def test_a_ceiling_is_flagged_before_it_is_crossed():
+    """At 92% of your energy there is still a decision to make about dinner.
+    At 104% the only thing left is to know."""
+    from nutrai.core.render import score_line
+
+    prog = [
+        row(1008, "Energy", "KCAL", 2230, hi=2418),          # 92% — close
+        row(1093, "Sodium, Na", "MG", 1150, hi=2300),        # 50% — silent
+        row(1004, "Total lipid (fat)", "G", 90, hi=81),      # 111% — over
+        row(1003, "Protein", "G", 190, lo=180),
+    ]
+    out = score_line(prog, {n: 1.0 for n in (1008, 1093, 1004, 1003)})
+    assert "over:" in out and "Fat 111%" in out
+    assert "close:" in out and "Energy 92%" in out
+    assert "Sodium" not in out
+    assert "1 of 1 floors reached" in out

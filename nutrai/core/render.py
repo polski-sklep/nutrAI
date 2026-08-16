@@ -29,6 +29,11 @@ BAR_EMPTY = "░"
 # mass sums land a hair under.
 COVERAGE_FULL = 0.995
 
+# A ceiling is worth mentioning before it is crossed, not only after. 0.85 sits
+# in the band where there is still a decision to make — at 92% of your energy
+# you can choose a smaller dinner; at 104% the only thing left is to know.
+CEILING_NEAR = 0.85
+
 
 
 def bar(pct: float, width: int = 10) -> str:
@@ -623,8 +628,8 @@ def supplement_pick_card(stack: Sequence[Any], selected: Sequence[int]) -> str:
 
 def day_score(
     progress: Sequence[Any], coverage: dict[int, float] | None = None
-) -> tuple[int, int, list[str], list[str], int]:
-    """(floors reached, floors assessable, floors short, ceilings breached, unmeasured).
+) -> tuple[int, int, list[str], list[str], list[str], int]:
+    """(reached, assessable, short, breached, nearing, unmeasured).
 
     Floors and ceilings are counted separately because they are not the same
     kind of achievement, and mixing them produces nonsense. A ceiling is
@@ -642,6 +647,7 @@ def day_score(
     reached = assessable = unmeasured = 0
     short: list[str] = []
     breached: list[str] = []
+    nearing: list[str] = []
 
     for r in progress:
         lo, hi = r["min_amount"], r["max_amount"]
@@ -649,8 +655,12 @@ def day_score(
         c = cov.get(r["nutrient_id"])
         blind = c is not None and c <= 0 and amount <= 0
 
-        if hi is not None and amount > float(hi):
-            breached.append(_short(r["nutrient_name"]))
+        if hi is not None and float(hi) > 0:
+            share = amount / float(hi)
+            if share > 1:
+                breached.append(f"{_short(r['nutrient_name'])} {share * 100:.0f}%")
+            elif share >= CEILING_NEAR:
+                nearing.append(f"{_short(r['nutrient_name'])} {share * 100:.0f}%")
 
         if lo is None:
             continue
@@ -663,7 +673,7 @@ def day_score(
         else:
             short.append(_short(r["nutrient_name"]))
 
-    return reached, assessable, short, breached, unmeasured
+    return reached, assessable, short, breached, nearing, unmeasured
 
 
 def score_line(progress: Sequence[Any], coverage: dict[int, float] | None = None) -> str:
@@ -673,7 +683,7 @@ def score_line(progress: Sequence[Any], coverage: dict[int, float] | None = None
     target was missed invites optimising the score, and the number that is
     easiest to move is rarely the one worth moving.
     """
-    reached, assessable, short, breached, unmeasured = day_score(progress, coverage)
+    reached, assessable, short, breached, nearing, unmeasured = day_score(progress, coverage)
     out: list[str] = []
 
     if assessable:
@@ -689,6 +699,8 @@ def score_line(progress: Sequence[Any], coverage: dict[int, float] | None = None
 
     if breached:
         out.append(f"⚠️ <b>over:</b> {', '.join(_esc(b) for b in breached)}")
+    if nearing:
+        out.append(f"🔶 <b>close:</b> {', '.join(_esc(b) for b in nearing)}")
 
     if unmeasured:
         out.append(f"<i>{unmeasured} not counted — nothing you ate reports them</i>")
