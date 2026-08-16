@@ -1641,3 +1641,35 @@ async def delete_user_food(user_id: int, fdc_id: int) -> str | None:
            RETURNING description""",
         fdc_id, user_id,
     )
+
+
+async def set_target_weight(user_id: int, nutrient_id: int, weight: float,
+                            day: dt.date) -> bool:
+    """Change how much a floor counts, versioned like any other target change.
+
+    Two statements rather than one data-modifying CTE: the UPDATE and the
+    INSERT would share a snapshot, so the unique index on the live row sees
+    the old row still open and rejects the new one.
+    """
+    p = await pool()
+    async with p.acquire() as con, con.transaction():
+        live = await con.fetchrow(
+            """SELECT min_amount, max_amount, rationale FROM target
+                WHERE user_id=$1 AND nutrient_id=$2 AND effective_to IS NULL""",
+            user_id, nutrient_id,
+        )
+        if not live:
+            return False
+        await con.execute(
+            """UPDATE target SET effective_to = $3
+                WHERE user_id=$1 AND nutrient_id=$2 AND effective_to IS NULL""",
+            user_id, nutrient_id, day,
+        )
+        await con.execute(
+            """INSERT INTO target (user_id, nutrient_id, min_amount, max_amount,
+                                   effective_from, rationale, weight)
+               VALUES ($1,$2,$3,$4,$5,$6,$7)""",
+            user_id, nutrient_id, live["min_amount"], live["max_amount"],
+            day, live["rationale"], num(weight, 2),
+        )
+    return True

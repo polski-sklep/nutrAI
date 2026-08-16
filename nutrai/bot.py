@@ -596,7 +596,7 @@ async def _apply_profile_edits(msg: Message, u: Any, edits: list[tuple[int, str]
 # the eventual wiring a rename with muscle memory already attached.
 TARGET_LINE = re.compile(
     r"^\s*(?P<name>[A-Za-z][A-Za-z0-9 ,\-]*?)\s+"
-    r"(?:(?P<bound>max|min|ceiling|floor|at most|at least|under|over)\s+)?"
+    r"(?:(?P<bound>max|min|ceiling|floor|at most|at least|under|over|weight)\s+)?"
     r"(?P<value>\d+(?:\.\d+)?|clear|none|off|reset)\s*"
     r"(?P<unit>kcal|kj|mg|ug|µg|mcg|g|iu)?\s*$",
     re.IGNORECASE,
@@ -658,6 +658,20 @@ async def _set_one_target(msg: Message, u: Any, term: str, bound: str | None,
             what = "not cleared — the profile is too incomplete to derive a default"
         await msg.answer(f"🎯 <b>{render._esc(render._short(n['name']))}</b> {render._esc(what)}.",
                          parse_mode="HTML")
+        return True
+
+    if bound == "weight":
+        w = float(value_tok)
+        if not 0 < w <= 10:
+            await msg.answer("A weight runs from 0 to 10.", parse_mode="HTML")
+            return True
+        await db.set_target_weight(u["id"], n["id"], w, today)
+        await msg.answer(
+            f"⚖️ <b>{render._esc(render._short(n['name']))}</b> now counts "
+            f"<b>×{w:g}</b> toward the day's score.\n\n"
+            "<i>Only the score changes — the target itself is untouched, and "
+            "past days keep the weighting they were scored with.</i>",
+            parse_mode="HTML")
         return True
 
     value = float(value_tok)

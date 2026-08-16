@@ -517,3 +517,51 @@ def test_the_attention_list_says_how_many_are_fine():
                      coverage={r["nutrient_id"]: 1.0 for r in prog})
     assert "where they should be" not in every
     assert "Calcium" in every
+
+
+def test_a_ceiling_at_zero_is_not_a_row():
+    """"Alcohol 0 g, 0% of a 16 g ceiling" tells you nothing you did not know
+    from having drunk none. It belongs on the card only once there is some."""
+    prog = [
+        row(1008, "Energy", "KCAL", 2143, hi=2286),
+        row(1003, "Protein", "G", 165, lo=165),
+        row(1005, "Carbohydrate, by difference", "G", 250, hi=312),
+        row(1004, "Total lipid (fat)", "G", 60, hi=78),
+        row(1018, "Alcohol, ethyl", "G", 0, hi=16),
+    ]
+    cov = {r["nutrient_id"]: 1.0 for r in prog}
+    assert "Alcohol" not in day_card(DAY, prog, [], show_all=True, coverage=cov)
+
+    drank = prog[:-1] + [row(1018, "Alcohol, ethyl", "G", 24, hi=16, state="over")]
+    assert "Alcohol" in day_card(DAY, drank, [], show_all=True,
+                                 coverage={r["nutrient_id"]: 1.0 for r in drank})
+
+
+def test_no_coverage_note_where_absence_means_zero():
+    """A pear has no alcohol row because pears contain none, not because
+    nobody looked. Annotating those invents a doubt that does not exist."""
+    prog = [row(1057, "Caffeine", "MG", 191, hi=400),
+            row(1087, "Calcium, Ca", "MG", 400, lo=1000, state="under")]
+    out = day_card(DAY, prog, [], show_all=True, coverage={1057: 0.88, 1087: 0.88})
+    # The table rows, not the "still to go" summary that also names them.
+    caffeine_line = next(ln for ln in out.splitlines() if "Caffeine" in ln and "mg" in ln)
+    calcium_line = next(ln for ln in out.splitlines() if "Calcium" in ln and "mg" in ln)
+    assert "of food has data" not in caffeine_line
+    assert "of food has data" in calcium_line
+
+
+def test_a_weighted_floor_moves_the_score_and_is_named():
+    """A headline that quietly means something different from yesterday's is
+    worse than no headline."""
+    from nutrai.core.render import day_score, score_line
+
+    def prog(protein_weight):
+        return [
+            {**row(1003, "Protein", "G", 60, lo=165, state="under"), "weight": protein_weight},
+            {**row(1089, "Iron, Fe", "MG", 8, lo=8), "weight": 1},
+        ]
+
+    plain, heavy = day_score(prog(1)), day_score(prog(2.5))
+    assert plain.covered > heavy.covered      # the miss now costs more
+    assert heavy.weighted_by == ("Protein ×2.5",)
+    assert "weighted: Protein ×2.5" in score_line(prog(2.5), {1003: 1.0, 1089: 1.0})

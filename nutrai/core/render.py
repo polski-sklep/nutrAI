@@ -31,6 +31,9 @@ BAR_EMPTY = "░"
 COVERAGE_FULL = 0.995
 # Below this share of a floor, nothing meaningful has gone in yet.
 BARELY_STARTED = 0.05
+# Nutrients whose absence from a food row means the food has none of it,
+# rather than that it was never assayed.
+ABSENT_MEANS_ZERO = frozenset({1018, 1057, 1253})   # alcohol, caffeine, cholesterol
 
 # A ceiling is worth mentioning before it is crossed, not only after. 0.85 sits
 # in the band where there is still a decision to make — at 92% of your energy
@@ -423,6 +426,11 @@ def day_card(
         c = cov.get(r["nutrient_id"])
         if c is not None and c <= 0 and float(r["amount"]) <= 0:
             unmeasured.append(r)
+        elif (show_all and r["min_amount"] is None
+              and float(r["amount"]) <= 0):
+            # "Alcohol 0 g, 0% of a 16 g ceiling" is a row that tells you
+            # nothing you did not know from having eaten nothing containing it.
+            settled += 1
         elif show_all or r["state"] != "ok":
             rest.append(r)
         else:
@@ -435,7 +443,7 @@ def day_card(
         table.append("")
         table.append(
             f"Worth a look ({len(rest)} of {len(rest) + settled})"
-            if not show_all else "Vitamins and minerals")
+            if not show_all else "Everything else")
         for r in sorted(rest, key=lambda x: (x["state"] == "ok", _short(x["nutrient_name"]))):
             table.append(_row(r, cov.get(r["nutrient_id"])))
 
@@ -518,6 +526,11 @@ def _row(r: Any, covered: float | None = None) -> str:
     # the number reads as a measurement of the plate rather than of part of it.
     # Plain parentheses, not <i>: this line lives inside a <pre> block, and
     # Telegram does not accept nested tags there.
+    # Not every nutrient can be "unmeasured". A pear has no row for alcohol
+    # because pears contain none, not because nobody looked — so annotating
+    # those with a coverage figure invents a doubt that does not exist.
+    if r["nutrient_id"] in ABSENT_MEANS_ZERO:
+        covered = None
     if covered is not None and covered < COVERAGE_FULL:
         # "(60% measured)" was read as "you have eaten 60% of it". It means
         # something quite different: 40% of what you ate sits in a USDA row
@@ -779,6 +792,9 @@ class DayScore:
     # Floors nothing you ate today reports any amount of at all. Separated
     # from "short" because 5% of a floor and 0% of it are different days.
     _untouched: tuple[str, ...] = field(default_factory=tuple)
+    # Floors counting for more than one, named so the headline can say the
+    # score is not a plain average when it is not.
+    weighted_by: tuple[str, ...] = field(default_factory=tuple)
 
     @property
     def partial(self) -> int:
@@ -804,9 +820,10 @@ def day_score(
     when one has actually been crossed.
     """
     cov = coverage or {}
+    weights_used: set[str] = set()
     reached = assessable = unmeasured = 0
     short: list[str] = []
-    progress_sum = 0.0
+    weighted = weight_sum = 0.0
     untouched: list[str] = []
     breached: list[str] = []
     nearing: list[str] = []
@@ -830,10 +847,14 @@ def day_score(
             unmeasured += 1
             continue
         assessable += 1
-        # Capped at 1 each: three times your protein cannot make up for no
-        # iron, and a score that let it would reward the easy floor over the
-        # one you are actually missing.
-        progress_sum += min(amount / float(lo), 1.0) if float(lo) > 0 else 0.0
+        # Weighted, and capped at 1 each before weighting: three times your
+        # protein cannot make up for no iron, and a score that let it would
+        # reward the easy floor over the one you are actually missing.
+        w = float(r["weight"]) if "weight" in r and r["weight"] is not None else 1.0
+        weight_sum += w
+        if w != 1.0:
+            weights_used.add(f"{_short(r['nutrient_name'])} ×{w:g}")
+        weighted += w * (min(amount / float(lo), 1.0) if float(lo) > 0 else 0.0)
         if amount >= float(lo):
             reached += 1
         else:
@@ -847,7 +868,8 @@ def day_score(
     return DayScore(
         reached=reached, assessable=assessable, short=short, breached=breached,
         nearing=nearing, unmeasured=unmeasured,
-        covered=(progress_sum / assessable) if assessable else 0.0,
+        covered=(weighted / weight_sum) if weight_sum else 0.0,
+        weighted_by=tuple(sorted(weights_used)),
         _untouched=tuple(untouched),
     )
 
@@ -879,7 +901,11 @@ def score_line(progress: Sequence[Any], coverage: dict[int, float] | None = None
             detail += f" · {sc.partial} part-way"
         if sc._untouched:
             detail += f" · {len(sc._untouched)} not started"
-        out.append(f"<i>{detail}</i>")
+        if sc.weighted_by:
+            # A headline that quietly means something different from
+            # yesterday's is worse than no headline.
+            detail += " · weighted: " + ", ".join(sc.weighted_by)
+        out.append(f"<i>{_esc(detail)}</i>")
         if short:
             shown = ", ".join(_esc(m) for m in short[:6])
             more = f" and {len(short) - 6} more" if len(short) > 6 else ""
@@ -1291,6 +1317,7 @@ def target_list_card(rows: Sequence[Any]) -> str:
         "",
         "• <code>/target fibre 40</code> — a daily minimum",
         "• <code>/target sodium max 2000</code> — a daily ceiling",
+        "• <code>/target protein weight 2.5</code> — how much it counts",
         "• <code>/target fibre clear</code> — back to derived",
     ]
     return "\n".join(out)
