@@ -1178,8 +1178,10 @@ def training_card(today_rows: Sequence[Any], week_rows: Sequence[Any],
 
     lines.append(f"<b>{day:%a %-d %b}</b>")
     if today_rows:
-        for r in today_rows:
-            bits = [r["kind"]]
+        for i, r in enumerate(today_rows, start=1):
+            # Numbered so the ❌ buttons below name a line rather than making
+            # you count rows to work out which one you are about to remove.
+            bits = [f"{i}. {r['kind']}"] if len(today_rows) > 1 else [r["kind"]]
             if r["minutes"]:
                 bits.append(_hm(float(r["minutes"])))
             if r["intensity"]:

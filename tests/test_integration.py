@@ -1908,3 +1908,81 @@ def test_a_bare_number_follows_the_bound_already_there(harness):
         assert row["max_amount"] is None
 
     run(scenario())
+
+
+def test_a_forwarded_session_can_be_removed_from_telegram(harness):
+    """A bad forward used to need a psql prompt to undo — the same blind spot
+    as the missing sync line, one layer down."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        day = dt.date.today()
+        act_id = await p.fetchval(
+            """INSERT INTO activity (user_id, local_date, kind, minutes, intensity, rpe)
+               VALUES ($1,$2,'lifting',96,'hard',9.2) RETURNING id""", uid, day)
+
+        harness.sent.clear()
+        await harness.feed("/training")
+        card = harness.sent.last()
+        assert "hard" in card.text and "RPE 9.2" in card.text
+        assert [b for b in card.buttons if b.startswith("actdel:")], card.buttons
+
+        # Asking first: a delete cannot be taken back.
+        await harness.press(f"actdel:{act_id}", card.message_id)
+        assert "Remove this session?" in harness.sent.last().text
+        assert await db.activity_by_id(uid, act_id) is not None, "deleted before confirming"
+
+        await harness.press(f"actdel!:{act_id}", harness.sent.last().message_id)
+        assert await db.activity_by_id(uid, act_id) is None
+
+        harness.sent.clear()
+        await harness.feed("/training")
+        assert "nothing logged yet" in harness.sent.last().text
+
+    run(scenario())
+
+
+def test_keeping_a_session_removes_nothing(harness):
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        act_id = await p.fetchval(
+            """INSERT INTO activity (user_id, local_date, kind, minutes)
+               VALUES ($1,$2,'cycling',45) RETURNING id""", uid, dt.date.today())
+        await harness.feed("/training")
+        card = harness.sent.last()
+        await harness.press(f"actdel:{act_id}", card.message_id)
+        await harness.press("actkeep:", harness.sent.last().message_id)
+        assert await db.activity_by_id(uid, act_id) is not None
+        await p.execute("DELETE FROM activity WHERE id=$1", act_id)
+
+    run(scenario())
+
+
+def test_another_users_session_cannot_be_deleted_by_id(harness):
+    """The id arrives in callback data, which the client controls."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        other = await p.fetchval(
+            """INSERT INTO app_user (telegram_id, tz) VALUES (999000111, 'UTC')
+               ON CONFLICT (telegram_id) DO UPDATE SET tz='UTC' RETURNING id""")
+        victim = await p.fetchval(
+            """INSERT INTO activity (user_id, local_date, kind, minutes)
+               VALUES ($1,$2,'lifting',60) RETURNING id""", other, dt.date.today())
+
+        assert await db.activity_by_id(uid, victim) is None
+        assert await db.delete_activity(uid, victim) is False
+        assert await p.fetchval("SELECT 1 FROM activity WHERE id=$1", victim) == 1
+        await p.execute("DELETE FROM activity WHERE id=$1", victim)
+        await p.execute("DELETE FROM app_user WHERE id=$1", other)
+
+    run(scenario())

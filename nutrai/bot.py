@@ -6,6 +6,7 @@ import logging
 import re
 import zoneinfo
 from collections import defaultdict
+from collections.abc import Sequence
 from html import escape
 from typing import Any
 
@@ -682,7 +683,84 @@ async def training(msg: Message) -> None:
     await msg.answer(
         render.training_card(today_rows, rows, day, week_start),
         parse_mode="HTML",
+        reply_markup=_training_keyboard(today_rows),
     )
+
+
+def _training_keyboard(today_rows: Sequence[Any]) -> InlineKeyboardMarkup | None:
+    """One ❌ per session logged today.
+
+    Only today's: a session from Tuesday is history, and a delete button next
+    to it invites removing something you can no longer check.
+    """
+    if not today_rows:
+        return None
+    if len(today_rows) == 1:
+        buttons = [[InlineKeyboardButton(text="❌ remove this session",
+                                         callback_data=f"actdel:{today_rows[0]['id']}")]]
+    else:
+        buttons = [[
+            InlineKeyboardButton(text=f"❌ {i}", callback_data=f"actdel:{r['id']}")
+            for i, r in enumerate(today_rows, start=1)
+        ]]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def _describe_activity(r: Any) -> str:
+    bits = [r["kind"]]
+    if r["minutes"]:
+        bits.append(render._hm(float(r["minutes"])))
+    if r["intensity"]:
+        bits.append(str(r["intensity"]))
+    if r["rpe"] is not None:
+        bits.append(f"RPE {float(r['rpe']):g}")
+    return " · ".join(bits)
+
+
+@dp.callback_query(F.data.startswith("actdel:"))
+async def cb_activity_delete(cq: CallbackQuery) -> None:
+    """Ask first. A delete cannot be taken back, and the session came from
+    another system that will not re-send it unprompted."""
+    u = await db.get_or_create_user(cq.from_user.id)
+    activity_id = int(cq.data.split(":", 1)[1])
+    row = await db.activity_by_id(u["id"], activity_id)
+    await cq.answer()
+    if not row:
+        await cq.message.answer("That session is already gone.")
+        return
+    await cq.message.answer(
+        f"Remove this session?\n\n<b>{render._esc(_describe_activity(row))}</b>"
+        + (f"\n<i>{render._esc(row['note'])}</i>" if row["note"] else ""),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="❌ remove it", callback_data=f"actdel!:{activity_id}"),
+            InlineKeyboardButton(text="keep it", callback_data="actkeep:"),
+        ]]),
+    )
+
+
+@dp.callback_query(F.data.startswith("actdel!:"))
+async def cb_activity_delete_confirm(cq: CallbackQuery) -> None:
+    u = await db.get_or_create_user(cq.from_user.id)
+    activity_id = int(cq.data.split(":", 1)[1])
+    row = await db.activity_by_id(u["id"], activity_id)
+    if not row:
+        await cq.answer("Already gone")
+        return
+    what = _describe_activity(row)
+    await db.delete_activity(u["id"], activity_id)
+    await cq.answer("Removed")
+    await cq.message.edit_text(
+        f"🗑 Removed <b>{render._esc(what)}</b>.\n\n"
+        "<i>The workout bot can post it again — nothing here stops it.</i>",
+        parse_mode="HTML",
+    )
+
+
+@dp.callback_query(F.data.startswith("actkeep:"))
+async def cb_activity_keep(cq: CallbackQuery) -> None:
+    await cq.answer("Kept")
+    await cq.message.edit_text("Kept. Nothing was removed.")
 
 
 @dp.message(Command("target"))

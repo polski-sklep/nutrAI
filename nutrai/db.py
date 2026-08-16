@@ -1291,9 +1291,34 @@ async def activity_range(user_id: int, start: dt.date, end: dt.date) -> list[asy
     """Sessions in a date window, oldest first."""
     p = await pool()
     return await p.fetch(
-        """SELECT local_date, kind, minutes, kcal_burned, intensity, rpe, note
+        """SELECT id, local_date, kind, minutes, kcal_burned, intensity, rpe, note
              FROM activity
             WHERE user_id = $1 AND local_date BETWEEN $2 AND $3
          ORDER BY local_date, id""",
         user_id, start, end,
     )
+
+
+async def activity_by_id(user_id: int, activity_id: int) -> asyncpg.Record | None:
+    """Scoped to the owner. The id arrives from callback data, which is a
+    string the client controls, so it is never trusted on its own."""
+    p = await pool()
+    return await p.fetchrow(
+        "SELECT * FROM activity WHERE id = $1 AND user_id = $2", activity_id, user_id
+    )
+
+
+async def delete_activity(user_id: int, activity_id: int) -> bool:
+    """Remove one session. Returns whether a row went.
+
+    A hard delete rather than a status column: `activity` is an append-only
+    feed from another system, and a session that should not be there is a bad
+    forward rather than a decision worth keeping a record of. Note the workout
+    bot can re-post it — deduplication keys on (user, date, kind, minutes,
+    intensity), and after a delete there is nothing left to match.
+    """
+    p = await pool()
+    result = await p.execute(
+        "DELETE FROM activity WHERE id = $1 AND user_id = $2", activity_id, user_id
+    )
+    return result.endswith(" 1")
