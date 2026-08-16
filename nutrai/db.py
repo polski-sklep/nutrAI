@@ -1080,3 +1080,22 @@ async def week_context(user_id: int, end_day: dt.date, days: int = 7) -> dict[st
     out["weights"] = [(r["local_date"], float(r["value"])) for r in weights]
     out["start"], out["end"] = start, end_day
     return out
+
+
+async def latest_await(user_id: int, kinds: Sequence[str]) -> dict | None:
+    """The most recent outstanding prompt among `kinds`, or None.
+
+    Newest wins. If you press ✏️ and then send /weight, the weight prompt is the
+    one you are answering — the older one has been superseded by your own next
+    action, not abandoned.
+    """
+    p = await pool()
+    row = await p.fetchrow(
+        """SELECT kind, payload FROM pending_action
+            WHERE user_id = $1 AND kind = ANY($2::text[]) AND expires_at > now()
+         ORDER BY created_at DESC, id DESC LIMIT 1""",
+        user_id, list(kinds),
+    )
+    if not row:
+        return None
+    return {"kind": row["kind"], "payload": json.loads(row["payload"])}

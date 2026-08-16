@@ -401,13 +401,21 @@ async def weight(msg: Message) -> None:
     try:
         kg = float(parts[0])
     except (IndexError, ValueError):
+        # Telegram's command menu sends a bare /weight the instant it is tapped,
+        # so arriving without a number is the normal path rather than a mistake.
+        # Wait for one instead of printing a hint and forgetting it was asked.
+        await db.put_pending(u["id"], "weight_await", {})
         await msg.answer(
-            "⚖️ <code>/weight 78.2</code> — weigh yourself at the same time of day, "
-            "ideally before breakfast.",
+            "⚖️ <b>What do you weigh?</b>\n"
+            "<i>Send the number. Same time of day, ideally before breakfast.</i>",
             parse_mode="HTML",
         )
         return
 
+    await _record_weight(msg, u, kg)
+
+
+async def _record_weight(msg: Message, u: Any, kg: float) -> None:
     # A fat-fingered 782 for 78.2 would bend the regression for weeks and never
     # look wrong in a list. Refuse the impossible rather than store it.
     if not 20 <= kg <= 400:
@@ -878,30 +886,8 @@ async def on_text(msg: Message) -> None:
     u = await _user(msg)
     text = (msg.text or "").strip()
 
-    # `/supp add` awaits a label. Anything sent next is that label — including
-    # text, which used to fall straight through to the meal parser: a written
-    # description of eight supplements became two nonsense meals of 4 kcal and
-    # 0 kcal, logged, while the stack stayed empty. A prompt that ignores the
-    # answer is worse than no prompt.
-    if await db.latest_pending(u["id"], "supp_label"):
-        await _handle_supplement_label(msg, u, text=text)
-        return
-
-    # A number typed while a rating keypad is on screen is that rating, not a
-    # repeat selector. Checked before the grammar, which claims bare numbers.
-    awaiting = await db.latest_pending(u["id"], "rate_await")
-    if awaiting and text.strip().replace(".", "", 1).isdigit():
-        value = float(text.strip())
-        if 0 < value <= 10:
-            await db.clear_pending(u["id"], "rate_await")
-            await _record_rating(msg, u, awaiting["kind"], value)
-            return
-
-    # A correction to a card you just pressed ✎ on takes precedence over every
-    # other reading of the message. Checked first because "rice 200" is a valid
-    # repeat command as well as a valid correction, and while a fix is
-    # outstanding the correction is what was meant.
-    if await _try_fix(msg, u, text):
+    # Every prompt that waits for a typed reply is handled in one place.
+    if await _consume_awaited_reply(msg, u, text):
         return
 
     cmd = dsl.parse(text)
@@ -966,6 +952,59 @@ async def _apply_when(entry_id: int, ops: list[Any], u: Any) -> dt.date | None:
         entry_id, when, day,
     )
     return updated
+
+
+
+# Prompts answered by an ordinary message rather than a button.
+#
+# This gate exists because the same bug was fixed four times in four handlers:
+# `/supp add` ignoring a written label, ✏️ ignoring a correction, the rating
+# keypad ignoring its own number, `/weight` ignoring the number it had just
+# asked for. Each time the answer fell through to the meal parser, which
+# dutifully spent a Sonnet call establishing that "78.4" is not a food. A prompt
+# that ignores its own answer is worse than no prompt, so a fifth prompt now
+# inherits the behaviour instead of repeating the bug.
+AWAITING_KINDS = ("supp_label", "fix_entry", "weight_await", "rate_await")
+
+
+async def _consume_awaited_reply(msg: Message, u: Any, text: str) -> bool:
+    """Route a message to whichever prompt is waiting for it. True if consumed.
+
+    Newest prompt wins: if you press ✏️ and then tap /weight, the weight prompt
+    is the one being answered — the earlier one was superseded by your own next
+    action rather than abandoned.
+    """
+    pending = await db.latest_await(u["id"], AWAITING_KINDS)
+    if not pending:
+        return False
+    kind, payload = pending["kind"], pending["payload"]
+    stripped = text.strip().replace(",", ".")
+
+    if kind == "supp_label":
+        await _handle_supplement_label(msg, u, text=text)
+        return True
+
+    if kind == "fix_entry":
+        return await _try_fix(msg, u, text)
+
+    # The numeric prompts decline anything that is not a number, so a message
+    # that happens to arrive while one is open is still read as a meal.
+    try:
+        value = float(stripped)
+    except ValueError:
+        return False
+
+    if kind == "weight_await":
+        await db.clear_pending(u["id"], "weight_await")
+        await _record_weight(msg, u, value)
+        return True
+
+    if kind == "rate_await" and 0 < value <= 10:
+        await db.clear_pending(u["id"], "rate_await")
+        await _record_rating(msg, u, payload["kind"], value)
+        return True
+
+    return False
 
 
 async def _try_fix(msg: Message, u: Any, text: str) -> bool:

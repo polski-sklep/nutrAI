@@ -727,10 +727,21 @@ def test_weight_is_recorded_and_implausible_values_refused(harness):
             "SELECT count(*) FROM body_metric WHERE user_id = $1", uid
         ) == 2
 
-        # No argument is a usage hint, not a crash.
+        # No argument waits for the number, because Telegram's command menu
+        # sends a bare /weight the instant it is tapped.
         harness.sent.clear()
         await harness.feed("/weight")
-        assert "/weight 78.2" in harness.sent.last().text
+        assert "What do you weigh?" in harness.sent.last().text
+        harness.sent.clear()
+        await harness.feed("77.1")
+        assert "77.1 kg" in harness.sent.last().text, harness.sent.texts()
+        assert float(
+            await p.fetchval(
+                """SELECT value FROM body_metric WHERE user_id=$1
+                    ORDER BY measured_at DESC LIMIT 1""",
+                uid,
+            )
+        ) == pytest.approx(77.1)
 
         # And none of it costs a model call.
         assert not harness.llm.calls
@@ -1618,5 +1629,51 @@ def test_an_unapplied_modifier_is_stated_not_swallowed(harness):
         assert await p.fetchval(
             "SELECT count(*) FROM log_entry WHERE user_id=$1 AND status='confirmed'", uid
         ) == 1, "an unapplied modifier logged the dish anyway"
+
+    run(scenario())
+
+
+def test_a_prompt_never_swallows_a_message_meant_as_food(harness):
+    """The gate declines anything a numeric prompt cannot use, so an open
+    prompt does not turn the next meal into an error."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await p.execute("DELETE FROM body_metric WHERE user_id = $1", uid)
+
+        await harness.feed("/weight")
+        harness.sent.clear()
+        # Not a number, so it is still a meal.
+        await harness.feed("250 g minced beef, 164 g rice, a splash of olive oil")
+        assert harness.llm.calls[-1] == "record_meal", harness.llm.calls
+        assert [b for b in harness.sent.last().buttons if b.startswith("ok:")]
+
+    run(scenario())
+
+
+def test_the_newest_prompt_is_the_one_being_answered(harness):
+    """Press ✏️ then tap /weight, and 78 is a weight, not a correction."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await p.execute("DELETE FROM body_metric WHERE user_id = $1", uid)
+
+        await harness.feed("250 g minced beef, 164 g rice, a splash of olive oil")
+        card = harness.sent.last()
+        await harness.press(f"fix:{_confirm_id(card)}", card.message_id)
+        await harness.feed("/weight")
+
+        harness.sent.clear()
+        await harness.feed("78")
+        assert "78 kg" in harness.sent.last().text, harness.sent.texts()
+        assert float(
+            await p.fetchval("SELECT value FROM body_metric WHERE user_id=$1", uid)
+        ) == pytest.approx(78.0)
 
     run(scenario())
