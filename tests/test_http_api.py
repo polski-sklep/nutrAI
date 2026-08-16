@@ -104,3 +104,56 @@ def test_bad_input_is_refused_rather_than_stored(api):
             assert r.status == 400
 
     run(scenario())
+
+
+def test_a_rejection_says_why_in_the_log(api, caplog):
+    """A real save was refused and left nothing behind but `400 260`, so the
+    cause had to be found by comparing response byte counts against probes.
+    The endpoint knows exactly what was wrong; it should say so.
+
+    The value that arrived is echoed too: a client sending the display word
+    "high" instead of the enum "hard" is the failure this catches, and quoting
+    it turns a forensic exercise into a one-line diagnosis.
+    """
+    import logging
+
+    async def scenario():
+        h = {"X-Nutrai-Token": TOKEN}
+        async with TestClient(TestServer(api.build_app())) as c:
+            r = await c.post(
+                "/activity",
+                json={"telegram_id": 1, "kind": "lifting", "intensity": "high"},
+                headers=h,
+            )
+            assert r.status == 400
+            body = await r.json()
+            assert "'high'" in body["error"], body
+            assert "hard" in body["error"], body
+
+    with caplog.at_level(logging.WARNING, logger="nutrai.http"):
+        run(scenario())
+    assert any("intensity" in rec.message and "high" in rec.message
+               for rec in caplog.records), [r.message for r in caplog.records]
+
+
+def test_a_valid_intensity_and_rpe_are_stored(api):
+    """Guards the enum the client has to send."""
+    async def scenario():
+        h = {"X-Nutrai-Token": TOKEN}
+        async with TestClient(TestServer(api.build_app())) as c:
+            for good in ("easy", "moderate", "hard", "max"):
+                r = await c.post(
+                    "/activity",
+                    json={"telegram_id": 1, "kind": "lifting", "minutes": 30,
+                          "intensity": good, "rpe": 8},
+                    headers=h,
+                )
+                assert r.status in (200, 201), (good, await r.text())
+            r = await c.post(
+                "/activity",
+                json={"telegram_id": 1, "kind": "lifting", "intensity": "hard", "rpe": 11},
+                headers=h,
+            )
+            assert r.status == 400
+
+    run(scenario())

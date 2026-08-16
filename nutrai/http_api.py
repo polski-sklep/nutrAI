@@ -28,6 +28,19 @@ from . import db
 
 log = logging.getLogger("nutrai.http")
 
+
+def _reject(reason: str, status: int = 400) -> web.Response:
+    """Refuse, and say why in the log as well as in the response.
+
+    A rejection used to leave nothing behind but an access line, so a client
+    posting the display word "high" instead of the enum "hard" showed up as a
+    bare `400 260` and had to be identified by comparing response byte counts
+    against probes. The endpoint knows exactly what was wrong; the operator
+    should not have to work it out forensically.
+    """
+    log.warning("activity rejected: %s", reason)
+    return web.json_response({"error": reason}, status=status)
+
 # Fail closed. With no token the server does not start at all, rather than
 # starting open and trusting the network to be private.
 TOKEN = os.getenv("NUTRAI_HTTP_TOKEN", "")
@@ -61,46 +74,49 @@ async def post_activity(request: web.Request) -> web.Response:
     timeout is a workout bot that will eventually retry on a success.
     """
     if not _authorised(request):
-        return web.json_response({"error": "unauthorised"}, status=401)
+        return _reject("unauthorised", 401)
 
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "body must be JSON"}, status=400)
+        return _reject("body must be JSON", 400)
 
     telegram_id = body.get("telegram_id")
     if not telegram_id:
-        return web.json_response({"error": "telegram_id is required"}, status=400)
+        return _reject("telegram_id is required", 400)
 
     kind = str(body.get("kind", "other")).lower().strip()
     if kind not in KINDS:
-        return web.json_response(
-            {"error": f"kind must be one of {sorted(KINDS)}"}, status=400
-        )
+        return _reject(f"kind must be one of {sorted(KINDS)} (got {kind!r})", 400)
 
     try:
         minutes = int(body["minutes"]) if body.get("minutes") is not None else None
         kcal = float(body["kcal_burned"]) if body.get("kcal_burned") is not None else None
     except (TypeError, ValueError):
-        return web.json_response({"error": "minutes and kcal_burned must be numbers"}, status=400)
+        return _reject("minutes and kcal_burned must be numbers", 400)
 
     if minutes is not None and not 0 <= minutes <= 1440:
-        return web.json_response({"error": "minutes out of range"}, status=400)
+        return _reject("minutes out of range", 400)
     if kcal is not None and not 0 <= kcal <= 10000:
-        return web.json_response({"error": "kcal_burned out of range"}, status=400)
+        return _reject("kcal_burned out of range", 400)
 
     intensity = body.get("intensity")
     if intensity is not None:
         intensity = str(intensity).lower().strip()
         if intensity not in INTENSITIES:
-            return web.json_response(
-                {"error": f"intensity must be one of {sorted(INTENSITIES)}"}, status=400)
+            # The value that arrived is quoted: a client sending the display
+            # word "high" rather than the enum "hard" is exactly what this
+            # catches, and echoing it makes the diagnosis one line instead of
+            # a byte-count comparison against probe responses.
+            return _reject(
+                f"intensity must be one of {sorted(INTENSITIES)} "
+                f"(got {intensity!r})", 400)
     try:
         rpe = float(body["rpe"]) if body.get("rpe") is not None else None
     except (TypeError, ValueError):
-        return web.json_response({"error": "rpe must be a number"}, status=400)
+        return _reject("rpe must be a number", 400)
     if rpe is not None and not 1 <= rpe <= 10:
-        return web.json_response({"error": "rpe must be between 1 and 10"}, status=400)
+        return _reject("rpe must be between 1 and 10", 400)
 
     # Every field is validated before the database is touched. Reaching
     # get_or_create_user first meant a request with a malformed date still
@@ -111,7 +127,7 @@ async def post_activity(request: web.Request) -> web.Response:
         try:
             explicit_day = dt.date.fromisoformat(str(body["local_date"]))
         except ValueError:
-            return web.json_response({"error": "local_date must be YYYY-MM-DD"}, status=400)
+            return _reject("local_date must be YYYY-MM-DD", 400)
 
     user = await db.get_or_create_user(int(telegram_id))
     day = explicit_day or db.local_date_for(
