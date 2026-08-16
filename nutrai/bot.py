@@ -74,7 +74,7 @@ COMMANDS: list[tuple[str, str]] = [
     ("/weight", "log a weigh-in, e.g. <code>/weight 78.2</code>"),
     ("/supp", "log today's supplement stack · <code>/supp add</code> to set one up"),
     ("/undo", "unlog the last thing you logged today"),
-    ("/week", "the last seven days: excesses, shortfalls, how much to trust it"),
+    ("/week", "last seven days: excesses and shortfalls"),
     ("/audit", "check the last week's entries for wrong matches"),
     ("/insight", "fat-loss rate and what the data actually supports"),
     ("/spend", "what this has cost in API calls"),
