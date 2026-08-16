@@ -1290,6 +1290,14 @@ def slot_name(slot: str) -> str:
     return f"{emoji} {label}"
 
 
+# The same four, short and without an emoji, for column-aligned tables. An
+# emoji is two cells wide in a proportional-ish monospace and "before
+# sleeping" is fifteen characters, which together wrapped every row of the
+# settings table onto two lines on a phone.
+SLOT_SHORT = {"fasted": "fasted", "breakfast": "breakfast",
+              "evening": "evening", "bed": "bedtime"}
+
+
 def supplement_reminder_card(slot: str, rows: Sequence[Any]) -> str:
     """The nudge itself. Template and SQL only — invariant 4."""
     outstanding = [r for r in rows if not r["logged"]]
@@ -1311,16 +1319,31 @@ def slot_settings_card(stack: Sequence[Any], times: dict) -> str:
     lines = ["⏰ <b>Supplement times</b>", ""]
     rows = []
     for i, s in enumerate(stack, start=1):
-        where = slot_name(s["slot"]) if s["slot"] else "—"
-        rows.append(f"{i}. {_short_note(s['name'])[:20]:<22}{where}")
-    lines.append("<pre>" + "\n".join(_esc(r) for r in rows) + "</pre>")
+        where = SLOT_SHORT.get(s["slot"], "—") if s["slot"] else "—"
+        rows.append((f"{i}. {s['name'][:18]}", where))
+    pad = max(len(a) for a, _b in rows) + 2
+    lines.append("<pre>" + "\n".join(
+        _esc(f"{a:<{pad}}{b}") for a, b in rows) + "</pre>")
 
     lines.append("<b>When each moment is</b>")
     trows = []
     for slot in ("fasted", "breakfast", "evening", "bed"):
         t = times.get(slot)
-        trows.append(f"{slot:<11}{t.strftime('%H:%M') if t else 'no reminder'}")
+        trows.append(f"{SLOT_SHORT[slot]:<11}{t.strftime('%H:%M') if t else '—'}")
     lines.append("<pre>" + "\n".join(_esc(r) for r in trows) + "</pre>")
+
+    # Assigning a supplement to a moment does nothing on its own. Without a
+    # time there is no reminder, and a card that lists nine tidy assignments
+    # reads as finished when in fact nothing will ever fire.
+    assigned = {s["slot"] for s in stack if s["slot"]}
+    unscheduled = sorted(assigned - set(times))
+    if assigned and not times:
+        lines.append("⚠️ <b>No reminders will fire.</b> Nothing is scheduled yet — "
+                     "set a time for each moment below.")
+    elif unscheduled:
+        lines.append("⚠️ No time set for: "
+                     + _esc(", ".join(SLOT_SHORT[s_] for s_ in unscheduled))
+                     + " — nothing will fire for those.")
 
     lines += [
         "• <code>3. evening</code> puts line 3 in the evening",

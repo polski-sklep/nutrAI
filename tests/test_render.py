@@ -351,3 +351,40 @@ def test_the_schedule_branch_names_what_is_not_due():
     out = supplement_pick_card(stack, [1, 3], reason="schedule")
     assert "Zinc" in out
     assert "2 of 3 due today" in out
+
+
+def _slot_supp(i, name, slot=None):
+    return {"id": i, "name": name, "slot": slot, "schedule": "daily",
+            "serving_desc": "1 capsule", "servings_per_day": 1, "brand": None,
+            "n_nutrients": 1, "verified_at": None, "note": None, "active": True}
+
+
+def test_the_settings_table_stays_narrow_enough_not_to_wrap():
+    """"4. Chelated Magnesium   🌙 before sleeping" wrapped every row onto two
+    lines on a phone. An emoji is two cells wide and "before sleeping" is
+    fifteen characters."""
+    from nutrai.core.render import slot_settings_card
+
+    stack = [_slot_supp(1, "Chelated Magnesium", "bed"),
+             _slot_supp(2, "Marine Collagen", "breakfast")]
+    out = slot_settings_card(stack, {})
+    table = out.split("<pre>")[1].split("</pre>")[0]
+    for line in table.splitlines():
+        assert len(line) <= 34, (len(line), line)
+
+
+def test_assigning_without_scheduling_says_nothing_will_fire():
+    """Nine tidy assignments read as finished when no reminder can ever fire."""
+    import datetime as dt
+
+    from nutrai.core.render import slot_settings_card
+
+    stack = [_slot_supp(1, "Zinc", "evening"), _slot_supp(2, "Boron", "bed")]
+    assert "No reminders will fire" in slot_settings_card(stack, {})
+
+    partial = slot_settings_card(stack, {"evening": dt.time(21, 0)})
+    assert "No reminders will fire" not in partial
+    assert "bedtime" in partial.split("⚠️")[1]
+
+    done = slot_settings_card(stack, {"evening": dt.time(21, 0), "bed": dt.time(22, 30)})
+    assert "⚠️" not in done
