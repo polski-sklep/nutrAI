@@ -94,6 +94,12 @@ def confirm_card(
     for c in components:
         label = getattr(c, "label", None) or c["label"]
         grams = float(getattr(c, "grams", None) or c["grams"])
+        count = getattr(c, "count", None)
+        if count and float(count) > 1:
+            # "3 × 300 g total" makes the reading checkable. Whether 300 g meant
+            # per cup or across all three is exactly the kind of thing that is
+            # obvious to you and invisible in a total.
+            label = f"{float(count):g} × {label}"
         src = getattr(c, "grams_source", "") or ""
         sigma = float(getattr(c, "sigma", 0) or 0)
         mark = {"scale": "⚖", "stated": "✎", "package": "▤", "prior": "↺"}.get(src, "≈")

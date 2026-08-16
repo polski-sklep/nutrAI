@@ -38,7 +38,14 @@ PARSE_TOOL = {
                             "type": "string",
                             "description": "A precise phrase for looking this up in USDA FoodData Central, e.g. 'beef, ground, 15% fat, raw'. Include the cut, fat percentage, and preparation if visible.",
                         },
-                        "grams": {"type": "number", "description": "Best point estimate of mass in grams."},
+                        "count": {
+                            "type": "number",
+                            "description": "How many units, when the user gave a number of them: 3 cappuccinos, 2 eggs, half an avocado. Omit when no count was given. `grams` stays the TOTAL across all of them, never the per-unit figure.",
+                        },
+                        "grams": {
+                            "type": "number",
+                            "description": "Best point estimate of the TOTAL mass in grams for this line. If a count is given, this is the mass of all of them together, not one.",
+                        },
                         "grams_low": {
                             "type": "number",
                             "description": "Low end of a plausible range, in grams. Required whenever grams_source is 'estimate'. Make this a real interval you would bet on, not a decoration around your point estimate: a plated portion you cannot weigh is routinely 30-40% either side.",
@@ -80,6 +87,8 @@ Rules, in priority order:
 3. If the user states a mass in text, use it with grams_source='stated'. Trust the user over the photograph.
 4. State matters as much as mass, but the question is what was *weighed*, not what was eaten. 100 g of dry rice becomes ~250 g cooked; 100 g of raw mince becomes ~70 g cooked. Nobody eats raw rice, so 'raw or cooked?' is never the question — 'was that 400 g on the scale before or after cooking?' is. Default to the food as served: a description of a meal refers to what was on the plate unless the user says 'dry', 'raw' or 'uncooked'. Reserve 'unknown' for a real ambiguity you cannot resolve, and never write an assumption into `notes` while setting state to 'unknown' — if you assumed it, record it.
 5. Break composite dishes into ingredients only where the split is visible or stated. If you cannot see how much butter is in the mash, do not invent a number: report the dish as one item with a search term for the composite, and say so in `notes`.
+5a. Never emit both a composite and something inside it. "Three cappuccinos, 300 ml milk" must not become a 450 g cappuccino item *plus* a 300 g milk item — the milk is then counted twice and the meal reads as roughly double what was drunk. Pick one level of description and stay on it: either one composite line, or the ingredients that make it up, never both.
+5b. When a count is given, `grams` is the total across all units and `count` records how many. "Three cappuccinos, 100 ml milk each" is 300 g of milk with count 3. "Three cappuccinos, 300 ml milk" is ambiguous between per-cup and total — take the total reading, set the confidence to reflect the doubt, and say in `notes` which reading you used. Do not silently multiply.
 6. Calibrate confidence honestly, against what is actually uncertain. Masses the user stated in text are not in doubt — they were there and you were not — so when every mass is stated or read off a scale, confidence reflects only whether you identified the foods correctly, and 0.85 to 0.95 is the honest range. Reserve 0.4 to 0.6 for what it is for: a plated mixed dish photographed from above with no scale and no stated masses. Overconfidence corrupts weeks of trend data; reflex under-confidence is its own failure, because a warning attached to every meal is a warning nobody reads.
 7. Cooking fat and oil absorbed during cooking are real and routinely forgotten. If a dish is visibly fried or glossy, include an oil item and mark grams_source='estimate'.
 8. Be terse. Output tokens are the dominant cost of this call and prose in `notes` is charged at five times the rate of the image you are reading. State what affects accuracy and stop; do not restate what the item list already says.

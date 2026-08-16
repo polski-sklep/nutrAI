@@ -283,7 +283,11 @@ async def resolve_items(user_id: int, items: list[dict[str, Any]]) -> Resolution
 
     async def _accept(label: str, fdc_id: int, it: dict[str, Any], yf: float = 1.0) -> None:
         m = await _mass_for(user_id, fdc_id, it)
-        comps.append(ResolvedComponent(label, fdc_id, m.grams, yf, m.sigma, m.source))
+        count = it.get("count")
+        comps.append(ResolvedComponent(
+            label, fdc_id, m.grams, yf, m.sigma, m.source,
+            float(count) if count else None,
+        ))
         sources.append(m.source)
         if m.note:
             notes.append(f"{label}: {m.grams:.0f} g from {m.note}")

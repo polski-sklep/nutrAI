@@ -29,6 +29,9 @@ class ResolvedComponent:
     # recomputed from stored rows rather than re-derived from a guess.
     sigma: float = 0.0
     grams_source: str = "estimate"
+    # How many units this line represents, when the user gave a number. Display
+    # only — `grams` is already the total, so nothing downstream multiplies.
+    count: float | None = None
 
 
 # FDC reports food energy under three different nutrient ids, and which one a

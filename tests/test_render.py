@@ -274,3 +274,23 @@ def test_a_ceiling_is_flagged_before_it_is_crossed():
     assert "close:" in out and "Energy 92%" in out
     assert "Sodium" not in out
     assert "1 of 1 floors reached" in out
+
+
+def test_a_count_is_shown_so_the_reading_can_be_checked():
+    """Whether "300 ml" meant per cup or across all three is obvious to the
+    person who typed it and invisible in a total."""
+
+    class C:
+        label, grams, sigma, grams_source, count = "cappuccino", 300.0, 15.0, "stated", 3
+
+    out = confirm_card("three cappuccinos", [C()], {1008: 190.0},
+                       confidence=0.6, warnings=[])
+    assert "3 × cappuccino" in out, out
+
+
+def test_no_count_means_no_multiplier_shown():
+    class C:
+        label, grams, sigma, grams_source, count = "rice", 164.0, 1.0, "scale", None
+
+    assert "×" not in confirm_card("rice", [C()], {1008: 213.0},
+                                   confidence=0.95, warnings=[])
