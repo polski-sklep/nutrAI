@@ -1350,7 +1350,27 @@ def suggest_card(suggestions: Sequence[Any], progress: Sequence[Any],
             "and they become candidates.</i>"
         )
 
+    # Name the gaps being ranked against, biggest first. Without this the
+    # ranking is an assertion: a suggestion that "closes Calcium 100%" reads
+    # as decisive until you know the calcium gap was 8 mg and the protein gap
+    # was 118 g.
+    gaps = []
+    for r in progress:
+        if r["min_amount"] is None:
+            continue
+        target = float(r["min_amount"])
+        short = target - float(r["amount"])
+        if target > 0 and short > 0.10 * target:
+            gaps.append((short / target, r["nutrient_id"], short, r["unit"]))
+    gaps.sort(reverse=True)
+
     lines = ["🍽 <b>What would close today's gaps</b>", ""]
+    if gaps:
+        shown = ", ".join(
+            f"{_esc(names.get(nid, str(nid)))} {fmt_amount(short, unit)}"
+            for _share, nid, short, unit in gaps[:4]
+        )
+        lines += [f"<i>Biggest gaps left: {shown}</i>", ""]
     for i, s in enumerate(suggestions, start=1):
         head = f"<b>{i}. {_esc(s.name)}</b>"
         if s.kcal:

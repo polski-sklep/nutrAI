@@ -18,6 +18,9 @@ from typing import Any
 
 from ..config import ENERGY_KCAL
 
+# A floor with less than this share of its target outstanding counts as met.
+NEARLY_MET = 0.10
+
 
 @dataclass(frozen=True)
 class Suggestion:
@@ -58,8 +61,11 @@ def rank(
         amount = float(r["amount"])
         if r["min_amount"] is not None:
             target = float(r["min_amount"])
-            if target > 0 and amount < target:
-                floors[nid] = (target - amount, target)
+            remaining = target - amount
+            # A floor 97% met is done. Leaving it in lets a dish be ranked for
+            # "closing Calcium 100%" when the hundred per cent was 8 mg.
+            if target > 0 and remaining > NEARLY_MET * target:
+                floors[nid] = (remaining, target)
         if r["max_amount"] is not None:
             ceiling = float(r["max_amount"])
             if ceiling > 0:
@@ -74,9 +80,17 @@ def rank(
             contributed = nuts.get(nid, 0.0)
             if contributed <= 0:
                 continue
-            # Capped at the gap: filling it counts once, exceeding it does not
-            # count twice. Nothing here treats more as better without limit.
-            credit = min(contributed, remaining) / target
+            # Weighted by how unmet the nutrient still is.
+            #
+            # Without this, every floor counts the same and finishing a gap
+            # counts as one whole point however small the gap was. On a day
+            # 118 g short of a 165 g protein floor, that ranked a chia pudding
+            # first for closing the last 2% of calcium — the score rewarded
+            # tidying up nearly-met nutrients over denting the one that
+            # mattered. Multiplying by the shortfall share makes the last 2%
+            # of a floor worth about a fiftieth of the first.
+            shortfall_share = remaining / target
+            credit = (min(contributed, remaining) / target) * shortfall_share
             score += credit
             closes.append((nid, min(contributed, remaining) / remaining))
 

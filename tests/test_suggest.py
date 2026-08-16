@@ -76,3 +76,30 @@ def test_nothing_in_this_module_imports_a_model():
     src = inspect.getsource(suggest)
     for forbidden in ("llm", "anthropic", "call_tool", "MODEL_"):
         assert forbidden not in src, forbidden
+
+
+def test_the_biggest_gap_outranks_a_nearly_met_one():
+    """118 g short of a 165 g protein floor, and the top suggestion was a chia
+    pudding with 4 g of protein — because it finished the last 2% of calcium
+    and every floor counted the same."""
+    progress = [
+        prog(1003, "Protein", "G", 47, lo=165),        # 118 g short
+        prog(1087, "Calcium, Ca", "MG", 992, lo=1000),  # 8 mg short
+    ]
+    snapshots = {
+        1: dish(1, "Chia pudding", {1008: 211, 1003: 4, 1087: 341}),
+        2: dish(2, "Chicken breast", {1008: 330, 1003: 62, 1087: 15}),
+    }
+    ranked = suggest.rank(snapshots, progress)
+    assert ranked[0].name == "Chicken breast", [(s.name, round(s.score, 4)) for s in ranked]
+
+
+def test_a_nearly_met_floor_is_not_a_gap_at_all():
+    """"Closes Calcium 100%" is not an achievement when the hundred per cent
+    was 8 mg of a 1,000 mg floor."""
+    progress = [prog(1087, "Calcium, Ca", "MG", 992, lo=1000)]
+    assert suggest.rank({1: dish(1, "Milk", {1087: 200})}, progress) == []
+
+    # Still a gap at 15% outstanding.
+    progress = [prog(1087, "Calcium, Ca", "MG", 850, lo=1000)]
+    assert suggest.rank({1: dish(1, "Milk", {1087: 200})}, progress)
