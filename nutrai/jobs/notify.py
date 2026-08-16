@@ -115,6 +115,58 @@ async def evaluate_user(user_id: int, day: dt.date, *, now: dt.datetime | None =
     return out
 
 
+async def supplement_reminders(bot) -> None:
+    """Nudge each supplement moment once, at its own local time.
+
+    Template and SQL only, like every other notification here — invariant 4.
+
+    Fires only when something in that slot is still unlogged, and records the
+    send so a ten-minute sweep cannot repeat it. A reminder that arrives when
+    there is nothing to do is how a useful notification becomes one you mute.
+    """
+    import zoneinfo
+
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    p = await db.pool()
+    now = dt.datetime.now(dt.timezone.utc)
+    for u in await p.fetch("SELECT id, telegram_id, tz, day_rollover_hour FROM app_user"):
+        times = await db.slot_times(u["id"])
+        if not times:
+            continue
+        local = now.astimezone(zoneinfo.ZoneInfo(u["tz"]))
+        day = db.local_date_for(now, u["tz"], u["day_rollover_hour"])
+        for slot, when in times.items():
+            # Past its time today, and not so far past that the nudge is noise.
+            due_at = local.replace(hour=when.hour, minute=when.minute,
+                                   second=0, microsecond=0)
+            if not (dt.timedelta(0) <= local - due_at <= dt.timedelta(hours=3)):
+                continue
+            if await db.reminder_already_sent(u["id"], slot, day):
+                continue
+            rows = await db.supplements_in_slot(u["id"], slot, day)
+            if not rows or all(r["logged"] for r in rows):
+                continue
+            # Claim the slot before sending: a send that fails should not be
+            # retried into a second notification a few minutes later.
+            if not await db.mark_reminder_sent(u["id"], slot, day):
+                continue
+            try:
+                await bot.send_message(
+                    u["telegram_id"],
+                    render.supplement_reminder_card(slot, rows),
+                    parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                        InlineKeyboardButton(text="✅ taken",
+                                             callback_data=f"slotlog:{slot}"),
+                        InlineKeyboardButton(text="not yet",
+                                             callback_data=f"slotskip:{slot}"),
+                    ]]),
+                )
+            except Exception as exc:
+                log.warning("supplement reminder failed for %s: %s", u["telegram_id"], exc)
+
+
 async def sweep(bot) -> None:
     """Periodic pass. Catches 'under' rules, which a write can never trigger:
     the reason you missed your protein floor is that you stopped eating."""
@@ -171,6 +223,11 @@ async def daily_summary(bot) -> None:
 def start_scheduler(bot) -> AsyncIOScheduler:
     sched = AsyncIOScheduler(timezone="UTC")
     sched.add_job(sweep, "interval", minutes=20, args=[bot], id="sweep")
+    # Every ten minutes so a reminder lands near its time rather than up to
+    # twenty minutes after it. The once-per-slot-per-day record is what makes
+    # a frequent sweep safe.
+    sched.add_job(supplement_reminders, "interval", minutes=10, args=[bot],
+                  id="supp_reminders")
     # 21:00 Europe/Warsaw. Move this to a per-user job once there is more than
     # one user; a single cron is honest for a single-user deployment.
     sched.add_job(daily_summary, CronTrigger(hour=19, minute=0), args=[bot], id="daily")

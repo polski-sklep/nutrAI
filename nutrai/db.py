@@ -1369,3 +1369,77 @@ async def supplement_by_id(user_id: int, supplement_id: int) -> asyncpg.Record |
     return await p.fetchrow(
         "SELECT * FROM supplement WHERE id = $1 AND user_id = $2", supplement_id, user_id
     )
+
+
+SUPPLEMENT_SLOTS = ("fasted", "breakfast", "evening", "bed")
+
+
+async def set_supplement_slot(user_id: int, supplement_id: int, slot: str | None) -> str | None:
+    if slot is not None and slot not in SUPPLEMENT_SLOTS:
+        raise ValueError(f"not a slot: {slot!r}")
+    p = await pool()
+    return await p.fetchval(
+        "UPDATE supplement SET slot = $3 WHERE id = $1 AND user_id = $2 RETURNING name",
+        supplement_id, user_id, slot,
+    )
+
+
+async def slot_times(user_id: int) -> dict[str, dt.time]:
+    p = await pool()
+    rows = await p.fetch(
+        "SELECT slot, remind_at FROM supplement_slot_time WHERE user_id = $1 AND enabled",
+        user_id,
+    )
+    return {r["slot"]: r["remind_at"] for r in rows}
+
+
+async def set_slot_time(user_id: int, slot: str, when: dt.time | None) -> None:
+    """A time, or None to switch that slot's reminder off."""
+    if slot not in SUPPLEMENT_SLOTS:
+        raise ValueError(f"not a slot: {slot!r}")
+    p = await pool()
+    if when is None:
+        await p.execute(
+            "DELETE FROM supplement_slot_time WHERE user_id = $1 AND slot = $2", user_id, slot)
+        return
+    await p.execute(
+        """INSERT INTO supplement_slot_time (user_id, slot, remind_at)
+           VALUES ($1,$2,$3)
+           ON CONFLICT (user_id, slot) DO UPDATE
+             SET remind_at = EXCLUDED.remind_at, enabled = true""",
+        user_id, slot, when,
+    )
+
+
+async def supplements_in_slot(user_id: int, slot: str, day: dt.date) -> list[asyncpg.Record]:
+    """Active supplements in one slot, with whether today's dose is logged."""
+    p = await pool()
+    return await p.fetch(
+        """SELECT s.id, s.name, s.schedule, s.serving_desc, s.servings_per_day,
+                  EXISTS (SELECT 1 FROM supplement_log l
+                           WHERE l.supplement_id = s.id AND l.local_date = $3) AS logged
+             FROM supplement s
+            WHERE s.user_id = $1 AND s.active AND s.slot = $2
+         ORDER BY s.name""",
+        user_id, slot, day,
+    )
+
+
+async def reminder_already_sent(user_id: int, slot: str, day: dt.date) -> bool:
+    p = await pool()
+    return bool(await p.fetchval(
+        """SELECT 1 FROM supplement_reminder_log
+            WHERE user_id = $1 AND slot = $2 AND local_date = $3""",
+        user_id, slot, day,
+    ))
+
+
+async def mark_reminder_sent(user_id: int, slot: str, day: dt.date) -> bool:
+    """False if it was already recorded — the insert is the lock."""
+    p = await pool()
+    result = await p.execute(
+        """INSERT INTO supplement_reminder_log (user_id, slot, local_date)
+           VALUES ($1,$2,$3) ON CONFLICT DO NOTHING""",
+        user_id, slot, day,
+    )
+    return result.endswith(" 1")

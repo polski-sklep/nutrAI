@@ -2040,3 +2040,78 @@ def test_a_supplement_is_stopped_not_deleted(harness):
         await p.execute("DELETE FROM supplement WHERE id=$1", sid)
 
     run(scenario())
+
+
+def test_supplement_slots_and_reminders(harness):
+    """Three or four moments a day, each nudged once at its own local time."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+        from nutrai.jobs import notify
+
+        p = await db.pool()
+        await p.execute("DELETE FROM supplement WHERE user_id=$1", uid)
+        ids = {}
+        for name in ("Magnesium", "Boron"):
+            ids[name] = await p.fetchval(
+                """INSERT INTO supplement (user_id, name, serving_desc, servings_per_day, source)
+                   VALUES ($1,$2,'1 capsule',1,'label_photo') RETURNING id""", uid, name)
+
+        await harness.feed("/supp times")
+        assert "Supplement times" in harness.sent.last().text
+
+        # Numbered lines for the assignment, a bare slot and time for the clock.
+        harness.sent.clear()
+        await harness.feed("1. bed\n2. breakfast\nbed 22:00\nbreakfast 08:30")
+        reply = harness.sent.last().text
+        assert "before sleeping" in reply and "22:00" in reply
+
+        # The card lists alphabetically, so line 1 is Boron — the numbers name
+        # rows on the screen, not the order they were created in.
+        rows = await db.supplements_in_slot(uid, "bed", dt.date.today())
+        assert [r["name"] for r in rows] == ["Boron"]
+        assert [r["name"] for r in
+                await db.supplements_in_slot(uid, "breakfast", dt.date.today())] == ["Magnesium"]
+        assert (await db.slot_times(uid))["bed"] == dt.time(22, 0)
+
+        # Nothing fires outside the slot's own window.
+        harness.sent.clear()
+        await notify.supplement_reminders(harness.tg.bot)
+        for sent in harness.sent.sent:
+            assert "before sleeping" not in sent.text or "22:00" in sent.text
+
+        await p.execute("DELETE FROM supplement_reminder_log WHERE user_id=$1", uid)
+        await p.execute("DELETE FROM supplement WHERE user_id=$1", uid)
+
+    run(scenario())
+
+
+def test_a_reminder_fires_once_and_only_when_something_is_outstanding(harness):
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await p.execute("DELETE FROM supplement WHERE user_id=$1", uid)
+        sid = await p.fetchval(
+            """INSERT INTO supplement (user_id, name, serving_desc, servings_per_day, source, slot)
+               VALUES ($1,'Magnesium','1 capsule',1,'label_photo','bed') RETURNING id""", uid)
+        day = dt.date.today()
+
+        # The once-per-day record is what makes a ten-minute sweep safe.
+        assert await db.mark_reminder_sent(uid, "bed", day) is True
+        assert await db.mark_reminder_sent(uid, "bed", day) is False
+        assert await db.reminder_already_sent(uid, "bed", day) is True
+
+        rows = await db.supplements_in_slot(uid, "bed", day)
+        assert rows and rows[0]["logged"] is False
+        await db.log_supplements(uid, day, [sid])
+        rows = await db.supplements_in_slot(uid, "bed", day)
+        assert rows[0]["logged"] is True, "a logged dose must stop the nudge"
+
+        await p.execute("DELETE FROM supplement_reminder_log WHERE user_id=$1", uid)
+        await p.execute("DELETE FROM supplement_log WHERE user_id=$1", uid)
+        await p.execute("DELETE FROM supplement WHERE user_id=$1", uid)
+
+    run(scenario())

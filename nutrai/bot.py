@@ -1017,6 +1017,90 @@ async def cb_supp_keep(cq: CallbackQuery) -> None:
     await cq.message.edit_text("Kept. Nothing changed.")
 
 
+SLOT_ASSIGN = re.compile(r"^\s*(\d{1,2})\s*[.):]\s*(fasted|breakfast|evening|bed|none|-)\s*$",
+                         re.IGNORECASE)
+SLOT_TIME = re.compile(
+    r"^\s*(fasted|breakfast|evening|bed)\s+(?:(\d{1,2})[:.](\d{2})|(off|none))\s*$",
+    re.IGNORECASE)
+
+
+async def _try_slot_lines(msg: Message, u: Any, text: str) -> bool:
+    """"3. evening" and "evening 21:00", one per line. False if neither."""
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return False
+    parsed = [(SLOT_ASSIGN.match(ln), SLOT_TIME.match(ln)) for ln in lines]
+    if not all(a or t for a, t in parsed):
+        return False
+
+    stack = await db.supplement_stack(u["id"])
+    notes: list[str] = []
+    for assign, at_time in parsed:
+        if assign:
+            idx = int(assign.group(1))
+            word = assign.group(2).lower()
+            if not 1 <= idx <= len(stack):
+                notes.append(f"❌ line {idx} — the list runs 1–{len(stack)}")
+                continue
+            slot = None if word in ("none", "-") else word
+            name = await db.set_supplement_slot(u["id"], stack[idx - 1]["id"], slot)
+            notes.append(
+                f"✅ {render._esc(name)} → "
+                + (render.slot_name(slot) if slot else "no moment")
+            )
+        else:
+            slot = at_time.group(1).lower()
+            if at_time.group(4):
+                await db.set_slot_time(u["id"], slot, None)
+                notes.append(f"🔕 {render.slot_name(slot)} — reminder off")
+                continue
+            hh, mm = int(at_time.group(2)), int(at_time.group(3))
+            if not (0 <= hh <= 23 and 0 <= mm <= 59):
+                notes.append(f"❌ {hh}:{mm:02d} is not a time")
+                continue
+            await db.set_slot_time(u["id"], slot, dt.time(hh, mm))
+            notes.append(f"⏰ {render.slot_name(slot)} at {hh:02d}:{mm:02d}")
+
+    stack = await db.supplement_stack(u["id"])
+    await msg.answer(
+        "\n".join(notes) + "\n\n"
+        + render.slot_settings_card(stack, await db.slot_times(u["id"])),
+        parse_mode="HTML",
+    )
+    await db.put_pending(u["id"], "slot_await", {})
+    return True
+
+
+@dp.callback_query(F.data.startswith("slotlog:"))
+async def cb_slot_log(cq: CallbackQuery) -> None:
+    """Log exactly the supplements in one slot, from its reminder."""
+    u = await db.get_or_create_user(cq.from_user.id)
+    slot = cq.data.split(":", 1)[1]
+    day = db.local_date_for(dt.datetime.now(dt.timezone.utc), u["tz"], u["day_rollover_hour"])
+    rows = await db.supplements_in_slot(u["id"], slot, day)
+    ids = [r["id"] for r in rows if not r["logged"]]
+    if not ids:
+        await cq.answer("Already logged")
+        return
+    n = await db.log_supplements(u["id"], day, ids)
+    await cq.answer(f"Logged {n}")
+    await cq.message.edit_text(
+        f"✅ Logged {n} for <b>{render.slot_name(slot)}</b>.",
+        parse_mode="HTML",
+    )
+
+
+@dp.callback_query(F.data.startswith("slotskip:"))
+async def cb_slot_skip(cq: CallbackQuery) -> None:
+    slot = cq.data.split(":", 1)[1]
+    await cq.answer()
+    await cq.message.edit_text(
+        f"Nothing logged for {render.slot_name(slot)}. "
+        "<code>/supp</code> when you take them.",
+        parse_mode="HTML",
+    )
+
+
 @dp.message(Command("supp", "supplements"))
 async def supp(msg: Message) -> None:
     """`/supp` logs today's stack · `/supp list` shows it · `/supp add` + photo.
@@ -1048,6 +1132,14 @@ async def supp(msg: Message) -> None:
             "of the label.",
             parse_mode="HTML",
         )
+        return
+
+    if sub.startswith(("time", "when")):
+        await msg.answer(
+            render.slot_settings_card(stack, await db.slot_times(u["id"])),
+            parse_mode="HTML",
+        )
+        await db.put_pending(u["id"], "slot_await", {})
         return
 
     if sub.startswith("list"):
@@ -1549,7 +1641,7 @@ async def _apply_when(entry_id: int, ops: list[Any], u: Any) -> dt.date | None:
 # that ignores its own answer is worse than no prompt, so a fifth prompt now
 # inherits the behaviour instead of repeating the bug.
 AWAITING_KINDS = ("supp_label", "fix_entry", "weight_await", "rate_await",
-                  "profile_await", "target_await")
+                  "profile_await", "target_await", "slot_await")
 
 
 async def _consume_awaited_reply(msg: Message, u: Any, text: str) -> bool:
@@ -1578,6 +1670,9 @@ async def _consume_awaited_reply(msg: Message, u: Any, text: str) -> bool:
             return False   # not numbered lines, so it is a meal: let it through
         await _apply_profile_edits(msg, u, edits)
         return True
+
+    if kind == "slot_await":
+        return await _try_slot_lines(msg, u, text)
 
     if kind == "target_await":
         # Falls through to the meal parser when the line does not name a

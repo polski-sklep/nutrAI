@@ -1251,3 +1251,57 @@ def training_card(today_rows: Sequence[Any], week_rows: Sequence[Any],
 
 def _short_note(note: str) -> str:
     return note if len(note) <= 60 else note[:57] + "…"
+
+
+SLOT_LABELS: dict[str, tuple[str, str]] = {
+    "fasted":    ("🌅", "before food"),
+    "breakfast": ("🍳", "after breakfast"),
+    "evening":   ("🌆", "evening"),
+    "bed":       ("🌙", "before sleeping"),
+}
+
+
+def slot_name(slot: str) -> str:
+    emoji, label = SLOT_LABELS.get(slot, ("💊", slot))
+    return f"{emoji} {label}"
+
+
+def supplement_reminder_card(slot: str, rows: Sequence[Any]) -> str:
+    """The nudge itself. Template and SQL only — invariant 4."""
+    outstanding = [r for r in rows if not r["logged"]]
+    lines = [f"💊 <b>{slot_name(slot)}</b>", ""]
+    for r in outstanding:
+        serving = f"{float(r['servings_per_day']):g} × {r['serving_desc']}"
+        lines.append(f"   • <b>{_esc(r['name'])}</b> — {_esc(serving)}")
+    done = len(rows) - len(outstanding)
+    if done:
+        lines.append(f"   <i>{done} already logged for today.</i>")
+    lines += ["", "<i>Tick only what you actually take. A capsule logged and "
+                  "not swallowed puts micronutrients in your totals that never "
+                  "reached you.</i>"]
+    return "\n".join(lines)
+
+
+def slot_settings_card(stack: Sequence[Any], times: dict) -> str:
+    """Which supplement belongs to which moment, and when each moment is."""
+    lines = ["⏰ <b>Supplement times</b>", ""]
+    rows = []
+    for i, s in enumerate(stack, start=1):
+        where = slot_name(s["slot"]) if s["slot"] else "—"
+        rows.append(f"{i}. {_short_note(s['name'])[:20]:<22}{where}")
+    lines.append("<pre>" + "\n".join(_esc(r) for r in rows) + "</pre>")
+
+    lines.append("<b>When each moment is</b>")
+    trows = []
+    for slot in ("fasted", "breakfast", "evening", "bed"):
+        t = times.get(slot)
+        trows.append(f"{slot:<11}{t.strftime('%H:%M') if t else 'no reminder'}")
+    lines.append("<pre>" + "\n".join(_esc(r) for r in trows) + "</pre>")
+
+    lines += [
+        "• <code>3. evening</code> puts line 3 in the evening",
+        "• <code>evening 21:00</code> sets when that moment is",
+        "• <code>evening off</code> stops that reminder",
+        "<i>Several at once is fine, one per line.</i>",
+    ]
+    return "\n".join(lines)
