@@ -1443,3 +1443,40 @@ async def mark_reminder_sent(user_id: int, slot: str, day: dt.date) -> bool:
         user_id, slot, day,
     )
     return result.endswith(" 1")
+
+
+async def dish_snapshots(user_id: int) -> dict[int, dict]:
+    """Each repeatable dish and what it last actually contributed.
+
+    Read from `log_nutrient` — the immutable snapshot of the last confirmed
+    time you ate it — rather than recomputed from `dish_component` against
+    current USDA rows. Invariant 2: the snapshot is the record, and a
+    suggestion built on a recomputation would quietly disagree with the day
+    card that logging it then produces.
+    """
+    p = await pool()
+    rows = await p.fetch(
+        """WITH latest AS (
+               SELECT DISTINCT ON (e.dish_id) e.dish_id, e.id AS entry_id
+                 FROM log_entry e
+                WHERE e.user_id = $1 AND e.status = 'confirmed'
+                  AND e.dish_id IS NOT NULL
+                ORDER BY e.dish_id, e.logged_at DESC
+           )
+           SELECT d.id, d.name, d.slug, d.default_slot, d.times_logged,
+                  ln.nutrient_id, ln.amount
+             FROM latest l
+             JOIN dish d ON d.id = l.dish_id
+             JOIN log_nutrient ln ON ln.entry_id = l.entry_id
+            WHERE NOT d.archived AND d.times_logged > 0""",
+        user_id,
+    )
+    out: dict[int, dict] = {}
+    for r in rows:
+        d = out.setdefault(r["id"], {
+            "id": r["id"], "name": r["name"], "slug": r["slug"],
+            "slot": r["default_slot"], "times_logged": r["times_logged"],
+            "nutrients": {},
+        })
+        d["nutrients"][r["nutrient_id"]] = float(r["amount"])
+    return out

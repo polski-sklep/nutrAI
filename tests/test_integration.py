@@ -2115,3 +2115,47 @@ def test_a_reminder_fires_once_and_only_when_something_is_outstanding(harness):
         await p.execute("DELETE FROM supplement WHERE user_id=$1", uid)
 
     run(scenario())
+
+
+def test_the_deficit_warning_carries_a_button_that_fixes_it(harness):
+    """The card knew the goal needed a deficit, knew the usual range, and
+    still asked you to retype it — the same friction as every prompt that
+    taught a syntax instead of doing the thing."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await p.execute(
+            """UPDATE app_user SET sex='male', birth_date='1991-09-21', height_cm=173,
+                 activity_factor=1.55, goal='recomp', deficit_kcal=NULL WHERE id=$1""", uid)
+        await p.execute("DELETE FROM body_metric WHERE user_id=$1", uid)
+        await harness.feed("/weight 75.2")
+
+        await harness.feed("/profile")
+        card = harness.sent.last()
+        harness.sent.clear()
+        await harness.press("precalc:", card.message_id)
+
+        recalc = harness.sent.last()
+        assert "⚠️" in recalc.text and "maintenance" in recalc.text
+        btn = next(b for b in recalc.buttons if b.startswith("setdef:"))
+
+        maintenance = await p.fetchval(
+            """SELECT max_amount FROM target
+                WHERE user_id=$1 AND nutrient_id=1008 AND effective_to IS NULL""", uid)
+
+        harness.sent.clear()
+        await harness.press(btn, recalc.message_id)
+
+        assert float(await p.fetchval(
+            "SELECT deficit_kcal FROM app_user WHERE id=$1", uid)) == 350.0
+        after = await p.fetchval(
+            """SELECT max_amount FROM target
+                WHERE user_id=$1 AND nutrient_id=1008 AND effective_to IS NULL""", uid)
+        assert float(maintenance) - float(after) == 350.0
+        # And the warning is gone, because the contradiction is.
+        assert "⚠️" not in harness.sent.last().text, harness.sent.last().text
+
+    run(scenario())

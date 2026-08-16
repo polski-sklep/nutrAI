@@ -1137,7 +1137,7 @@ def profile_recalc_card(working: dict[str, float], applied: int, weight: float,
 
     conflict = prof.goal_conflict(goal, deficit)
     warn = ([f"⚠️ <b>{_esc(conflict)}</b>",
-             "   <i>Set it with <code>/profile 8 350</code>, then recalculate.</i>", ""]
+             "   <i>The button below sets it and redoes this in one tap.</i>", ""]
             if conflict else [])
     return "\n".join([
         "✅ <b>Targets recalculated</b>",
@@ -1316,3 +1316,48 @@ def slot_settings_card(stack: Sequence[Any], times: dict) -> str:
         "<i>Several at once is fine, one per line.</i>",
     ]
     return "\n".join(lines)
+
+
+def suggest_card(suggestions: Sequence[Any], progress: Sequence[Any],
+                 kcal_left: float | None) -> str:
+    """Why each dish is being suggested, in the same breath as the suggestion.
+
+    A recommender that only names a dish asks to be trusted. Naming the gap it
+    closes lets you disagree with it, which is the difference between a tool
+    and an oracle.
+    """
+    names = {r["nutrient_id"]: _short(r["nutrient_name"]) for r in progress}
+    units = {r["nutrient_id"]: r["unit"] for r in progress}
+
+    if not suggestions:
+        return (
+            "🍽 <b>Nothing to suggest yet</b>\n\n"
+            "<i>Suggestions come from dishes you have already eaten and "
+            "confirmed — there is no model here inventing meals. Log a few "
+            "and they become candidates.</i>"
+        )
+
+    lines = ["🍽 <b>What would close today's gaps</b>", ""]
+    for i, s in enumerate(suggestions, start=1):
+        head = f"<b>{i}. {_esc(s.name)}</b>"
+        if s.kcal:
+            head += f" — {s.kcal:,.0f} kcal"
+            if kcal_left is not None and s.kcal > kcal_left:
+                head += f" <i>({s.kcal - kcal_left:,.0f} over what is left)</i>"
+        lines.append(head)
+        closes = ", ".join(
+            f"{_esc(names.get(nid, str(nid)))} {share:.0%}" for nid, share in s.closes[:4]
+        )
+        lines.append(f"   ✅ closes {closes}")
+        if s.breaches:
+            over = ", ".join(
+                f"{_esc(names.get(nid, str(nid)))} +{share:.0%}" for nid, share in s.breaches[:3]
+            )
+            lines.append(f"   ⚠️ pushes past {over}")
+        lines.append("")
+
+    lines.append("<i>Ranked by arithmetic on today's remaining gaps, from your "
+                 "own logged dishes. Nothing here was invented by a model — "
+                 "the numbers are the snapshots taken when you last ate each "
+                 "one.</i>")
+    return "\n".join(lines).rstrip()

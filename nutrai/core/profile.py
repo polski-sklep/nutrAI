@@ -114,24 +114,31 @@ NEEDS_SURPLUS = {"gain"}
 
 # Typical starting offsets, stated as a range because the right one depends on
 # how fast you want to move and how much you are willing to lose alongside fat.
+# (low, high, the one to offer). The third is what the button applies, so the
+# card can fix what it just complained about instead of asking you to retype it.
 SUGGESTED_OFFSET = {
-    "lose": (400, 600),
+    "lose": (400, 600, 500),
     # Shallower than a straight cut: the 2.2 g/kg protein floor is doing the
     # muscle-sparing work, and a deep deficit leaves nothing to train on.
-    "recomp": (250, 400),
-    "gain": (-300, -150),
+    "recomp": (250, 400, 350),
+    "gain": (-300, -150, -250),
 }
+
+
+def suggested_offset(goal: str | None) -> int | None:
+    entry = SUGGESTED_OFFSET.get(goal or "")
+    return entry[2] if entry else None
 
 
 def goal_conflict(goal: str | None, deficit: float | None) -> str | None:
     """The sentence to show when the goal and the energy offset disagree."""
     d = float(deficit or 0)
     if goal in NEEDS_DEFICIT and d <= 0:
-        lo, hi = SUGGESTED_OFFSET[goal]
+        lo, hi, _pick = SUGGESTED_OFFSET[goal]
         return (f"your goal needs an energy deficit and none is set, so this "
                 f"target is maintenance — {lo}–{hi} kcal is the usual range")
     if goal in NEEDS_SURPLUS and d >= 0:
-        lo, hi = SUGGESTED_OFFSET["gain"]
+        lo, hi, _pick = SUGGESTED_OFFSET["gain"]
         return ("your goal needs an energy surplus and none is set, so this "
                 f"target is maintenance — try a deficit of {lo} to {hi}")
     return None

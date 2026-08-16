@@ -21,7 +21,7 @@ from aiogram.types import (
 
 from . import db
 from .config import CONFIDENCE_FLOOR, settings
-from .core import dsl, estimate, fasting, insight, render
+from .core import dsl, estimate, fasting, insight, render, suggest
 from .core import profile as profile_mod
 from .core.nutrition import ResolvedComponent, total_nutrients
 from .llm import parse as llm
@@ -78,6 +78,7 @@ def _today(u: Any) -> dt.date:
 # reading, so it is now findable by running the tests instead.
 COMMANDS: list[tuple[str, str]] = [
     ("/repeat", "repeat something you have eaten before"),
+    ("/next", "what would close today's remaining gaps"),
     ("/today", "where you stand · <code>/today all</code> for every nutrient"),
     ("/yesterday", "the same, for yesterday"),
     ("/fast", "current fast, duration and phase"),
@@ -832,16 +833,14 @@ async def profile_cmd(msg: Message) -> None:
     await db.put_pending(u["id"], "profile_await", {})
 
 
-@dp.callback_query(F.data.startswith("precalc:"))
-async def cb_profile_recalc(cq: CallbackQuery) -> None:
+async def _recalculate_targets(msg: Message, u: Any) -> None:
     """Recompute every derived target from the current profile and weight.
 
-    Deliberately a button and never automatic. Invariant 3 says targets are
-    versioned rather than updated, and the reason is that a weigh-in must not
-    silently rewrite what yesterday was being judged against — you would open
-    /yesterday and find a different verdict than the one you were given.
+    Never automatic. Invariant 3 says targets are versioned rather than
+    updated, and the reason is that a weigh-in must not silently rewrite what
+    yesterday was being judged against — you would open /yesterday and find a
+    different verdict than the one you were given.
     """
-    u = await db.get_or_create_user(cq.from_user.id)
     data = await db.profile(u["id"])
     row = data["user"]
     today = _today(u)
@@ -858,8 +857,7 @@ async def cb_profile_recalc(cq: CallbackQuery) -> None:
         )
     except (profile_mod.IncompleteProfile, TypeError) as exc:
         missing = str(exc) if isinstance(exc, profile_mod.IncompleteProfile) else "some fields"
-        await cq.answer()
-        await cq.message.answer(
+        await msg.answer(
             f"❌ Cannot compute targets: {render._esc(missing)} still missing. "
             "Set them with <code>/profile</code> first — a target derived from a "
             "guessed height looks exactly like a real one, which is worse than none.",
@@ -869,12 +867,40 @@ async def cb_profile_recalc(cq: CallbackQuery) -> None:
 
     applied = await db.apply_targets(u["id"], targets, today, "profile recalculation")
     await db.mark_targets_derived(u["id"], data["weight_kg"], today)
-    await cq.answer("Recalculated")
-    await cq.message.answer(
+
+    # The card knows what is wrong and knows the number that fixes it. Making
+    # you retype it is the same friction as every other prompt here that taught
+    # a syntax instead of doing the thing.
+    offset = profile_mod.suggested_offset(row["goal"])
+    fix = None
+    if profile_mod.goal_conflict(row["goal"], row["deficit_kcal"]) and offset:
+        word = "deficit" if offset > 0 else "surplus"
+        fix = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+            text=f"⚡ use a {abs(offset):g} kcal {word}",
+            callback_data=f"setdef:{offset:g}")]])
+    await msg.answer(
         render.profile_recalc_card(working, applied, data["weight_kg"],
                                    goal=row["goal"], deficit=row["deficit_kcal"]),
         parse_mode="HTML",
+        reply_markup=fix,
     )
+
+
+@dp.callback_query(F.data.startswith("precalc:"))
+async def cb_profile_recalc(cq: CallbackQuery) -> None:
+    u = await db.get_or_create_user(cq.from_user.id)
+    await cq.answer("Recalculated")
+    await _recalculate_targets(cq.message, u)
+
+
+@dp.callback_query(F.data.startswith("setdef:"))
+async def cb_set_deficit(cq: CallbackQuery) -> None:
+    """Set the offset and redo the recalculation in one tap."""
+    u = await db.get_or_create_user(cq.from_user.id)
+    offset = float(cq.data.split(":", 1)[1])
+    await db.set_profile_field(u["id"], "deficit_kcal", offset)
+    await cq.answer(f"Set to {abs(offset):g}")
+    await _recalculate_targets(cq.message, u)
 
 
 @dp.message(Command("weight", "w"))
@@ -1102,6 +1128,94 @@ async def cb_slot_skip(cq: CallbackQuery) -> None:
     )
 
 
+@dp.message(Command("next", "suggest"))
+async def suggest_next(msg: Message) -> None:
+    """What would close today's outstanding gaps, from dishes you already eat.
+
+    Zero tokens and no model. See core/suggest.py for why that is the design
+    rather than a limitation.
+    """
+    u = await _user(msg)
+    day = _today(u)
+    progress = await db.day_progress(u["id"], day)
+    snapshots = await db.dish_snapshots(u["id"])
+    ranked = suggest.rank(snapshots, progress)
+
+    energy = next((r for r in progress if r["nutrient_id"] == 1008), None)
+    kcal_left = None
+    if energy and energy["max_amount"]:
+        kcal_left = float(energy["max_amount"]) - float(energy["amount"])
+
+    rows = [[InlineKeyboardButton(text=f"\U0001F37D {render._short_note(s.name)[:28]}",
+                                  callback_data=f"rpt:{s.slug}")]
+            for s in ranked]
+    await msg.answer(
+        render.suggest_card(ranked, progress, kcal_left),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows) if rows else None,
+    )
+
+
+@dp.callback_query(F.data.startswith("rpt:"))
+async def cb_repeat_dish(cq: CallbackQuery) -> None:
+    """Tap a suggestion to log it, through the ordinary repeat path.
+
+    Not a second logging route: it builds the same RepeatCommand a typed
+    repeat produces and hands it to the same function, so the confirm gate,
+    the provenance and the zero-token accounting are identical.
+    """
+    u = await db.get_or_create_user(cq.from_user.id)
+    slug = cq.data.split(":", 1)[1]
+    await cq.answer()
+    cmd = dsl.RepeatCommand(selector=slug, selector_kind="slug", ops=[])
+    if not await _try_repeat(cq.message, u, cmd):
+        await cq.message.answer(
+            "That dish is not available to repeat any more. "
+            "<code>/repeat</code> shows what is.",
+            parse_mode="HTML",
+        )
+
+
+@dp.message(Command("stack"))
+async def supp_stack_cmd(msg: Message) -> None:
+    """`/supp list` under its own name.
+
+    Telegram's menu can only hold single tokens, so a subcommand is invisible
+    there — and a feature reachable only by typing a word you have to already
+    know about is one most people never find.
+    """
+    u = await _user(msg)
+    stack = await db.supplement_stack(u["id"])
+    retired = [r for r in await db.supplement_stack(u["id"], active_only=False)
+               if not r["active"]]
+    if not stack and not retired:
+        await msg.answer(
+            "No supplements yet. <code>/supp</code>, then “➕ add”.", parse_mode="HTML")
+        return
+    await msg.answer(
+        render.supplement_stack_card(stack, retired),
+        parse_mode="HTML",
+        reply_markup=_supp_manage_keyboard(stack, retired),
+    )
+
+
+@dp.message(Command("schedule"))
+async def supp_schedule_cmd(msg: Message) -> None:
+    """`/supp times` under its own name."""
+    u = await _user(msg)
+    stack = await db.supplement_stack(u["id"])
+    if not stack:
+        await msg.answer(
+            "No supplements to schedule yet. <code>/supp</code>, then “➕ add”.",
+            parse_mode="HTML")
+        return
+    await msg.answer(
+        render.slot_settings_card(stack, await db.slot_times(u["id"])),
+        parse_mode="HTML",
+    )
+    await db.put_pending(u["id"], "slot_await", {})
+
+
 @dp.message(Command("supp", "supplements"))
 async def supp(msg: Message) -> None:
     """`/supp` logs today's stack · `/supp list` shows it · `/supp add` + photo.
@@ -1200,8 +1314,41 @@ def _supp_keyboard(action_id: int, stack: list[Any], selected: list[int]) -> Inl
         InlineKeyboardButton(text="💊 log these", callback_data=f"suplog:{action_id}"),
         InlineKeyboardButton(text="🗑 none", callback_data=f"supnone:{action_id}"),
     ])
-    rows.append([InlineKeyboardButton(text="➕ add a supplement", callback_data="supadd:")])
+    # Managing the stack has to live on the card you actually open. Removal
+    # and scheduling existed behind `/supp list` and `/supp times`, which is
+    # the same as not existing if the picker never mentions them.
+    rows.append([
+        InlineKeyboardButton(text="➕ add", callback_data="supadd:"),
+        InlineKeyboardButton(text="🗑 stop one", callback_data="supmanage:"),
+        InlineKeyboardButton(text="⏰ times", callback_data="suptimes:"),
+    ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@dp.callback_query(F.data.startswith("supmanage:"))
+async def cb_supp_manage(cq: CallbackQuery) -> None:
+    u = await db.get_or_create_user(cq.from_user.id)
+    stack = await db.supplement_stack(u["id"])
+    retired = [r for r in await db.supplement_stack(u["id"], active_only=False)
+               if not r["active"]]
+    await cq.answer()
+    await cq.message.answer(
+        render.supplement_stack_card(stack, retired),
+        parse_mode="HTML",
+        reply_markup=_supp_manage_keyboard(stack, retired),
+    )
+
+
+@dp.callback_query(F.data.startswith("suptimes:"))
+async def cb_supp_times(cq: CallbackQuery) -> None:
+    u = await db.get_or_create_user(cq.from_user.id)
+    await cq.answer()
+    await cq.message.answer(
+        render.slot_settings_card(await db.supplement_stack(u["id"]),
+                                  await db.slot_times(u["id"])),
+        parse_mode="HTML",
+    )
+    await db.put_pending(u["id"], "slot_await", {})
 
 
 @dp.callback_query(F.data.startswith("supadd:"))
