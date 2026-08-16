@@ -1070,14 +1070,16 @@ async def supp(msg: Message) -> None:
     # never. Anything already logged today stays ticked.
     today_names = {r["name"] for r in await db.supplements_logged_on(u["id"], day)}
     selected = [s["id"] for s in stack if s["name"] in today_names]
+    reason = "logged"
     if not selected:
         selected = await db.supplements_due(u["id"], day)
+        reason = "schedule"
 
     action_id = await db.put_pending(u["id"], "supp_pick", {
-        "selected": selected, "day": day.isoformat(),
+        "selected": selected, "day": day.isoformat(), "reason": reason,
     })
     await msg.answer(
-        render.supplement_pick_card(stack, selected),
+        render.supplement_pick_card(stack, selected, reason),
         parse_mode="HTML",
         reply_markup=_supp_keyboard(action_id, stack, selected),
     )
@@ -1137,7 +1139,7 @@ async def cb_supp_toggle(cq: CallbackQuery) -> None:
     new_id = await db.put_pending(u["id"], "supp_pick", {**payload, "selected": selected})
     stack = await db.supplement_stack(u["id"])
     await cq.message.edit_text(
-        render.supplement_pick_card(stack, selected),
+        render.supplement_pick_card(stack, selected, payload.get("reason", "schedule")),
         parse_mode="HTML",
         reply_markup=_supp_keyboard(new_id, stack, selected),
     )

@@ -1202,7 +1202,10 @@ def test_supplement_picker_lets_you_drop_one(harness):
         toggle = next(b for b in picker.buttons if b.startswith("supt:"))
         await harness.press(toggle, picker.message_id)
         picker = harness.sent.last()
-        assert "1 of 2 pre-ticked" in picker.text, picker.text
+        # Unticking one leaves it not-due, and the card now names it rather
+        # than claiming a category the list contradicts.
+        assert "1 of 2 due today" in picker.text, picker.text
+        assert "Not due:" in picker.text, picker.text
 
         await harness.press(
             next(b for b in picker.buttons if b.startswith("suplog:")), picker.message_id

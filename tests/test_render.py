@@ -323,3 +323,31 @@ def test_database_column_names_never_reach_the_screen():
     for leak in ("Carbohydrate, by diff", "Vitamin C, total ascor", "PUFA",
                  "Calcium, Ca", "Iron, Fe", "Total lipid", "Fiber, total"):
         assert leak not in out, leak
+
+
+def _supp(sid, name, schedule="daily"):
+    return {"id": sid, "name": name, "schedule": schedule, "brand": None,
+            "serving_desc": "1 capsule", "servings_per_day": 1,
+            "n_nutrients": 1, "verified_at": None, "note": None, "active": True}
+
+
+def test_the_pick_card_does_not_blame_the_schedule_for_what_was_already_logged():
+    """Eight of nine were on a daily schedule, six were ticked because they had
+    been logged that morning, and the card said "the rest are every other day
+    or occasional" — which was simply untrue."""
+    from nutrai.core.render import supplement_pick_card
+
+    stack = [_supp(i, f"Supp {i}") for i in range(1, 10)]
+    out = supplement_pick_card(stack, [1, 2, 3, 4, 5, 6], reason="logged")
+    assert "already logged today" in out
+    assert "every other day" not in out
+
+
+def test_the_schedule_branch_names_what_is_not_due():
+    """A category claim you cannot check becomes a list you can."""
+    from nutrai.core.render import supplement_pick_card
+
+    stack = [_supp(1, "Boron"), _supp(2, "Zinc", "alternate"), _supp(3, "Creatine")]
+    out = supplement_pick_card(stack, [1, 3], reason="schedule")
+    assert "Zinc" in out
+    assert "2 of 3 due today" in out

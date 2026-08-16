@@ -666,7 +666,8 @@ def supplement_batch_card(parsed: Sequence[Any], names: dict, units: dict) -> st
     return "\n".join(lines)
 
 
-def supplement_pick_card(stack: Sequence[Any], selected: Sequence[int]) -> str:
+def supplement_pick_card(stack: Sequence[Any], selected: Sequence[int],
+                         reason: str = "schedule") -> str:
     """The question and the count. The buttons below are the list.
 
     This used to render every supplement as text *and* as a button, so a stack
@@ -676,17 +677,33 @@ def supplement_pick_card(stack: Sequence[Any], selected: Sequence[int]) -> str:
     """
     n, total = len(set(selected)), len(stack)
     lines = ["💊 <b>Which did you take?</b>", ""]
-    if n == total:
+
+    # Why they are ticked, said accurately. This used to assert "pre-ticked by
+    # their schedule — the rest are every other day or occasional" in every
+    # case, including the one where the ticks came from what was already
+    # logged today. With eight of nine on a daily schedule that sentence was
+    # simply untrue, and a card that misexplains itself is worse than one that
+    # says nothing: it invites you to trust the wrong thing.
+    if reason == "logged":
+        if n == total:
+            lines.append("<i>All logged already today. Tap any to remove, then update.</i>")
+        else:
+            lines.append(
+                f"<i>{n} of {total} already logged today. Tap anything else you have "
+                "taken since, then “log these”.</i>"
+            )
+    elif n == total:
         lines.append(f"<i>All {total} pre-ticked by their schedule. Tap any to remove.</i>")
     elif n:
+        # Names the exceptions rather than describing them as a category, which
+        # is checkable against the list right underneath it.
+        skipped = [s_["name"] for s_ in stack if s_["id"] not in set(selected)]
         lines.append(
-            f"<i>{n} of {total} pre-ticked by their schedule — the rest are every "
-            f"other day or occasional. Tap to change.</i>"
+            f"<i>{n} of {total} due today. Not due: {_esc(', '.join(skipped))} — "
+            "tap if you took them anyway.</i>"
         )
     else:
-        lines.append(
-            "<i>Nothing pre-ticked. Tap the ones you took, then “log these”.</i>"
-        )
+        lines.append("<i>Nothing due today. Tap the ones you took, then “log these”.</i>")
     return "\n".join(lines)
 
 
