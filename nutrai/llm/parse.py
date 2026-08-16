@@ -206,6 +206,29 @@ async def _candidates(it: dict[str, Any], label: str) -> list[Any]:
     )[:5]
 
 
+# Labels that are never a food, however well they match.
+#
+# A natural-language modifier went through modifier_ops and came back with a
+# component labelled "and". The resolver matched it to "Seven and Seven" — a
+# whisky cocktail — at 100 g, and it went into a cappuccino. Trigram similarity
+# has no notion of a stopword: "and" is a literal substring of that description,
+# so the match scored well and auto-accepted without a model ever reconsidering.
+#
+# Length alone is not the test, since "egg", "ham", "oil" and "rye" are all real
+# foods. The test is whether the label carries any meaning at all.
+NON_FOOD_LABELS = {
+    "and", "or", "the", "a", "an", "with", "of", "to", "in", "on", "plus",
+    "some", "it", "that", "this", "then", "also", "for", "from", "at", "by",
+    "was", "is", "are", "be", "as", "but", "if", "not", "no", "yes",
+}
+
+
+def is_non_food(label: str) -> bool:
+    """A label with no food in it, whatever the database thinks it matches."""
+    cleaned = label.strip().lower().strip(".,;:!?()[]\"'")
+    return not cleaned or cleaned in NON_FOOD_LABELS
+
+
 # Words that invert the meaning of a food rather than qualifying it.
 #
 # USDA carries "Chicken, meatless, breaded, fried" — a soy analogue — and it
@@ -268,6 +291,10 @@ async def resolve_items(user_id: int, items: list[dict[str, Any]]) -> Resolution
     for it in items:
         label = str(it.get("label", "")).strip()
         if not label or float(it.get("grams", 0) or 0) <= 0:
+            continue
+        if is_non_food(label):
+            # Dropped silently rather than reported: it was never something the
+            # user said they ate, only a fragment a parse split badly.
             continue
 
         alias = await db.resolve_alias(user_id, label)

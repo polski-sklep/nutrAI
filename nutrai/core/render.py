@@ -163,6 +163,7 @@ def logged_card(
     *,
     top_n: int = 4,
     gaps_n: int = 3,
+    first_of_day: bool = False,
 ) -> str:
     """What to say the moment something is written to the log.
 
@@ -174,6 +175,9 @@ def logged_card(
 
     by_id = {r["nutrient_id"]: r for r in progress}
     lines = [f"✅ <b>Logged</b> — {_esc(dish_name)}", ""]
+    if first_of_day:
+        lines.append("☀️ <i>Morning. First of the day.</i>")
+        lines.append("")
 
     # --- where the day stands
     lines.append("📊 <b>Today so far</b>")
@@ -192,8 +196,8 @@ def logged_card(
         cap = "ceiling" if r["min_amount"] is None else "target"
         lines.append(
             f"   • {_emoji(nid)} {_esc(_short(r['nutrient_name']))} — "
-            f"<b>{fmt_amount(amount, r['unit'])}</b> of {fmt_amount(target, r['unit'])} "
-            f"{cap} ({pct:.0f}%)"
+            f"{fmt_amount(amount, r['unit'])} of {fmt_amount(target, r['unit'])} "
+            f"{cap} <b>({pct:.0f}%)</b>"
         )
 
     # --- what this meal actually brought
@@ -235,7 +239,11 @@ def logged_card(
     pinned = [g for g in gaps if g[1] in (PROTEIN, FIBER)]
     others = [g for g in gaps if g[1] not in (PROTEIN, FIBER)][:gaps_n]
     shown = pinned + others
-    if shown:
+    # Not on the first entry of the day. "Still to go: protein 175 g" against a
+    # cappuccino is arithmetically true and useless — everything is still to go
+    # at breakfast, and leading with the shortfall makes the first interaction of
+    # the day a reprimand for not having eaten yet.
+    if shown and not first_of_day:
         lines.append("")
         lines.append("🎯 <b>Still to go today</b>")
         for _share, nid, remaining, r in shown:
@@ -243,7 +251,7 @@ def logged_card(
                 f"   • {_emoji(nid)} {_esc(_short(r['nutrient_name']))} — "
                 f"{fmt_amount(remaining, r['unit'])}"
             )
-    elif by_id:
+    elif by_id and not first_of_day:
         lines.append("")
         lines.append("🎯 Every floor met today.")
 

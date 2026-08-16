@@ -977,3 +977,14 @@ async def sleep_predictors(user_id: int, days: int = 120) -> list[asyncpg.Record
         """,
         user_id, days,
     )
+
+
+async def is_first_entry_of_day(user_id: int, day: dt.date, entry_id: int) -> bool:
+    """True when this is the only confirmed entry so far today."""
+    p = await pool()
+    return await p.fetchval(
+        """SELECT count(*) = 0 FROM log_entry
+            WHERE user_id = $1 AND local_date = $2 AND status = 'confirmed'
+              AND id <> $3""",
+        user_id, day, entry_id,
+    )

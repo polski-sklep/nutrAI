@@ -815,7 +815,7 @@ async def _handle_photos(msgs: list[Message]) -> None:
         b64, w, h = llm.prepare_image(buf.read())
         images.append((b64, w, h, m.photo[-1].file_id))
 
-    note = await msg.answer("reading…")
+    note = await msg.answer("🔍 reading the label…")
     try:
         parsed = await llm.parse_photo(images[0][0], caption, user_id=u["id"])
         for extra in images[1:]:
@@ -884,7 +884,7 @@ async def on_text(msg: Message) -> None:
     if cmd and await _try_repeat(msg, u, cmd):
         return
 
-    note = await msg.answer("parsing…")
+    note = await msg.answer("🍽 digesting…")
     try:
         parsed = await llm.parse_text(text, user_id=u["id"])
     except Exception as exc:
@@ -1163,7 +1163,8 @@ async def _try_repeat(msg: Message, u: Any, cmd: dsl.RepeatCommand) -> bool:
         totals = await db.confirm_entry(entry_id)
         await msg.answer(
             render.logged_card(
-                dish["name"], totals, await db.day_progress(u["id"], _today(u))
+                dish["name"], totals, await db.day_progress(u["id"], _today(u)),
+                first_of_day=await db.is_first_entry_of_day(u["id"], _today(u), entry_id),
             ),
             parse_mode="HTML",
         )
@@ -1329,7 +1330,7 @@ async def _handle_supplement_label(
         b64, _w, _h = llm.prepare_image(buf.read())
         photo_id = msg.photo[-1].file_id
 
-    note = await msg.answer("reading…")
+    note = await msg.answer("🔍 reading the label…")
     try:
         data, cost = await llm.read_supplement_label(
             user_id=u["id"], image_b64=b64, text=text
@@ -1422,7 +1423,7 @@ async def cb_supp_ok(cq: CallbackQuery) -> None:
 @dp.callback_query(F.data.startswith("supno:"))
 async def cb_supp_no(cq: CallbackQuery) -> None:
     await db.take_pending(int(cq.data.split(":")[1]))
-    await cq.message.edit_text((cq.message.text or "") + "\n\n🗑 discarded")
+    await cq.message.edit_text((cq.message.text or "") + "\n\n❌ discarded")
     await cq.answer("discarded")
 
 
@@ -1448,7 +1449,8 @@ async def cb_ok(cq: CallbackQuery) -> None:
     day = _today(u)
     await cq.message.answer(
         render.logged_card(
-            entry["name"], totals, await db.day_progress(u["id"], day)
+            entry["name"], totals, await db.day_progress(u["id"], day),
+            first_of_day=await db.is_first_entry_of_day(u["id"], day, entry["id"]),
         ),
         parse_mode="HTML",
     )
@@ -1458,7 +1460,7 @@ async def cb_ok(cq: CallbackQuery) -> None:
 @dp.callback_query(F.data.startswith("no:"))
 async def cb_no(cq: CallbackQuery) -> None:
     await db.discard_entry(int(cq.data.split(":")[1]))
-    await cq.message.edit_text((cq.message.text or "") + "\n\n✕ discarded")
+    await cq.message.edit_text((cq.message.text or "") + "\n\n❌ discarded")
     await cq.answer("discarded")
 
 

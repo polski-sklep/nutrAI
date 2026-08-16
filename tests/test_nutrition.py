@@ -139,3 +139,21 @@ def test_inverting_terms_block_an_auto_match():
 
     for bad in ("Fish sticks, imitation", "Cheese, substitute, cheddar", "Bacon, vegetarian"):
         assert inverts_meaning("fish sticks cheese bacon", bad), bad
+
+
+def test_stopword_labels_are_never_resolved_to_a_food():
+    """A modifier parse produced a component labelled "and".
+
+    The resolver matched it to "Seven and Seven" — a whisky cocktail — at 100 g
+    and put it in a cappuccino. Trigram similarity has no notion of a stopword:
+    "and" is a literal substring of that description, so it scored well and
+    auto-accepted without a model ever reconsidering it.
+    """
+    from nutrai.llm.parse import is_non_food
+
+    for junk in ("and", "the", " With ", "of", "a", "", "  ", "or,"):
+        assert is_non_food(junk), junk
+
+    # Short real foods must survive: length alone is not the test.
+    for food in ("egg", "ham", "oil", "rye", "cod", "tea", "rice", "jam"):
+        assert not is_non_food(food), food
