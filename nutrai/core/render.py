@@ -846,3 +846,51 @@ def week_card(rows: Sequence[Any], ctx: dict) -> str:
         lines.append(f"   • 💸 {float(ctx['cents']):.1f}¢")
 
     return "\n".join(lines)
+
+
+def weight_card(rows: Sequence[Any], tz: str = "UTC") -> str:
+    """What you last weighed, and whether there is a trend yet.
+
+    Reading is the common case and the safe one: half the time the question is
+    "what was I last?" rather than "record this", and a menu tap should not
+    start a write.
+    """
+    import zoneinfo
+
+    from .insight import MIN_TREND_DAYS
+
+    if not rows:
+        return (
+            "⚖️ <b>No weigh-ins yet</b>\n\n"
+            "<i>The weight trend is the only real measurement of your energy "
+            "balance — Mifflin-St Jeor is a ±10% guess. It needs "
+            f"{MIN_TREND_DAYS} days to say anything.</i>"
+        )
+
+    zone = zoneinfo.ZoneInfo(tz)
+    latest = rows[0]
+    when = latest["measured_at"].astimezone(zone)
+    lines = [f"⚖️ <b>{float(latest['value']):g} kg</b> — {when:%a %-d %b, %H:%M}"]
+
+    if len(rows) > 1:
+        prev = rows[1]
+        delta = float(latest["value"]) - float(prev["value"])
+        arrow = "▲" if delta > 0 else "▼" if delta < 0 else "▬"
+        lines.append(f"   {arrow} {delta:+.1f} kg since {prev['local_date']:%-d %b}")
+
+    span = (rows[0]["local_date"] - rows[-1]["local_date"]).days + 1
+    if span >= MIN_TREND_DAYS:
+        first, last = float(rows[-1]["value"]), float(rows[0]["value"])
+        lines += [
+            "",
+            f"📈 {last - first:+.1f} kg across {span} days · "
+            "<code>/insight</code> can estimate a rate",
+        ]
+    else:
+        need = MIN_TREND_DAYS - span
+        lines += [
+            "",
+            f"📈 {len(rows)} weigh-in{'s' if len(rows) != 1 else ''}, "
+            f"{need} more day{'s' if need != 1 else ''} before a rate means anything",
+        ]
+    return "\n".join(lines)

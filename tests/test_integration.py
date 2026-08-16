@@ -727,10 +727,16 @@ def test_weight_is_recorded_and_implausible_values_refused(harness):
             "SELECT count(*) FROM body_metric WHERE user_id = $1", uid
         ) == 2
 
-        # No argument waits for the number, because Telegram's command menu
-        # sends a bare /weight the instant it is tapped.
+        # No argument reads rather than writes: a menu tap must not start a
+        # write, and half the time the question is "what was I last?".
         harness.sent.clear()
         await harness.feed("/weight")
+        card = harness.sent.last()
+        assert "77.6 kg" in card.text, card.text
+        assert [b for b in card.buttons if b.startswith("wnew:")], card.buttons
+
+        # Recording is a deliberate second step.
+        await harness.press("wnew:", card.message_id)
         assert "What do you weigh?" in harness.sent.last().text
         harness.sent.clear()
         await harness.feed("77.1")
@@ -1655,7 +1661,11 @@ def test_a_prompt_never_swallows_a_message_meant_as_food(harness):
 
 
 def test_the_newest_prompt_is_the_one_being_answered(harness):
-    """Press ✏️ then tap /weight, and 78 is a weight, not a correction."""
+    """Two prompts open at once: the later one is what you are replying to.
+
+    Both are opened by buttons rather than commands, since a command now
+    cancels anything outstanding.
+    """
 
     async def scenario():
         uid = await _reset()
@@ -1664,10 +1674,15 @@ def test_the_newest_prompt_is_the_one_being_answered(harness):
         p = await db.pool()
         await p.execute("DELETE FROM body_metric WHERE user_id = $1", uid)
 
-        await harness.feed("250 g minced beef, 164 g rice, a splash of olive oil")
-        card = harness.sent.last()
-        await harness.press(f"fix:{_confirm_id(card)}", card.message_id)
         await harness.feed("/weight")
+        weight_card = harness.sent.last()
+
+        await harness.feed("250 g minced beef, 164 g rice, a splash of olive oil")
+        meal_card = harness.sent.last()
+        await harness.press(f"fix:{_confirm_id(meal_card)}", meal_card.message_id)
+
+        # Newer prompt, opened without a command in between.
+        await harness.press("wnew:", weight_card.message_id)
 
         harness.sent.clear()
         await harness.feed("78")
@@ -1675,5 +1690,31 @@ def test_the_newest_prompt_is_the_one_being_answered(harness):
         assert float(
             await p.fetchval("SELECT value FROM body_metric WHERE user_id=$1", uid)
         ) == pytest.approx(78.0)
+
+    run(scenario())
+
+
+def test_a_command_cancels_an_outstanding_prompt(harness):
+    """Tap /supp add, change your mind, send a meal — and without this the meal
+    is parsed as a supplement panel: expensively, and wrongly."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        await harness.feed("/supp add")
+        # A command means you moved on.
+        await harness.feed("/today")
+
+        harness.sent.clear()
+        await harness.feed("250 g minced beef, 164 g rice, a splash of olive oil")
+        assert harness.llm.calls[-1] == "record_meal", harness.llm.calls
+        assert [b for b in harness.sent.last().buttons if b.startswith("ok:")]
+
+        p = await db.pool()
+        assert await p.fetchval(
+            "SELECT count(*) FROM pending_action WHERE user_id=$1 AND kind='supp_label'",
+            uid,
+        ) == 0
 
     run(scenario())

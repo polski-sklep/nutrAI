@@ -47,7 +47,15 @@ def kb_confirm(entry_id: int) -> InlineKeyboardMarkup:
 async def _user(msg: Message) -> Any:
     if settings.allowed_ids and msg.from_user.id not in settings.allowed_ids:
         raise PermissionError("not allowed")
-    return await db.get_or_create_user(msg.from_user.id, msg.from_user.full_name)
+    u = await db.get_or_create_user(msg.from_user.id, msg.from_user.full_name)
+    # Typing another command means you moved on. Without this, tapping
+    # `/supp add` and then changing your mind leaves the label prompt open, and
+    # the next meal you send is parsed as a supplement panel — expensively, and
+    # wrongly. `on_text` never reaches here, so a reply to a prompt is safe;
+    # only a command clears one.
+    if (msg.text or "").startswith("/"):
+        await db.clear_awaits(u["id"], AWAITING_KINDS)
+    return u
 
 
 def _today(u: Any) -> dt.date:
@@ -284,6 +292,18 @@ def _rate_value_keyboard(kind: str) -> InlineKeyboardMarkup:
     ])
 
 
+@dp.callback_query(F.data.startswith("wnew:"))
+async def cb_weight_new(cq: CallbackQuery) -> None:
+    u = await db.get_or_create_user(cq.from_user.id)
+    await db.put_pending(u["id"], "weight_await", {})
+    await cq.answer()
+    await cq.message.answer(
+        "⚖️ <b>What do you weigh?</b>\n"
+        "<i>Send the number. Same time of day, ideally before breakfast.</i>",
+        parse_mode="HTML",
+    )
+
+
 @dp.message(Command("rate"))
 async def rate(msg: Message) -> None:
     """`/rate` to choose a kind, then tap or type a number.
@@ -401,14 +421,16 @@ async def weight(msg: Message) -> None:
     try:
         kg = float(parts[0])
     except (IndexError, ValueError):
-        # Telegram's command menu sends a bare /weight the instant it is tapped,
-        # so arriving without a number is the normal path rather than a mistake.
-        # Wait for one instead of printing a hint and forgetting it was asked.
-        await db.put_pending(u["id"], "weight_await", {})
+        # Reading is the safe default. The menu sends a bare /weight the
+        # instant it is tapped, and half the time the question is "what was I
+        # last?" rather than "record this" — so answer that, and make recording
+        # a deliberate second step rather than something a stray tap starts.
         await msg.answer(
-            "⚖️ <b>What do you weigh?</b>\n"
-            "<i>Send the number. Same time of day, ideally before breakfast.</i>",
+            render.weight_card(await db.last_weight(u["id"]), u["tz"]),
             parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="⚖️ log a new one", callback_data="wnew:"),
+            ]]),
         )
         return
 
@@ -537,7 +559,21 @@ def _supp_keyboard(action_id: int, stack: list[Any], selected: list[int]) -> Inl
         InlineKeyboardButton(text="💊 log these", callback_data=f"suplog:{action_id}"),
         InlineKeyboardButton(text="🗑 none", callback_data=f"supnone:{action_id}"),
     ])
+    rows.append([InlineKeyboardButton(text="➕ add a supplement", callback_data="supadd:")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@dp.callback_query(F.data.startswith("supadd:"))
+async def cb_supp_add(cq: CallbackQuery) -> None:
+    u = await db.get_or_create_user(cq.from_user.id)
+    await db.put_pending(u["id"], "supp_label", {"awaiting": True})
+    await cq.answer()
+    await cq.message.answer(
+        "📸 Send a photo of the label, or paste the product details as text.\n\n"
+        "<i>I transcribe what is stated — I will not fill in what I think the "
+        "product contains.</i>",
+        parse_mode="HTML",
+    )
 
 
 @dp.callback_query(F.data.startswith("supt:"))

@@ -1099,3 +1099,23 @@ async def latest_await(user_id: int, kinds: Sequence[str]) -> dict | None:
     if not row:
         return None
     return {"kind": row["kind"], "payload": json.loads(row["payload"])}
+
+
+async def clear_awaits(user_id: int, kinds: Sequence[str]) -> None:
+    """Drop every outstanding prompt of these kinds."""
+    p = await pool()
+    await p.execute(
+        "DELETE FROM pending_action WHERE user_id = $1 AND kind = ANY($2::text[])",
+        user_id, list(kinds),
+    )
+
+
+async def last_weight(user_id: int) -> list[asyncpg.Record]:
+    """Recent weigh-ins, newest first."""
+    p = await pool()
+    return await p.fetch(
+        """SELECT local_date, value, measured_at FROM body_metric
+            WHERE user_id = $1 AND kind = 'weight_kg'
+         ORDER BY measured_at DESC LIMIT 10""",
+        user_id,
+    )
