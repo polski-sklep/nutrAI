@@ -1588,3 +1588,35 @@ def test_under_rules_do_not_fire_in_the_morning(harness):
             "an evening protein shortfall is real and should be said"
 
     run(scenario())
+
+
+def test_an_unapplied_modifier_is_stated_not_swallowed(harness):
+    """"1 decaffe espresso" was read, paid for, understood by nobody, and logged
+    as ordinary espresso — 64 mg of caffeine — with the card showing the
+    unmodified dish and no indication anything had been dropped."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        await harness.feed("250 g minced beef, 164 g rice, a splash of olive oil")
+        card = harness.sent.last()
+        await harness.press(f"ok:{_confirm_id(card)}", card.message_id)
+        await harness.feed("/r")
+
+        # The stub's modify_dish returns no operations — the real failure mode.
+        harness.sent.clear()
+        await harness.feed("1 something the grammar cannot read")
+
+        out = harness.sent.last()
+        assert "could not apply" in out.text, out.text
+        assert "something the grammar cannot read" in out.text
+        # And it is gated, not logged.
+        assert [b for b in out.buttons if b.startswith("ok:")], out.buttons
+
+        p = await db.pool()
+        assert await p.fetchval(
+            "SELECT count(*) FROM log_entry WHERE user_id=$1 AND status='confirmed'", uid
+        ) == 1, "an unapplied modifier logged the dish anyway"
+
+    run(scenario())

@@ -154,7 +154,11 @@ MODIFIER_TOOL = {
     },
 }
 
-MODIFIER_SYSTEM = """You are given the component list of a dish the user has eaten before, and a short phrase describing how today's version differed. Emit explicit edits. Use only labels that appear in the supplied component list, except for 'add'. Do not restate unchanged components."""
+MODIFIER_SYSTEM = """You are given the component list of a dish the user has eaten before, and a short phrase describing how today's version differed. Emit explicit edits. Use only labels that appear in the supplied component list, except for 'add'. Do not restate unchanged components.
+
+A substitution is a drop plus an add. "decaf espresso", "skimmed not whole milk", "brown rice instead" all mean: drop the component being replaced, and add the replacement with the same mass. There is no swap operation; two operations express it exactly.
+
+If the phrase describes something you cannot express as set, add, drop or scale_all — a cooking method, a brand, a comment — return no operations for it rather than approximating. An edit that was not made and not mentioned is worse than one that was refused."""
 
 PLAN_TOOL = {
     "name": "propose_plan",

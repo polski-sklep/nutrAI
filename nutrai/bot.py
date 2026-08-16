@@ -1124,12 +1124,14 @@ async def _try_repeat(msg: Message, u: Any, cmd: dsl.RepeatCommand) -> bool:
 
     ops = list(cmd.ops)
     model_used = None
+    mod_warnings: list[str] = []
     if cmd.needs_model:
         # One cheap call, and it sees only the label list and the phrase.
         data = await llm.modifier_ops(
             [c.label for c in comps], " ".join(cmd.unparsed), user_id=u["id"]
         )
         model_used = "modifier"
+        before = len(ops)
         for o in data.get("operations", []):
             op, label = o.get("op"), (o.get("label") or "").lower()
             if op == "drop":
@@ -1140,6 +1142,17 @@ async def _try_repeat(msg: Message, u: Any, cmd: dsl.RepeatCommand) -> bool:
                 ops.append(dsl.AddComponent(label, float(o["grams"]) if o.get("grams") else None))
             elif op == "scale_all" and o.get("factor"):
                 ops.append(dsl.Scale(float(o["factor"])))
+
+        # A change you asked for and did not get must never pass in silence.
+        # "1 decaffe espresso" was read, paid for, understood by nobody, and
+        # logged as ordinary espresso — 64 mg of caffeine — with the card
+        # showing the unmodified dish and no indication anything had been
+        # dropped. The gate is only a gate if it shows what it is gating.
+        if len(ops) == before:
+            mod_warnings.append(
+                f"could not apply “{' '.join(cmd.unparsed)}” — this is the dish "
+                f"unchanged. Describe it as a new meal if it was different."
+            )
 
     new_comps, unresolved = dsl.apply(comps, ops)
 
@@ -1197,11 +1210,16 @@ async def _try_repeat(msg: Message, u: Any, cmd: dsl.RepeatCommand) -> bool:
 
     profs = await db.profiles_for([c.fdc_id for c in resolved])
     totals = total_nutrients(resolved, profs)
-    warnings = (
-        ["this dish has never been confirmed — check it once and repeats are instant"]
-        if never_confirmed
-        else []
-    )
+    warnings = list(mod_warnings)
+    if never_confirmed:
+        warnings.append(
+            "this dish has never been confirmed — check it once and repeats are instant"
+        )
+    dropped = [c.label for c in new_comps if not c.fdc_id]
+    if dropped:
+        warnings.append(
+            "could not find a food database row for: " + ", ".join(dropped)
+        )
     await msg.answer(
         render.confirm_card(
             dish["name"], new_comps, totals, confidence=None, warnings=warnings
