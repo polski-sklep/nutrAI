@@ -2318,6 +2318,17 @@ async def _log_template(msg: Message, u: Any, tpl: tuple[Any, list[Any]], cmd: d
 # ---------------------------------------------------------------- presenting
 
 
+async def _matched_names(components: Sequence[Any]) -> dict[int, str]:
+    """USDA descriptions for what a parse resolved to, for the confirm card."""
+    ids = [c.fdc_id for c in components if getattr(c, "fdc_id", None)]
+    if not ids:
+        return {}
+    p = await db.pool()
+    rows = await p.fetch(
+        "SELECT fdc_id, description FROM food WHERE fdc_id = ANY($1::int[])", ids)
+    return {r["fdc_id"]: r["description"] for r in rows}
+
+
 async def _present(
     msg: Message, u: Any, parsed: llm.ParsedMeal, *, source: str,
     photo_file_id: str | None, edit: Message | None = None,
@@ -2398,6 +2409,7 @@ async def _present(
         parsed.dish_name, res.components, totals,
         confidence=parsed.confidence, warnings=warnings, notes=parsed.notes,
         cost_usd=parsed.cost_usd + res.cost_usd, unresolved=res.unresolved,
+        matched=await _matched_names(res.components),
     )
     if edit:
         await edit.edit_text(text, parse_mode="HTML", reply_markup=kb_confirm(entry_id))

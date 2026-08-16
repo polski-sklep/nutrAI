@@ -67,6 +67,7 @@ def confirm_card(
     notes: str = "",
     cost_usd: float | None = None,
     unresolved: Sequence[str] = (),
+    matched: dict[int, str] | None = None,
 ) -> str:
     from ..config import CARB, ENERGY_KCAL, FAT, FIBER, PROTEIN
 
@@ -110,6 +111,23 @@ def confirm_card(
             lines.append(f"   • {mark} {_esc(str(label))} — {grams:.0f} g <i>({span})</i>")
         else:
             lines.append(f"   • {mark} {_esc(str(label))} — {grams:.0f} g")
+
+        # Which USDA row this actually became, when that is not obvious from
+        # the name. "pickle juice" resolved to "Relish, pickle" — a sweet
+        # chopped-pickle condiment at 130 kcal against a brine that is
+        # essentially water — and the card showed only the words you typed, so
+        # the one fact that would have caught it was invisible until after it
+        # was logged. Choosing the food row is the most error-prone step in
+        # the pipeline and it was the only one you could not see.
+        fdc = getattr(c, "fdc_id", None)
+        if fdc is None:
+            try:
+                fdc = c["fdc_id"]
+            except (TypeError, KeyError, IndexError):
+                fdc = None
+        desc = (matched or {}).get(fdc)
+        if desc and str(label).lower().strip() not in desc.lower():
+            lines.append(f"     <i>→ {_esc(desc)}</i>")
 
     lines.append("")
     lines.append(

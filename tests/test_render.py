@@ -429,3 +429,23 @@ def test_repeats_are_one_row_and_keep_their_count():
     assert out.count("Espresso") == 1
     # The grouped row carries the summed amount, not one serving's.
     assert "36" in out
+
+
+def test_the_confirm_card_names_the_food_row_it_matched():
+    """"pickle juice" resolved to "Relish, pickle" — a sweet condiment at
+    130 kcal against a brine that is essentially water — and the card showed
+    only the words you typed. Choosing the food row is the most error-prone
+    step in the pipeline and it was the only one you could not see."""
+    from nutrai.core.nutrition import ResolvedComponent
+    from nutrai.core.render import confirm_card
+
+    comps = [ResolvedComponent("pickle juice", 2710079, 100.0, grams_source="stated")]
+    out = confirm_card("Pickle juice", comps, {1008: 130.0}, confidence=0.85,
+                       warnings=[], matched={2710079: "Relish, pickle"})
+    assert "Relish, pickle" in out
+
+    # Silent when the row is plainly the thing you named.
+    comps = [ResolvedComponent("chia seeds", 2707590, 24.0, grams_source="stated")]
+    quiet = confirm_card("Chia pudding", comps, {1008: 117.0}, confidence=0.9,
+                         warnings=[], matched={2707590: "Chia seeds"})
+    assert "→" not in quiet
