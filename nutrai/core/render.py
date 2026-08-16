@@ -608,6 +608,8 @@ def supplement_stack_card(stack: Sequence[Any], retired: Sequence[Any] = ()) -> 
             + (f" · {extra}" if extra else "")
         )
         detail = [f"{s['n_nutrients']} tracked nutrient(s)"]
+        if s["starts_on"]:
+            detail.insert(0, f"from {s['starts_on']:%-d %b}")
         if s["brand"]:
             detail.insert(0, _esc(s["brand"]))
         if not s["verified_at"]:

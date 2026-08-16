@@ -2256,3 +2256,41 @@ def test_a_measured_tdee_can_be_adopted_from_insight(harness):
         await db.clear_measured_tdee(uid)
 
     run(scenario())
+
+
+def test_a_supplement_with_a_future_start_date_is_not_due_yet(harness):
+    """"Vitamin D3 + K2 — after breakfast, from 1 October" is a decision, not a
+    dose. Pre-ticking it in August would put a capsule you did not swallow into
+    the day's totals."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await p.execute("DELETE FROM supplement WHERE user_id=$1", uid)
+        now_id = await p.fetchval(
+            """INSERT INTO supplement (user_id, name, serving_desc, servings_per_day,
+                 source, slot) VALUES ($1,'Creatine','1 scoop',1,'label_photo','breakfast')
+               RETURNING id""", uid)
+        later_id = await p.fetchval(
+            """INSERT INTO supplement (user_id, name, serving_desc, servings_per_day,
+                 source, slot, starts_on)
+               VALUES ($1,'Vitamin D3 + K2','1 capsule',1,'manual','breakfast',$2)
+               RETURNING id""", uid, dt.date.today() + dt.timedelta(days=46))
+
+        due = await db.supplements_due(uid, dt.date.today())
+        assert now_id in due
+        assert later_id not in due, "a supplement that has not started was pre-ticked"
+
+        # And it is not in the moment's reminder either.
+        rows = await db.supplements_in_slot(uid, "breakfast", dt.date.today())
+        assert [r["id"] for r in rows] == [now_id]
+
+        # It becomes due on the day it starts.
+        assert later_id in await db.supplements_due(
+            uid, dt.date.today() + dt.timedelta(days=46))
+
+        await p.execute("DELETE FROM supplement WHERE user_id=$1", uid)
+
+    run(scenario())

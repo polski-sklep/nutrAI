@@ -900,7 +900,7 @@ async def supplements_due(user_id: int, day: dt.date) -> list[int]:
     """
     p = await pool()
     rows = await p.fetch(
-        """SELECT s.id, s.schedule,
+        """SELECT s.id, s.schedule, s.starts_on,
                   EXISTS (SELECT 1 FROM supplement_log l
                            WHERE l.supplement_id = s.id AND l.local_date = $2::date - 1) AS took_yesterday
              FROM supplement s
@@ -909,6 +909,11 @@ async def supplements_due(user_id: int, day: dt.date) -> list[int]:
     )
     due = []
     for r in rows:
+        # Decided on but not started. Pre-ticking it would put a capsule you
+        # did not swallow into the day's totals, which is the one direction of
+        # error this whole path is built to avoid.
+        if r["starts_on"] and r["starts_on"] > day:
+            continue
         if r["schedule"] == "daily":
             due.append(r["id"])
         elif r["schedule"] == "alternate" and not r["took_yesterday"]:
@@ -1420,6 +1425,7 @@ async def supplements_in_slot(user_id: int, slot: str, day: dt.date) -> list[asy
                            WHERE l.supplement_id = s.id AND l.local_date = $3) AS logged
              FROM supplement s
             WHERE s.user_id = $1 AND s.active AND s.slot = $2
+              AND (s.starts_on IS NULL OR s.starts_on <= $3)
          ORDER BY s.name""",
         user_id, slot, day,
     )
