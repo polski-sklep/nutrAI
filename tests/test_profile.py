@@ -77,6 +77,8 @@ def _data(**over):
         "height_cm": 183, "activity_factor": 1.55, "goal": "lose",
         "goal_weight_kg": 74, "deficit_kcal": 500, "tz": "Europe/Warsaw",
         "targets_set_at_kg": 78.0,
+        "measured_tdee_kcal": None, "measured_tdee_days": None,
+        "measured_tdee_on": None,
     })
     user.update(over.pop("user", {}))
     d = {"user": user, "weight_kg": 78.0, "weighed_on": dt.date(2026, 8, 16),
@@ -102,7 +104,8 @@ def test_weight_is_shown_but_not_numbered():
 def test_an_empty_profile_says_what_is_missing_rather_than_showing_zeros():
     empty = {k: None for k in
              ("display_name", "sex", "birth_date", "height_cm", "activity_factor",
-              "goal", "goal_weight_kg", "deficit_kcal", "tz", "targets_set_at_kg")}
+              "goal", "goal_weight_kg", "deficit_kcal", "tz", "targets_set_at_kg",
+              "measured_tdee_kcal", "measured_tdee_days", "measured_tdee_on")}
     card = render.profile_card(
         _data(user=empty, weight_kg=None, weighed_on=None, energy_target=None,
               targets_from=None),
@@ -270,3 +273,53 @@ def test_the_profile_card_flags_it_before_you_recalculate():
     card = render.profile_card(_data(user={"deficit_kcal": None, "goal": "recomp"}),
                                dt.date(2026, 8, 16))
     assert "⚠️" in card and "deficit" in card
+
+
+# ------------------------------------------ the measurement beats the equation
+
+
+def test_a_measured_tdee_replaces_the_equation_rather_than_blending_with_it():
+    """A measurement and an estimate of the same quantity do not average into
+    something better than the measurement. They average into something you can
+    no longer explain."""
+    base = dict(sex="male", weight_kg=75.2, height_cm=173, age=34,
+                activity=1.55, deficit=350, goal="recomp")
+    _t, equation = prof.derive_targets(**base)
+    _t2, measured = prof.derive_targets(**base, measured_tdee=2410)
+
+    assert measured["tdee"] == 2410
+    assert measured["kcal"] == 2410 - 350
+    # Untouched: the equation's REE is still reported, because the activity
+    # factor is what the measurement replaces, not the resting rate.
+    assert measured["ree"] == equation["ree"]
+    assert measured["tdee_measured"] == 1.0
+    assert equation["tdee_measured"] == 0.0
+
+
+def test_the_implied_activity_factor_is_recovered_from_the_measurement():
+    """The one free parameter nothing ever checked: you pick "Moderate" off a
+    list and it multiplies your BMR forever."""
+    ree = prof.mifflin_st_jeor("male", 75.2, 173, 34)
+    assert prof.implied_activity_factor(ree * 1.42, ree) == 1.42
+    assert prof.implied_activity_factor(2410, ree) == round(2410 / ree, 2)
+
+
+def test_an_absurd_implied_factor_is_refused_rather_than_written_back():
+    """Outside 1.0-2.5 the arithmetic has stopped describing activity and
+    started absorbing an error — an unlogged week, a scale read in pounds —
+    and writing it back would launder that error into the profile."""
+    ree = prof.mifflin_st_jeor("male", 75.2, 173, 34)
+    assert prof.implied_activity_factor(ree * 0.6, ree) is None
+    assert prof.implied_activity_factor(ree * 3.1, ree) is None
+    assert prof.implied_activity_factor(2400, 0) is None
+
+
+def test_the_card_says_which_of_the_two_the_target_rests_on():
+    card = render.profile_card(
+        _data(user={"measured_tdee_kcal": 2410, "measured_tdee_days": 23}),
+        dt.date(2026, 8, 16))
+    assert "measured" in card and "2,410" in card
+    assert "23 days" in card
+
+    equation = render.profile_card(_data(), dt.date(2026, 8, 16))
+    assert "measured" not in equation

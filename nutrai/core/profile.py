@@ -144,6 +144,25 @@ def goal_conflict(goal: str | None, deficit: float | None) -> str | None:
     return None
 
 
+def implied_activity_factor(measured_tdee: float, ree: float) -> float | None:
+    """Your real activity factor, from measurement rather than from a list.
+
+    The factor is the only free parameter in the energy model that nothing
+    ever checked: you pick "Moderate" off a menu and it multiplies your BMR
+    by 1.55 forever. Dividing a measured TDEE by the same equation's REE
+    recovers what the multiplier actually is for you.
+
+    Refused outside 1.0-2.5. Outside that range the arithmetic has stopped
+    describing activity and started absorbing an error somewhere else — an
+    unlogged week, a scale read in pounds — and writing it back would launder
+    that error into the profile.
+    """
+    if not ree or ree <= 0:
+        return None
+    factor = measured_tdee / ree
+    return round(factor, 2) if 1.0 <= factor <= 2.5 else None
+
+
 def derive_targets(
     *,
     sex: str,
@@ -155,8 +174,15 @@ def derive_targets(
     goal: str | None = None,
     protein_g: float | None = None,
     fat_g: float | None = None,
+    measured_tdee: float | None = None,
 ) -> tuple[dict[int, tuple[float | None, float | None]], dict[str, float]]:
-    """Returns (targets by nutrient id, the working shown as numbers)."""
+    """Returns (targets by nutrient id, the working shown as numbers).
+
+    `measured_tdee`, when given, replaces `ree * activity` outright. It is not
+    blended with the equation and not used to nudge it: a measurement and an
+    estimate of the same quantity do not average into something better than
+    the measurement, they average into something you can no longer explain.
+    """
     missing = [
         name for name, v in (
             ("sex", sex), ("weight", weight_kg), ("height", height_cm),
@@ -167,7 +193,7 @@ def derive_targets(
         raise IncompleteProfile(", ".join(missing))
 
     ree = mifflin_st_jeor(sex, weight_kg, height_cm, age)
-    tdee = ree * activity
+    tdee = float(measured_tdee) if measured_tdee else ree * activity
     kcal = tdee - (deficit or 0)
     protein = protein_g or round(
         PROTEIN_PER_KG.get(goal or "", DEFAULT_PROTEIN_PER_KG) * weight_kg)
@@ -196,6 +222,7 @@ def derive_targets(
     }
     working = {
         "ree": ree, "tdee": tdee, "kcal": kcal,
+        "tdee_measured": 1.0 if measured_tdee else 0.0,
         "protein": float(protein), "fat": float(fat), "carb": float(carb),
     }
     return targets, working

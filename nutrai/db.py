@@ -1480,3 +1480,26 @@ async def dish_snapshots(user_id: int) -> dict[int, dict]:
         })
         d["nutrients"][r["nutrient_id"]] = float(r["amount"])
     return out
+
+
+async def record_measured_tdee(user_id: int, tdee: float, days: int, day: dt.date) -> None:
+    """Adopt a measured TDEE as the basis for the energy target."""
+    p = await pool()
+    await p.execute(
+        """UPDATE app_user SET measured_tdee_kcal = $2, measured_tdee_days = $3,
+                               measured_tdee_on = $4
+            WHERE id = $1""",
+        user_id, num(tdee), days, day,
+    )
+
+
+async def clear_measured_tdee(user_id: int) -> None:
+    """Back to the equation. Kept as an explicit act rather than something a
+    recalculation can do by accident."""
+    p = await pool()
+    await p.execute(
+        """UPDATE app_user SET measured_tdee_kcal = NULL, measured_tdee_days = NULL,
+                               measured_tdee_on = NULL
+            WHERE id = $1""",
+        user_id,
+    )

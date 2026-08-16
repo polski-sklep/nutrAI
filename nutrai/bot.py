@@ -854,6 +854,7 @@ async def _recalculate_targets(msg: Message, u: Any) -> None:
             activity=float(row["activity_factor"]) if row["activity_factor"] else None,
             deficit=float(row["deficit_kcal"] or 0),
             goal=row["goal"],
+            measured_tdee=float(row["measured_tdee_kcal"]) if row["measured_tdee_kcal"] else None,
         )
     except (profile_mod.IncompleteProfile, TypeError) as exc:
         missing = str(exc) if isinstance(exc, profile_mod.IncompleteProfile) else "some fields"
@@ -1174,6 +1175,61 @@ async def cb_repeat_dish(cq: CallbackQuery) -> None:
             "<code>/repeat</code> shows what is.",
             parse_mode="HTML",
         )
+
+
+async def _tdee_offer(u: Any, flr: Any) -> tuple[str, Any] | None:
+    """The card and keyboard for adopting a measured TDEE, or None."""
+    if not flr or not flr.implied_tdee_kcal:
+        return None
+    data = await db.profile(u["id"])
+    row = data["user"]
+    if row["measured_tdee_kcal"] and abs(
+            float(row["measured_tdee_kcal"]) - flr.implied_tdee_kcal) < 25:
+        return None    # already using essentially this number
+
+    ree = None
+    if all(row[f] is not None for f in ("sex", "height_cm", "birth_date")) and data["weight_kg"]:
+        ree = profile_mod.mifflin_st_jeor(
+            row["sex"], data["weight_kg"], float(row["height_cm"]),
+            profile_mod.age_years(row["birth_date"], _today(u)),
+        )
+    implied = profile_mod.implied_activity_factor(flr.implied_tdee_kcal, ree) if ree else None
+    card = render.measured_tdee_offer(
+        flr, data["energy_target"], row["activity_factor"], implied)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+        text=f"\U0001F4D0 set targets from {flr.implied_tdee_kcal:,.0f} kcal",
+        callback_data=f"usetdee:{flr.implied_tdee_kcal:.0f}:{flr.days}")]])
+    return card, kb
+
+
+@dp.callback_query(F.data.startswith("usetdee:"))
+async def cb_use_measured_tdee(cq: CallbackQuery) -> None:
+    """Adopt the measurement, and record the activity factor it implies.
+
+    The factor is written back too, so a later recalculation after a weight
+    change does not quietly fall back to the multiplier you once picked off a
+    list. A measurement that is used once and then forgotten is a measurement
+    that was not really adopted.
+    """
+    u = await db.get_or_create_user(cq.from_user.id)
+    _, tdee_s, days_s = cq.data.split(":")
+    tdee, days = float(tdee_s), int(days_s)
+    today = _today(u)
+
+    data = await db.profile(u["id"])
+    row = data["user"]
+    if all(row[f] is not None for f in ("sex", "height_cm", "birth_date")) and data["weight_kg"]:
+        ree = profile_mod.mifflin_st_jeor(
+            row["sex"], data["weight_kg"], float(row["height_cm"]),
+            profile_mod.age_years(row["birth_date"], today),
+        )
+        implied = profile_mod.implied_activity_factor(tdee, ree)
+        if implied:
+            await db.set_profile_field(u["id"], "activity_factor", implied)
+
+    await db.record_measured_tdee(u["id"], tdee, days, today)
+    await cq.answer("Using your measurement")
+    await _recalculate_targets(cq.message, u)
 
 
 @dp.message(Command("stack"))
@@ -1546,6 +1602,7 @@ async def audit_cmd(msg: Message) -> None:
 async def insight_cmd(msg: Message) -> None:
     u = await _user(msg)
     out: list[str] = []
+    tdee_offer: tuple[str, Any] | None = None
 
     weights = await db.weight_series(u["id"], 42)
     energy = await db.daily_energy(u["id"], 42)
@@ -1568,6 +1625,10 @@ async def insight_cmd(msg: Message) -> None:
             "<i>This is the only trustworthy answer to 'am I burning fat', and note"
             " that it contains no reference to when you ate.</i>"
         )
+        # The measurement existed here all along and nothing ever used it: the
+        # energy target stayed an equation's guess times a chosen multiplier
+        # while the real number sat two lines above it, read and ignored.
+        tdee_offer = await _tdee_offer(u, flr)
 
     for kind, label in (("focus", "focus vs hours fasted"), ("rpe", "session RPE vs hours fasted")):
         obs = await db.observations(u["id"], kind)
@@ -1623,6 +1684,13 @@ async def insight_cmd(msg: Message) -> None:
             )
 
     await msg.answer("\n".join(out), parse_mode="HTML")
+
+    # Sent as its own message, not appended: it is an offer to change your
+    # targets, and burying a button under three screens of correlations is how
+    # it goes unnoticed for another month.
+    if tdee_offer:
+        card, keyboard = tdee_offer
+        await msg.answer(card, parse_mode="HTML", reply_markup=keyboard)
 
 
 # ------------------------------------------------------------------ photos

@@ -1063,6 +1063,15 @@ def profile_card(data: dict[str, Any], today: dt.date | None = None) -> str:
             f"🔥 Energy target <b>{data['energy_target']:,.0f} kcal</b>"
             + (f", set {data['targets_from']:%-d %b}" if data["targets_from"] else "")
         )
+        # Say which of the two it rests on. "2,236 kcal" from an equation and
+        # from your own weight trend are different claims, and only one of them
+        # was measured.
+        if u["measured_tdee_kcal"]:
+            lines.append(
+                f"   📐 from your <b>measured</b> maintenance of "
+                f"{float(u['measured_tdee_kcal']):,.0f} kcal over "
+                f"{u['measured_tdee_days']} days — not the equation"
+            )
         conflict = prof.goal_conflict(u["goal"], u["deficit_kcal"])
         if conflict:
             lines.append(f"   ⚠️ {_esc(conflict)}")
@@ -1139,6 +1148,10 @@ def profile_recalc_card(working: dict[str, float], applied: int, weight: float,
     warn = ([f"⚠️ <b>{_esc(conflict)}</b>",
              "   <i>The button below sets it and redoes this in one tap.</i>", ""]
             if conflict else [])
+    # Which of the two the maintenance figure is. An equation's output and a
+    # measurement of the same quantity deserve different confidence, and the
+    # table is where that distinction has to survive.
+    maint_note = "  measured" if working.get("tdee_measured") else ""
     return "\n".join([
         "✅ <b>Targets recalculated</b>",
         "",
@@ -1146,7 +1159,7 @@ def profile_recalc_card(working: dict[str, float], applied: int, weight: float,
         "<pre>"
         f"{'At weight':<12}{weight:g} kg\n"
         f"{'Resting':<12}{working['ree']:,.0f} kcal\n"
-        f"{'Maintenance':<12}{working['tdee']:,.0f} kcal\n"
+        f"{'Maintenance':<12}{working['tdee']:,.0f} kcal{maint_note}\n"
         f"{'Target':<12}{working['kcal']:,.0f} kcal\n"
         f"{'Protein':<12}{working['protein']:,.0f} g\n"
         f"{'Fat':<12}{working['fat']:,.0f} g\n"
@@ -1361,3 +1374,30 @@ def suggest_card(suggestions: Sequence[Any], progress: Sequence[Any],
                  "the numbers are the snapshots taken when you last ate each "
                  "one.</i>")
     return "\n".join(lines).rstrip()
+
+
+def measured_tdee_offer(flr: Any, current_target: float | None,
+                        activity_now: float | None, implied: float | None) -> str:
+    """What adopting the measurement would change, before you adopt it."""
+    lines = [
+        "📐 <b>Your measured maintenance</b>", "",
+        f"   • <b>{flr.implied_tdee_kcal:,.0f} kcal</b> from "
+        f"{flr.days} days of weigh-ins and what you actually ate",
+    ]
+    if current_target:
+        lines.append(f"   • your target is set from the equation, at "
+                     f"<b>{current_target:,.0f} kcal</b>")
+    if implied and activity_now:
+        lines.append(f"   • that makes your real activity factor "
+                     f"<b>{implied:g}</b>, not {float(activity_now):g}")
+    elif implied:
+        lines.append(f"   • that makes your real activity factor <b>{implied:g}</b>")
+
+    if flr.days < 21:
+        lines += ["", f"<i>{flr.days} days is enough to be worth using and not "
+                      "enough to be settled — glycogen and water stop dominating "
+                      "at about three weeks. It can be re-measured any time.</i>"]
+    else:
+        lines += ["", "<i>Measured over three weeks or more, so this is a "
+                      "better number than any equation can give you.</i>"]
+    return "\n".join(lines)

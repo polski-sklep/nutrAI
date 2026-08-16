@@ -1768,7 +1768,8 @@ def test_recalculating_targets_needs_a_complete_profile_and_versions_them(harnes
 
         p = await db.pool()
         await p.execute(
-            "UPDATE app_user SET sex=NULL, height_cm=NULL WHERE id=$1", uid)
+            """UPDATE app_user SET sex=NULL, height_cm=NULL, measured_tdee_kcal=NULL
+                WHERE id=$1""", uid)
         await harness.feed("/profile")
         card = harness.sent.last()
 
@@ -2157,5 +2158,101 @@ def test_the_deficit_warning_carries_a_button_that_fixes_it(harness):
         assert float(maintenance) - float(after) == 350.0
         # And the warning is gone, because the contradiction is.
         assert "⚠️" not in harness.sent.last().text, harness.sent.last().text
+
+    run(scenario())
+
+
+def test_a_measured_tdee_can_be_adopted_from_insight(harness):
+    """Seeded, not waited for. CLAUDE.md forbids lowering MIN_TREND_DAYS to
+    make the feature work during development; this fakes the data instead.
+
+    The gap this closes: fat_loss_rate() has always computed the TDEE your
+    body actually has, and the energy target went on being an equation's guess
+    times a multiplier picked off a list. The two numbers never met.
+    """
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await p.execute(
+            """UPDATE app_user SET sex='male', birth_date='1991-09-21', height_cm=173,
+                 activity_factor=1.55, goal='recomp', deficit_kcal=350,
+                 measured_tdee_kcal=NULL WHERE id=$1""", uid)
+        await p.execute("DELETE FROM body_metric WHERE user_id=$1", uid)
+
+        # 24 days losing ~0.35 kg/week, on a steady 2,100 kcal.
+        start = dt.date.today() - dt.timedelta(days=23)
+        for i in range(24):
+            kg = 76.4 - 0.05 * i
+            await p.execute(
+                """INSERT INTO body_metric (user_id, kind, value, local_date, measured_at)
+                   VALUES ($1,'weight_kg',$2,$3,$4)""",
+                uid, kg, start + dt.timedelta(days=i),
+                dt.datetime.combine(start + dt.timedelta(days=i), dt.time(7, 0),
+                                    tzinfo=dt.timezone.utc))
+
+        from nutrai.core import insight
+
+        # A weight trend with no intake alongside it yields no TDEE: the
+        # measurement is intake plus deficit, and one of those is missing.
+        # Nothing is offered, rather than an offer built on a zero.
+        harness.sent.clear()
+        await harness.feed("/insight")
+        assert "measured maintenance" not in harness.sent.last().text
+        assert not [b for s_ in harness.sent.sent for b in s_.buttons
+                    if b.startswith("usetdee:")]
+
+        # Now the intake those weights were produced by.
+        for i in range(24):
+            d = start + dt.timedelta(days=i)
+            eid = await p.fetchval(
+                """INSERT INTO log_entry
+                     (user_id, logged_at, local_date, name, source, status)
+                   VALUES ($1,$2,$3,'seeded day','manual','confirmed') RETURNING id""",
+                uid, dt.datetime.combine(d, dt.time(12, 0), tzinfo=dt.timezone.utc), d)
+            await p.execute(
+                """INSERT INTO log_nutrient (entry_id, nutrient_id, amount)
+                   VALUES ($1, 1008, 2100)""", eid)
+
+        weights = await db.weight_series(uid, 42)
+        flr = insight.fat_loss_rate(weights, await db.daily_energy(uid, 42))
+        assert flr and flr.days >= 14 and flr.implied_tdee_kcal > 0, flr
+
+        harness.sent.clear()
+        await harness.feed("/insight")
+        offer = harness.sent.last()
+        assert "measured maintenance" in offer.text, offer.text
+        btn = next(b for b in offer.buttons if b.startswith("usetdee:"))
+
+        harness.sent.clear()
+        await harness.press(btn, offer.message_id)
+
+        row = await p.fetchrow(
+            """SELECT measured_tdee_kcal, measured_tdee_days, activity_factor
+                 FROM app_user WHERE id=$1""", uid)
+        assert row["measured_tdee_kcal"] is not None
+        assert row["measured_tdee_days"] == flr.days
+        # The factor is written back, so a later recalculation after a weight
+        # change does not quietly revert to the one picked off a list.
+        assert float(row["activity_factor"]) != 1.55
+
+        target = float(await p.fetchval(
+            """SELECT max_amount FROM target
+                WHERE user_id=$1 AND nutrient_id=1008 AND effective_to IS NULL""", uid))
+        assert abs(target - (float(row["measured_tdee_kcal"]) - 350)) < 1
+
+        # And the card says which of the two it now rests on.
+        harness.sent.clear()
+        await harness.feed("/profile")
+        assert "measured" in harness.sent.last().text
+
+        await p.execute("DELETE FROM body_metric WHERE user_id=$1", uid)
+        await p.execute(
+            "DELETE FROM log_entry WHERE user_id=$1 AND name='seeded day'", uid)
+        # Adopting a measurement is sticky by design — it must survive later
+        # recalculations — so a test that adopts one has to put it back.
+        await db.clear_measured_tdee(uid)
 
     run(scenario())
