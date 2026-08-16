@@ -388,3 +388,44 @@ def test_assigning_without_scheduling_says_nothing_will_fire():
 
     done = slot_settings_card(stack, {"evening": dt.time(21, 0), "bed": dt.time(22, 30)})
     assert "⚠️" not in done
+
+
+def test_percentages_sum_to_exactly_one_hundred():
+    """A real cholesterol breakdown printed 75+18+2+2+2+1+1 = 101. Every share
+    was right to the nearest point and the column still looked broken."""
+    from nutrai.core.render import percent_split
+
+    assert sum(percent_split([560, 138, 12, 12, 12, 10, 5])) == 100
+    assert percent_split([560, 138, 12, 12, 12, 10, 5])[0] == 75
+
+    for case in ([1, 1, 1], [1] * 7, [99, 1], [1, 2, 3, 4, 5, 6, 7, 8, 9],
+                 [0.1, 0.1, 0.1, 99.7]):
+        assert sum(percent_split(case)) == 100, case
+
+    assert percent_split([]) == []
+    assert percent_split([0, 0]) == [0, 0]
+
+
+def test_repeats_are_one_row_and_keep_their_count():
+    """Three identical espressos listed separately came out 2%, 2%, 1%:
+    largest-remainder must break the tie somewhere, and identical rows with
+    different percentages read as a bug however correct the arithmetic is."""
+    import datetime as dt
+
+    from nutrai.core.render import why_card
+
+    at = dt.datetime(2026, 8, 16, 6, 35, tzinfo=dt.timezone.utc)
+    entries = [
+        {"name": "Espresso with milk", "slot": "drink", "logged_at": at + dt.timedelta(minutes=i * 30),
+         "amount": 12.0, "parts": [{"label": "full fat milk", "food": "Milk", "amount": 12.0}]}
+        for i in range(3)
+    ]
+    entries.append({"name": "Boiled eggs", "slot": "lunch",
+                    "logged_at": at + dt.timedelta(hours=6), "amount": 560.0,
+                    "parts": [{"label": "boiled eggs", "food": "Egg", "amount": 560.0}]})
+    out = why_card("Cholesterol", "MG", dt.date(2026, 8, 16), entries, [], 300, True)
+
+    assert "×3" in out, out
+    assert out.count("Espresso") == 1
+    # The grouped row carries the summed amount, not one serving's.
+    assert "36" in out

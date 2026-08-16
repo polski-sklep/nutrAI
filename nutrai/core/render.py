@@ -1454,6 +1454,30 @@ def measured_tdee_offer(flr: Any, current_target: float | None,
     return "\n".join(lines)
 
 
+def percent_split(values: Sequence[float]) -> list[int]:
+    """Whole percentages that sum to exactly 100.
+
+    Rounding each share independently gave 75 + 18 + 2 + 2 + 2 + 1 + 1 = 101
+    on a real cholesterol breakdown. The milligrams were right and the
+    percentages were each right to the nearest point, and the column still
+    looked broken — which for a card whose whole purpose is "where did this
+    come from" is fatal to it.
+
+    Largest remainder: floor everything, then hand the leftover points to
+    whichever shares were cut hardest.
+    """
+    total = sum(values)
+    if total <= 0:
+        return [0] * len(values)
+    exact = [v / total * 100 for v in values]
+    out = [int(x) for x in exact]
+    leftover = 100 - sum(out)
+    order = sorted(range(len(values)), key=lambda i: -(exact[i] - out[i]))
+    for i in order[:leftover]:
+        out[i] += 1
+    return out
+
+
 def why_card(nutrient_name: str, unit: str, day: dt.date, entries: Sequence[Any],
              supplements: Sequence[Any], target: float | None,
              is_ceiling: bool, tz: str = "UTC") -> str:
@@ -1482,25 +1506,52 @@ def why_card(nutrient_name: str, unit: str, day: dt.date, entries: Sequence[Any]
                 + ("ceiling" if is_ceiling else "target")
     lines += [head, ""]
 
-    rows: list[str] = []
+    # Repeats of the same dish are one row. Three identical espressos listed
+    # separately came out 2%, 2%, 1% — largest-remainder has to break the tie
+    # somewhere, and identical rows with different percentages read as a bug
+    # however correct the arithmetic is. Grouping is more legible anyway.
+    grouped: list[dict] = []
+    by_name: dict[str, dict] = {}
     for e in entries:
-        amount = float(e["amount"])
-        when = e["logged_at"].astimezone(zone).strftime("%H:%M")
-        rows.append(f"{when} {_short_note(e['name'])[:26]:<28}"
-                    f"{fmt_amount(amount, unit):>10}  {amount / total * 100:>3.0f}%")
+        g = by_name.get(e["name"])
+        if g is None:
+            g = {"name": e["name"], "amount": 0.0, "n": 0,
+                 "first": e["logged_at"], "parts": e["parts"]}
+            by_name[e["name"]] = g
+            grouped.append(g)
+        g["amount"] += float(e["amount"])
+        g["n"] += 1
+        g["first"] = min(g["first"], e["logged_at"])
+    grouped.sort(key=lambda g: -g["amount"])
+
+    # One split across food and supplements together, so the column sums to
+    # 100 rather than to each half separately.
+    shares = percent_split([g["amount"] for g in grouped]
+                           + [float(s_["amount"]) for s_ in supplements])
+
+    rows: list[str] = []
+    for i, e in enumerate(grouped):
+        amount = e["amount"]
+        when = e["first"].astimezone(zone).strftime("%H:%M")
+        # Room reserved for the count before the name is cut, or "×3" is what
+        # gets truncated away and the row claims to be a single serving.
+        suffix = f" ×{e['n']}" if e["n"] > 1 else ""
+        name = _short_note(e["name"])[:26 - len(suffix)] + suffix
+        rows.append(f"{when} {name:<28}"
+                    f"{fmt_amount(amount, unit):>10}  {shares[i]:>3.0f}%")
         # The component behind it, when one clearly dominates. Naming the plate
         # is half an answer: "boiled eggs, avocado and bread" does not tell you
         # it was the eggs.
         for part in e["parts"][:2]:
-            share = part["amount"] / amount if amount else 0
-            if share < 0.15:
+            scaled = part["amount"] * e["n"]
+            if (scaled / amount if amount else 0) < 0.15:
                 continue
             rows.append(f"        └ {_short_note(part['label'])[:22]:<24}"
-                        f"{fmt_amount(part['amount'], unit):>10}")
-    for s in supplements:
-        rows.append(f"  💊  {_short_note(s['name'])[:26]:<28}"
-                    f"{fmt_amount(s['amount'], unit):>10}  "
-                    f"{s['amount'] / total * 100:>3.0f}%")
+                        f"{fmt_amount(scaled, unit):>10}")
+    for j, s_ in enumerate(supplements):
+        rows.append(f"  💊  {_short_note(s_['name'])[:26]:<28}"
+                    f"{fmt_amount(s_['amount'], unit):>10}  "
+                    f"{shares[len(grouped) + j]:>3.0f}%")
     lines.append("<pre>" + "\n".join(_esc(r) for r in rows) + "</pre>")
 
     lines.append(

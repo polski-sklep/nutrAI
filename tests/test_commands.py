@@ -119,3 +119,60 @@ def test_the_menu_matches_the_command_table_exactly():
     for expected in ("/why", "/next", "/stack", "/schedule", "/training",
                      "/profile", "/target", "/supp"):
         assert expected in names, f"{expected} is built but not in the menu"
+
+
+def test_every_prompt_opened_has_something_that_consumes_it():
+    """Six times today a command printed instructions and then fed the reply to
+    the meal parser: the ✏️ button, the rating keypad, /weight, /supp add,
+    /profile and /why. Opening a prompt and consuming its answer were two edits
+    in two places and forgetting the second was silent.
+
+    This scans for every wait the bot opens and asserts a consumer exists.
+    """
+    import inspect
+    import re
+
+    from nutrai import bot as botmod
+
+    src = inspect.getsource(botmod)
+    opened = set(re.findall(r'put_pending\(\s*u\["id"\],\s*"([a-z_]+)"', src))
+    opened |= set(re.findall(r'_ask\(\s*msg,\s*u,\s*"([a-z_]+)"', src))
+
+    # Kinds that are menus rather than typed prompts: their reply arrives as a
+    # button press or through the repeat grammar, not as free text.
+    # Each verified by reading its handler, not assumed: every one of these is
+    # answered by an inline button, so free text arriving while it is open
+    # genuinely is a meal and must reach the parser.
+    not_typed = {
+        "supp_pick",      # the tick-list keyboard
+        "supp_confirm",   # ✅ save all / 🗑 discard
+        "repeat_menu",    # answered by the repeat grammar, not free text
+        "plan_proposal",  # core/plan.py, deliberately unwired
+        "confirm_entry",  # ✅ / ❌ / ✏️ on a parse
+    }
+
+    missing = {k for k in opened if k not in not_typed} - set(botmod.PROMPT_CONSUMERS)
+    assert not missing, (
+        f"prompts opened with nothing to consume the reply: {sorted(missing)} — "
+        "the bot will print instructions and send the answer to the meal parser"
+    )
+
+
+def test_the_awaiting_list_cannot_drift_from_its_consumers():
+    """AWAITING_KINDS is derived from the registry rather than written beside
+    it, so a kind cannot be listed without a consumer or vice versa."""
+    from nutrai import bot as botmod
+
+    assert set(botmod.AWAITING_KINDS) == set(botmod.PROMPT_CONSUMERS)
+    assert "why_await" in botmod.AWAITING_KINDS
+
+
+def test_asking_for_an_unregistered_prompt_fails_loudly():
+    """A typo in the kind is a prompt nothing answers, so it raises here rather
+    than going quiet in production."""
+    import asyncio
+
+    from nutrai import bot as botmod
+
+    with pytest.raises(KeyError):
+        asyncio.run(botmod._ask(None, {"id": 1}, "not_a_real_prompt", "hi"))

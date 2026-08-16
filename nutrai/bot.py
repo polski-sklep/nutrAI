@@ -1248,21 +1248,23 @@ async def why_cmd(msg: Message) -> None:
     something that happens to you rather than something you did.
     """
     u = await _user(msg)
-    term = (msg.text or "").split(maxsplit=1)
-    if len(term) < 2:
-        await msg.answer(
-            "Name a nutrient — <code>/why cholesterol</code>, "
-            "<code>/why fat</code>, <code>/why sugar</code>.",
-            parse_mode="HTML")
+    parts = (msg.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        # Asks and then listens. Printing instructions and dropping the reply
+        # into the meal parser is the bug this registry exists to prevent.
+        await _ask(msg, u, "why_await",
+                   "Which nutrient? Reply with a name — <code>cholesterol</code>, "
+                   "<code>fat</code>, <code>sugar</code> — or "
+                   "<code>/why fibre</code> in one go.")
         return
-    term = term[1].strip()
+    await _explain_nutrient(msg, u, parts[1].strip())
 
+
+async def _explain_nutrient(msg: Message, u: Any, term: str) -> bool:
+    """Returns False when the word is not a nutrient, so a meal still parses."""
     matches = await db.find_nutrients(render.usda_name_for(term) or term)
     if not matches:
-        await msg.answer(
-            f"No nutrient matches {render._esc(term)}. <code>/target</code> lists "
-            "the names as they are stored.", parse_mode="HTML")
-        return
+        return False
     exact = [m for m in matches
              if term.lower() in (m["name"].lower(), render._short(m["name"]).lower())]
     n = exact[0] if exact else matches[0]
@@ -1287,6 +1289,8 @@ async def why_cmd(msg: Message) -> None:
         ),
         parse_mode="HTML",
     )
+    await db.clear_pending(u["id"], "why_await")
+    return True
 
 
 @dp.message(Command("stack"))
@@ -1913,8 +1917,98 @@ async def _apply_when(entry_id: int, ops: list[Any], u: Any) -> dt.date | None:
 # dutifully spent a Sonnet call establishing that "78.4" is not a food. A prompt
 # that ignores its own answer is worse than no prompt, so a fifth prompt now
 # inherits the behaviour instead of repeating the bug.
-AWAITING_KINDS = ("supp_label", "fix_entry", "weight_await", "rate_await",
-                  "profile_await", "target_await", "slot_await")
+# Every prompt that waits for a typed reply, in one registry.
+#
+# Opening a prompt and consuming its reply used to be two edits in two places,
+# and forgetting the second was silent: the bot printed instructions and then
+# fed your answer to the meal parser. That happened with the ✏️ fix button, the
+# rating keypad, /weight, /supp add, /profile and /why — six times, each found
+# by a person rather than by a test.
+#
+# Registering a consumer is now the only way to get a kind into AWAITING_KINDS,
+# because this dict *is* the list. A prompt with no consumer cannot be opened,
+# and `_ask` sends the message and registers the wait in one call so the two
+# cannot drift apart.
+PROMPT_CONSUMERS: dict[str, Any] = {}
+
+
+def consumes(kind: str):
+    def register(fn):
+        PROMPT_CONSUMERS[kind] = fn
+        return fn
+    return register
+
+
+async def _ask(msg: Message, u: Any, kind: str, text: str, **kw) -> None:
+    """Send a prompt and open the wait for its answer. Never one without the other."""
+    if kind not in PROMPT_CONSUMERS:
+        raise KeyError(f"no consumer registered for prompt {kind!r}")
+    await msg.answer(text, parse_mode="HTML", **kw)
+    await db.put_pending(u["id"], kind, {})
+
+
+@consumes("supp_label")
+async def _consume_supp_label(msg: Message, u: Any, text: str, payload: dict) -> bool:
+    await _handle_supplement_label(msg, u, text=text)
+    return True
+
+
+@consumes("fix_entry")
+async def _consume_fix(msg: Message, u: Any, text: str, payload: dict) -> bool:
+    return await _try_fix(msg, u, text)
+
+
+@consumes("profile_await")
+async def _consume_profile(msg: Message, u: Any, text: str, payload: dict) -> bool:
+    edits = _profile_edits(text)
+    if not edits:
+        return False   # not numbered lines, so it is a meal: let it through
+    await _apply_profile_edits(msg, u, edits)
+    return True
+
+
+@consumes("slot_await")
+async def _consume_slots(msg: Message, u: Any, text: str, payload: dict) -> bool:
+    return await _try_slot_lines(msg, u, text)
+
+
+@consumes("target_await")
+async def _consume_targets(msg: Message, u: Any, text: str, payload: dict) -> bool:
+    # Falls through to the meal parser when the line does not name a nutrient,
+    # so "chicken 200g" is still dinner.
+    return await _try_target_lines(msg, u, text)
+
+
+@consumes("why_await")
+async def _consume_why(msg: Message, u: Any, text: str, payload: dict) -> bool:
+    return await _explain_nutrient(msg, u, text.strip())
+
+
+@consumes("weight_await")
+async def _consume_weight(msg: Message, u: Any, text: str, payload: dict) -> bool:
+    try:
+        value = float(text.strip().replace(",", "."))
+    except ValueError:
+        return False
+    await db.clear_pending(u["id"], "weight_await")
+    await _record_weight(msg, u, value)
+    return True
+
+
+@consumes("rate_await")
+async def _consume_rating(msg: Message, u: Any, text: str, payload: dict) -> bool:
+    try:
+        value = float(text.strip().replace(",", "."))
+    except ValueError:
+        return False
+    if not 0 < value <= 10:
+        return False
+    await db.clear_pending(u["id"], "rate_await")
+    await _record_rating(msg, u, payload["kind"], value)
+    return True
+
+
+AWAITING_KINDS = tuple(PROMPT_CONSUMERS)
 
 
 async def _consume_awaited_reply(msg: Message, u: Any, text: str) -> bool:
@@ -1923,53 +2017,18 @@ async def _consume_awaited_reply(msg: Message, u: Any, text: str) -> bool:
     Newest prompt wins: if you press ✏️ and then tap /weight, the weight prompt
     is the one being answered — the earlier one was superseded by your own next
     action rather than abandoned.
+
+    A consumer returning False means "this was not an answer to me", and the
+    message goes on to the meal parser. That is how "chicken 200g" is still
+    dinner while a target prompt is open.
     """
     pending = await db.latest_await(u["id"], AWAITING_KINDS)
     if not pending:
         return False
-    kind, payload = pending["kind"], pending["payload"]
-    stripped = text.strip().replace(",", ".")
-
-    if kind == "supp_label":
-        await _handle_supplement_label(msg, u, text=text)
-        return True
-
-    if kind == "fix_entry":
-        return await _try_fix(msg, u, text)
-
-    if kind == "profile_await":
-        edits = _profile_edits(text)
-        if not edits:
-            return False   # not numbered lines, so it is a meal: let it through
-        await _apply_profile_edits(msg, u, edits)
-        return True
-
-    if kind == "slot_await":
-        return await _try_slot_lines(msg, u, text)
-
-    if kind == "target_await":
-        # Falls through to the meal parser when the line does not name a
-        # nutrient, so "chicken 200g" is still dinner.
-        return await _try_target_lines(msg, u, text)
-
-    # The numeric prompts decline anything that is not a number, so a message
-    # that happens to arrive while one is open is still read as a meal.
-    try:
-        value = float(stripped)
-    except ValueError:
+    consumer = PROMPT_CONSUMERS.get(pending["kind"])
+    if not consumer:
         return False
-
-    if kind == "weight_await":
-        await db.clear_pending(u["id"], "weight_await")
-        await _record_weight(msg, u, value)
-        return True
-
-    if kind == "rate_await" and 0 < value <= 10:
-        await db.clear_pending(u["id"], "rate_await")
-        await _record_rating(msg, u, payload["kind"], value)
-        return True
-
-    return False
+    return await consumer(msg, u, text, pending["payload"] or {})
 
 
 async def _try_fix(msg: Message, u: Any, text: str) -> bool:

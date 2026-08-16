@@ -2353,3 +2353,35 @@ def test_the_clock_decides_the_meal_slot_not_the_model():
     assert slot_for_hour(16, "breakfast") == "snack"
     # "drink" is a fact about the thing, not about the hour, so it survives.
     assert slot_for_hour(16, "drink") == "drink"
+
+
+def test_why_on_its_own_asks_and_then_listens(harness):
+    """The seventh instance of a command printing instructions and feeding the
+    reply to the meal parser. The registry is the structural fix; this is the
+    behaviour it buys."""
+
+    async def scenario():
+        uid = await _reset()
+
+        await harness.feed("250 g minced beef, 164 g rice")
+        card = harness.sent.last()
+        await harness.press(f"ok:{_confirm_id(card)}", card.message_id)
+
+        harness.sent.clear()
+        await harness.feed("/why")
+        assert "Which nutrient" in harness.sent.last().text
+
+        harness.llm.calls.clear()
+        harness.sent.clear()
+        await harness.feed("fat")
+        assert not harness.llm.calls, f"the answer went to the parser: {harness.llm.calls}"
+        assert "Fat" in harness.sent.last().text
+
+        # A word that is not a nutrient still reaches the meal parser.
+        await harness.feed("/why")
+        harness.llm.calls.clear()
+        harness.sent.clear()
+        await harness.feed("a bowl of porridge with berries")
+        assert harness.llm.calls, "a meal was swallowed by the why prompt"
+
+    run(scenario())
