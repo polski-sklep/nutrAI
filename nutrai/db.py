@@ -956,6 +956,15 @@ async def sleep_predictors(user_id: int, days: int = 120) -> list[asyncpg.Record
             SELECT e.local_date,
                    sum(CASE WHEN ln.nutrient_id = 1008 THEN ln.amount END) AS kcal,
                    sum(CASE WHEN ln.nutrient_id = 1018 THEN ln.amount END) AS alcohol_g,
+                   sum(CASE WHEN ln.nutrient_id = 1057 THEN ln.amount END) AS caffeine_mg,
+                   -- Caffeine's half-life is about five hours, so a 16:00 coffee
+                   -- is still half-present at 21:00. The total says little; the
+                   -- afternoon share is the part that reaches bedtime.
+                   sum(CASE WHEN ln.nutrient_id = 1057
+                             AND extract(hour from e.logged_at AT TIME ZONE 'UTC') >= 12
+                            THEN ln.amount END)                            AS caffeine_pm_mg,
+                   max(e.logged_at) FILTER (
+                       WHERE ln.nutrient_id = 1057 AND ln.amount > 0)      AS last_caffeine_at,
                    max(e.logged_at)                                        AS last_meal_at
               FROM log_entry e
               JOIN log_nutrient ln ON ln.entry_id = e.id
@@ -974,6 +983,9 @@ async def sleep_predictors(user_id: int, days: int = 120) -> list[asyncpg.Record
                s.value                              AS sleep,
                COALESCE(i.kcal, 0)                  AS kcal_yesterday,
                COALESCE(i.alcohol_g, 0)             AS alcohol_yesterday,
+               COALESCE(i.caffeine_mg, 0)           AS caffeine_yesterday,
+               COALESCE(i.caffeine_pm_mg, 0)        AS caffeine_pm_yesterday,
+               i.last_caffeine_at,
                i.last_meal_at,
                COALESCE(l.minutes, 0)               AS training_minutes,
                COALESCE(l.kcal_burned, 0)           AS training_kcal,

@@ -113,6 +113,7 @@ CARB = 1005
 FIBER = 1079
 SUGAR = 2000
 ALCOHOL = 1018
+CAFFEINE = 1057
 SAT_FAT = 1258
 SODIUM = 1093
 
@@ -137,6 +138,10 @@ CORE_NUTRIENTS: list[int] = [
     1177,  # Folate, food
     1253,  # Cholesterol
     1272,  # DHA 22:6 n-3
+    1057,  # Caffeine — recorded by every coffee row in USDA and, until now,
+           # never shown. 127 mg went into a day's log without a word.
+    1018,  # Alcohol, ethyl — already counts toward energy via ATWATER, so it
+           # was affecting the calorie total while being invisible on its own.
 ]
 
 

@@ -21,7 +21,8 @@ import datetime as dt
 import asyncpg
 
 from nutrai.config import (
-    CARB, DATABASE_URL, ENERGY_KCAL, FAT, FIBER, PROTEIN, SAT_FAT, SODIUM, SUGAR,
+    ALCOHOL, CAFFEINE, CARB, DATABASE_URL, ENERGY_KCAL, FAT, FIBER, PROTEIN,
+    SAT_FAT, SODIUM, SUGAR,
 )
 
 # nutrient_id: (min, max) for an adult. None = unbounded on that side.
@@ -89,6 +90,15 @@ async def main(a: argparse.Namespace) -> None:
         SUGAR: (None, round(kcal * 0.10 / 4)),      # WHO: <10% of energy
         SAT_FAT: (None, round(kcal * 0.10 / 9)),    # <10% of energy
         SODIUM: (None, 2300),
+        # EFSA and Health Canada both put habitual adult intake up to 400 mg/day
+        # in the no-concern range, and 200 mg as a single dose. It is a ceiling
+        # rather than a target: nobody has a caffeine requirement.
+        CAFFEINE: (None, 400),
+        # UK guidance is 14 units a week, about 112 g of ethanol; spread evenly
+        # that is 16 g a day. A daily ceiling on a weekly guideline is a
+        # simplification, and the honest use of this number is to notice a
+        # pattern rather than to pass or fail a Friday.
+        ALCOHOL: (None, 16),
         **rda,
     }
 

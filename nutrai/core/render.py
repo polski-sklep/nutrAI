@@ -155,6 +155,8 @@ NUTRIENT_EMOJI: dict[int, str] = {
     1177: "🥬",  # Folate
     1253: "🥚",  # Cholesterol
     1272: "🐠",  # DHA
+    1057: "☕",  # Caffeine
+    1018: "🍷",  # Alcohol
 }
 
 
@@ -276,6 +278,7 @@ def _short(name: str) -> str:
         "Vitamin A, RAE": "Vitamin A",
         "Folate, total": "Folate",
         "PUFA 22:6 n-3 (DHA)": "DHA",
+        "Alcohol, ethyl": "Alcohol",
         "Energy": "Energy",
     }.get(name, name.split(",")[0])
 

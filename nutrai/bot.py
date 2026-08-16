@@ -762,6 +762,8 @@ async def insight_cmd(msg: Message) -> None:
         sleep = [float(r["sleep"]) for r in rows]
         for label, key in (
             ("energy eaten", "kcal_yesterday"),
+            ("caffeine after noon", "caffeine_pm_yesterday"),
+            ("caffeine, total", "caffeine_yesterday"),
             ("alcohol", "alcohol_yesterday"),
             ("training minutes", "training_minutes"),
         ):
