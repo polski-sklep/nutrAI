@@ -1636,11 +1636,17 @@ async def delete_user_food(user_id: int, fdc_id: int) -> str | None:
     used = await p.fetchval("SELECT count(*) FROM log_component WHERE fdc_id = $1", fdc_id)
     if used:
         return None
-    return await p.fetchval(
-        """DELETE FROM food WHERE fdc_id = $1 AND owner_user_id = $2
-           RETURNING description""",
-        fdc_id, user_id,
-    )
+    async with p.acquire() as con, con.transaction():
+        # The alias created alongside it points here, so the food cannot go
+        # while it remains — and an alias to a deleted food would resolve to
+        # nothing on the next parse.
+        await con.execute(
+            "DELETE FROM food_alias WHERE user_id = $1 AND fdc_id = $2", user_id, fdc_id)
+        return await con.fetchval(
+            """DELETE FROM food WHERE fdc_id = $1 AND owner_user_id = $2
+               RETURNING description""",
+            fdc_id, user_id,
+        )
 
 
 async def set_target_weight(user_id: int, nutrient_id: int, weight: float,
@@ -1673,3 +1679,20 @@ async def set_target_weight(user_id: int, nutrient_id: int, weight: float,
             day, live["rationale"], num(weight, 2),
         )
     return True
+
+
+async def weak_labels(entry_id: int) -> list[str]:
+    """Labels whose best food-database match was poor, recorded at parse time.
+
+    Stored on the entry rather than read back off the Telegram message: the
+    offer to define a missing food is a fact about the parse, and it has to
+    survive a discard, which is the moment it matters most.
+    """
+    p = await pool()
+    raw = await p.fetchval("SELECT parse FROM log_entry WHERE id = $1", entry_id)
+    if not raw:
+        return []
+    import json
+
+    data = json.loads(raw) if isinstance(raw, str) else raw
+    return list(data.get("_weak") or [])

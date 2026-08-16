@@ -92,6 +92,17 @@ CONFIDENCE_ESCALATE = float(os.getenv("CONFIDENCE_ESCALATE", "0.45"))
 ENERGY_TOLERANCE = float(os.getenv("ENERGY_TOLERANCE", "0.12"))
 # Trigram similarity above which a food match is accepted without a model call.
 AUTO_MATCH_SIMILARITY = float(os.getenv("AUTO_MATCH_SIMILARITY", "0.62"))
+# Below this, the best candidate is probably not the food at all.
+#
+# "pickle juice" scored 0.35 against "Relish, pickle" — the top of a list that
+# never contained pickle brine, because USDA has no row for it. A weak best
+# match is usually a missing food rather than a mistaken choice, so it is worth
+# offering to define one rather than only warning about the match.
+#
+# Deliberately well below AUTO_MATCH_SIMILARITY: this is not a second matching
+# threshold, it is the point past which the database itself looks like the
+# problem. Like 0.62 it is a guess until the eval set says otherwise.
+WEAK_MATCH_SIMILARITY = float(os.getenv("WEAK_MATCH_SIMILARITY", "0.45"))
 
 # ---------------------------------------------------------------- runtime
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://nutrai:nutrai@localhost:5432/nutrai")

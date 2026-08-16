@@ -2457,3 +2457,52 @@ def test_a_user_food_is_built_by_arithmetic_and_outranks_usda(harness):
         await p.execute("DELETE FROM app_user WHERE id=$1", other)
 
     run(scenario())
+
+
+def test_a_weak_match_offers_to_define_the_food(harness):
+    """USDA has no pickle brine, so "pickle juice" matched "Relish, pickle" at
+    0.35 — the top of a list that never contained the right answer. A weak best
+    match is a missing food, not a mistaken choice, and the moment it shows is
+    the only moment you know the database is short something."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await p.execute("DELETE FROM food WHERE owner_user_id=$1", uid)
+        await p.execute("DELETE FROM food_alias WHERE user_id=$1", uid)
+
+        harness.llm.meal = {
+            "dish_name": "Pickle juice", "confidence": 0.85, "notes": "",
+            "items": [{"label": "pickle juice", "search_terms": "pickle juice",
+                       "grams": 100, "grams_source": "stated", "state": "as_logged",
+                       "confidence": 0.85}],
+        }
+        harness.sent.clear()
+        await harness.feed("100 ml of pickle juice")
+        card = harness.sent.last()
+
+        assert "Nothing in the food database is much like" in card.text, card.text
+        define = next(b for b in card.buttons if b.startswith("deffood:"))
+
+        # And it survives the discard, which is the strongest signal of all.
+        await harness.press(f"no:{_confirm_id(card)}", card.message_id)
+        assert [b for b in harness.sent.last().buttons if b.startswith("deffood:")]
+
+        # Tapping it goes straight into /food with the name filled in.
+        harness.sent.clear()
+        await harness.press(define, card.message_id)
+        assert "Making a food called" in harness.sent.last().text
+        assert "pickle juice" in harness.sent.last().text
+
+        harness.llm.calls.clear()
+        await harness.feed("1000 ml water, 30 g salt")
+        assert await p.fetchval(
+            "SELECT count(*) FROM food WHERE owner_user_id=$1", uid) == 1
+
+        # Through the real delete, which also clears the alias pointing at it.
+        for f in await db.user_foods(uid):
+            assert await db.delete_user_food(uid, f["fdc_id"])
+
+    run(scenario())

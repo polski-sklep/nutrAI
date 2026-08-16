@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 import io
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from PIL import Image
@@ -10,6 +10,7 @@ from PIL import Image
 from .. import db
 from ..config import (
     AUTO_MATCH_SIMILARITY,
+    WEAK_MATCH_SIMILARITY,
     CONFIDENCE_ESCALATE,
     ENERGY_KCAL,
     IMAGE_JPEG_QUALITY,
@@ -161,6 +162,11 @@ class Resolution:
     cost_usd: float
     used_model: bool
     prior_notes: list[str] | None = None
+    # Labels whose best candidate scored badly. USDA has ~13,600 rows and no
+    # entry at all for a great many real foods — pickle brine, a local
+    # bakery's bun — so a weak best match usually means the right answer was
+    # never on the list, not that the wrong one was picked from it.
+    weak_matches: list[tuple[str, float]] = field(default_factory=list)
 
 
 async def _mass_for(user_id: int, fdc_id: int, it: dict[str, Any]) -> MassEstimate:
@@ -277,6 +283,7 @@ async def resolve_items(user_id: int, items: list[dict[str, Any]]) -> Resolution
     comps: list[ResolvedComponent] = []
     sources: list[str] = []
     unresolved: list[str] = []
+    weak: list[tuple[str, float]] = []
     notes: list[str] = []
     need_model: list[tuple[dict[str, Any], list[Any]]] = []
     cost = 0.0
@@ -322,7 +329,11 @@ async def resolve_items(user_id: int, items: list[dict[str, Any]]) -> Resolution
             continue
         if not cands:
             unresolved.append(label)
+            weak.append((label, 0.0))
             continue
+        best = float(cands[0]["sim"] or 0)
+        if best < WEAK_MATCH_SIMILARITY:
+            weak.append((label, best))
         need_model.append((it, cands))
 
     if need_model:
@@ -365,7 +376,7 @@ async def resolve_items(user_id: int, items: list[dict[str, Any]]) -> Resolution
                 user_id, label, int(pick["fdc_id"]), float(it.get("grams", 0) or 0)
             )
 
-    return Resolution(comps, sources, unresolved, cost, bool(need_model), notes)
+    return Resolution(comps, sources, unresolved, cost, bool(need_model), notes, weak)
 
 
 async def modifier_ops(component_labels: list[str], phrase: str, *, user_id: int) -> dict[str, Any]:

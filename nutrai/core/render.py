@@ -74,6 +74,7 @@ def confirm_card(
     cost_usd: float | None = None,
     unresolved: Sequence[str] = (),
     matched: dict[int, str] | None = None,
+    weak: Sequence[tuple[str, float]] = (),
 ) -> str:
     from ..config import CARB, ENERGY_KCAL, FAT, FIBER, PROTEIN
 
@@ -143,6 +144,18 @@ def confirm_card(
         f" · 🧈 {totals.get(FAT,0):.0f} g fat"
         f" · 🌾 {totals.get(FIBER,0):.0f} g fibre"
     )
+    if weak:
+        # A weak best match usually means the food is not in USDA at all, not
+        # that the wrong row was chosen from a list containing the right one.
+        # Saying which is the difference between a warning you can act on and
+        # one you can only distrust.
+        names = ", ".join(_esc(lbl) for lbl, _sim in weak)
+        lines.append("")
+        lines.append(
+            f"🔍 <b>Nothing in the food database is much like {names}.</b> "
+            "The row above is the closest of a bad set — if this is something "
+            "you eat often, defining it yourself will be right every time."
+        )
     if confidence is not None:
         lines.append(f"🎯 confidence {confidence:.0%}")
     if notes:

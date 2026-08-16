@@ -69,16 +69,57 @@ _album_tasks: dict[str, asyncio.Task] = {}
 ALBUM_WAIT = 1.2
 
 
-def kb_confirm(entry_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ log it", callback_data=f"ok:{entry_id}"),
-                InlineKeyboardButton(text="✏️ fix", callback_data=f"fix:{entry_id}"),
-                InlineKeyboardButton(text="🗑 discard", callback_data=f"no:{entry_id}"),
-            ]
-        ]
+def _define_button(weak: Sequence[tuple[str, float]]) -> list[InlineKeyboardButton]:
+    """Offered at the moment the gap is visible, which is the only moment you
+    know the database is missing something."""
+    if not weak:
+        return []
+    label = weak[0][0]
+    return [InlineKeyboardButton(
+        text=f"🥫 define {render._short_note(label)[:20]} yourself",
+        callback_data=f"deffood:{label[:40]}")]
+
+
+@dp.callback_query(F.data.startswith("deffood:"))
+async def cb_define_food(cq: CallbackQuery) -> None:
+    """Straight into /food with the name already filled in.
+
+    Offered at the moment the gap is visible, which is the only moment you
+    know the database is missing something.
+    """
+    u = await db.get_or_create_user(cq.from_user.id)
+    name = cq.data.split(":", 1)[1].strip()
+    await db.put_pending(u["id"], "food_await", {"name": name})
+    await cq.answer()
+    await cq.message.answer(
+        f"🥫 Making a food called <b>{render._esc(name)}</b>.\n\n"
+        "<b>What goes into it?</b> Reply with ingredients and amounts:\n"
+        "<code>1000 ml water, 30 g salt, 100 ml white vinegar</code>\n\n"
+        "<i>Resolved against USDA and added up — nothing estimated. Once saved "
+        "it outranks the generic row every time you log that name.</i>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✋ never mind", callback_data="foodcancel:"),
+        ]]),
     )
+
+
+def kb_confirm(entry_id: int,
+               weak: Sequence[tuple[str, float]] = ()) -> InlineKeyboardMarkup:
+    rows = [[
+        InlineKeyboardButton(text="✅ log it", callback_data=f"ok:{entry_id}"),
+        InlineKeyboardButton(text="✏️ fix", callback_data=f"fix:{entry_id}"),
+        InlineKeyboardButton(text="🗑 discard", callback_data=f"no:{entry_id}"),
+    ]]
+    if weak:
+        # The offer belongs here, beside the discard, because this is the
+        # moment you can see that the database has nothing like your food —
+        # and the moment you would otherwise give up and log something wrong.
+        label = weak[0][0]
+        rows.append([InlineKeyboardButton(
+            text=f"🥫 define {render._short_note(label)[:18]} yourself",
+            callback_data=f"deffood:{label[:40]}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def _user(msg: Message) -> Any:
@@ -2585,7 +2626,8 @@ async def _present(
         entry_id = await db.create_pending_entry(
             u["id"], parsed.dish_name, [],
             source=source, slot=dsl.slot_for_hour(_local_now(u).hour, parsed.slot),
-            confidence=parsed.confidence, model=parsed.model, parse=parsed.raw,
+            confidence=parsed.confidence, model=parsed.model,
+        parse={**(parsed.raw or {}), "_weak": [w[0] for w in res.weak_matches]},
             photo_file_id=photo_file_id, dish_id=None, tz=u["tz"],
             rollover_hour=u["day_rollover_hour"],
         )
@@ -2617,7 +2659,8 @@ async def _present(
 
     entry_id = await db.create_pending_entry(
         u["id"], parsed.dish_name, res.components, source=source, slot=slot,
-        confidence=parsed.confidence, model=parsed.model, parse=parsed.raw,
+        confidence=parsed.confidence, model=parsed.model,
+        parse={**(parsed.raw or {}), "_weak": [w[0] for w in res.weak_matches]},
         photo_file_id=photo_file_id, dish_id=dish_id, tz=u["tz"],
         rollover_hour=u["day_rollover_hour"], grams_sources=res.grams_sources,
     )
@@ -2643,11 +2686,13 @@ async def _present(
         confidence=parsed.confidence, warnings=warnings, notes=parsed.notes,
         cost_usd=parsed.cost_usd + res.cost_usd, unresolved=res.unresolved,
         matched=await _matched_names(res.components),
+        weak=res.weak_matches,
     )
+    kb = kb_confirm(entry_id, res.weak_matches)
     if edit:
-        await edit.edit_text(text, parse_mode="HTML", reply_markup=kb_confirm(entry_id))
+        await edit.edit_text(text, parse_mode="HTML", reply_markup=kb)
     else:
-        await msg.answer(text, parse_mode="HTML", reply_markup=kb_confirm(entry_id))
+        await msg.answer(text, parse_mode="HTML", reply_markup=kb)
 
 
 def _slugify(name: str) -> str:
@@ -2823,8 +2868,22 @@ async def cb_ok(cq: CallbackQuery) -> None:
 
 @dp.callback_query(F.data.startswith("no:"))
 async def cb_no(cq: CallbackQuery) -> None:
-    await db.discard_entry(int(cq.data.split(":")[1]))
-    await cq.message.edit_text((cq.message.text or "") + "\n\n❌ discarded")
+    entry_id = int(cq.data.split(":")[1])
+    # What the card offered before you discarded it, so the offer survives the
+    # act that most strongly signals the food is missing: discarding a weak
+    # match means the closest row in the database was not close enough.
+    # Read from the entry, not from the message. Telegram echoes the keyboard
+    # back on a callback but the offer is too important to depend on that, and
+    # it is a fact about the parse rather than about the message.
+    weak = await db.weak_labels(entry_id)
+    await db.discard_entry(entry_id)
+    keep = [InlineKeyboardButton(
+        text=f"🥫 define {render._short_note(weak[0])[:18]} yourself",
+        callback_data=f"deffood:{weak[0][:40]}")] if weak else []
+    await cq.message.edit_text(
+        (cq.message.text or "") + "\n\n❌ discarded",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[keep]) if keep else None,
+    )
     await cq.answer("discarded")
 
 
