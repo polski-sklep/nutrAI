@@ -193,3 +193,42 @@ def test_day_card_shows_entry_times_in_the_users_timezone():
 
     # And the default stays UTC rather than guessing.
     assert "14:09" in day_card(DAY, PROGRESS, entries)
+
+
+def test_day_score_excludes_what_nothing_measured():
+    """Scoring a plate down for a nutrient its USDA row omits would make the
+    score a measure of database coverage rather than of eating."""
+    from nutrai.core.render import day_score
+
+    prog = [
+        row(1008, "Energy", "KCAL", 2000, hi=2418),
+        row(1003, "Protein", "G", 200, lo=180),
+        row(1004, "Total lipid (fat)", "G", 100, hi=81, state="over"),
+        row(1178, "Vitamin B-12", "UG", 0.0, lo=2.4, state="under"),
+    ]
+    met, assessable, unmeasured, missed = day_score(prog, {1178: 0.0})
+    assert (met, assessable, unmeasured) == (2, 3, 1)
+    assert missed == ["Fat"]
+
+
+def test_day_score_counts_a_real_shortfall():
+    from nutrai.core.render import day_score
+
+    prog = [row(1003, "Protein", "G", 50, lo=180, state="under")]
+    met, assessable, unmeasured, missed = day_score(prog, {1003: 1.0})
+    assert (met, assessable, unmeasured) == (0, 1, 0)
+    assert missed == ["Protein"]
+
+
+def test_score_line_names_the_misses_rather_than_hiding_them():
+    """A score that hides which target was missed invites optimising the score,
+    and the easiest number to move is rarely the one worth moving."""
+    from nutrai.core.render import score_line
+
+    prog = [
+        row(1008, "Energy", "KCAL", 2000, hi=2418),
+        row(1003, "Protein", "G", 50, lo=180, state="under"),
+    ]
+    out = score_line(prog, {1008: 1.0, 1003: 1.0})
+    assert "1 of 2 targets met" in out
+    assert "Protein" in out

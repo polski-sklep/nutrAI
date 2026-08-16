@@ -348,6 +348,10 @@ def day_card(
                 f"{float(e['kcal']):,.0f} kcal, {float(e['protein']):.0f} g P"
             )
 
+    score = score_line(progress, coverage)
+    if score:
+        lines.append(score)
+        lines.append("")
     if table:
         lines.append("<pre>" + "\n".join(table) + "</pre>")
 
@@ -739,3 +743,62 @@ def supplement_batch_card(parsed: Sequence[Any], names: dict, units: dict) -> st
     return "\n".join(lines)
 
 
+
+
+# ------------------------------------------------------------- day score
+
+
+def day_score(progress: Sequence[Any], coverage: dict[int, float] | None = None) -> tuple[int, int, int, list[str]]:
+    """(met, assessable, unmeasured, names of the misses).
+
+    A floor is met when you reached it; a ceiling when you stayed under it.
+    Nutrients nothing you ate reports are excluded rather than counted against
+    you — scoring a plate of beef down for the B-12 its USDA row omits would
+    make the score a measure of database coverage rather than of eating.
+    """
+    cov = coverage or {}
+    met = assessable = unmeasured = 0
+    missed: list[str] = []
+
+    for r in progress:
+        lo, hi = r["min_amount"], r["max_amount"]
+        if lo is None and hi is None:
+            continue
+        c = cov.get(r["nutrient_id"])
+        amount = float(r["amount"])
+        if c is not None and c <= 0 and amount <= 0:
+            unmeasured += 1
+            continue
+        assessable += 1
+        ok = True
+        if lo is not None and amount < float(lo):
+            ok = False
+        if hi is not None and amount > float(hi):
+            ok = False
+        if ok:
+            met += 1
+        else:
+            missed.append(_short(r["nutrient_name"]))
+    return met, assessable, unmeasured, missed
+
+
+def score_line(progress: Sequence[Any], coverage: dict[int, float] | None = None) -> str:
+    """One bar for the day, with what it is not counting stated.
+
+    Deliberately not a single number in isolation. A score that hides which
+    target was missed invites optimising the score, and the number that is
+    easiest to move is rarely the one worth moving.
+    """
+    met, assessable, unmeasured, missed = day_score(progress, coverage)
+    if not assessable:
+        return ""
+    pct = met / assessable * 100
+    face = "🟢" if pct >= 80 else "🟡" if pct >= 50 else "🔴"
+    out = [f"{face} <b>{met} of {assessable} targets met</b>  {bar(pct)}  {pct:.0f}%"]
+    if missed:
+        shown = ", ".join(_esc(m) for m in missed[:6])
+        more = f" +{len(missed) - 6} more" if len(missed) > 6 else ""
+        out.append(f"<i>short or over: {shown}{more}</i>")
+    if unmeasured:
+        out.append(f"<i>{unmeasured} not counted — nothing you ate reports them</i>")
+    return "\n".join(out)
