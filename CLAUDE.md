@@ -305,6 +305,14 @@ Rules when adding a message:
 
 ## Things that will look like bugs and are not
 
+- **The 300 mg cholesterol ceiling is obsolete and is staying.** Reviewed on
+  16 Aug 2026 and deliberately kept. The figure was dropped from the US
+  Dietary Guidelines in the 2015-2020 edition, and the AHA dropped its numeric
+  cap too, so `1253: (None, 300)` in `core/profile.py` has no current guidance
+  behind it — the comment beside it already says "no RDA". It was raised with
+  the user, who chose to leave it. Do not quietly remove or raise it. It is an
+  ordinary standing target he can move with `/target cholesterol max <n>`.
+
 - `AUTO_MATCH_SIMILARITY = 0.62` looks arbitrary. It is. Tune it against the
   eval set, not against intuition.
 - `ESTIMATE_SIGMA_REL = 0.35` is deliberately optimistic. The comment says why.
