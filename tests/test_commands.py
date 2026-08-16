@@ -107,3 +107,15 @@ def test_menu_descriptions_fit_telegrams_limits():
         assert re.fullmatch(r"[a-z0-9_]{1,32}", cmd), cmd
         plain = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", desc)).strip()
         assert 1 <= len(plain) <= 256, (cmd, len(plain))
+
+
+def test_the_menu_matches_the_command_table_exactly():
+    """Three separate edits to COMMANDS today were `str.replace` calls whose
+    anchor had already changed, so they matched nothing and reported nothing.
+    The menu is pushed from this table, so a silent no-op here is a command
+    that exists and cannot be found."""
+    names = [name for name, _d in COMMANDS]
+    assert len(names) == len(set(names)), "duplicate entry in COMMANDS"
+    for expected in ("/why", "/next", "/stack", "/schedule", "/training",
+                     "/profile", "/target", "/supp"):
+        assert expected in names, f"{expected} is built but not in the menu"
