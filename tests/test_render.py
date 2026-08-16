@@ -492,3 +492,28 @@ def test_a_floor_barely_touched_is_not_called_part_way():
     assert sc.partial == 0
     assert len(sc._untouched) == 2
     assert "not started" in score_line(trace, {1003: 1.0, 1079: 1.0})
+
+
+def test_the_attention_list_says_how_many_are_fine():
+    """The section shows only what needs attention, which is right — but with
+    nothing said about the rest a short list reads as missing data rather than
+    as good news."""
+    prog = [
+        row(1008, "Energy", "KCAL", 2143, hi=2286),
+        row(1003, "Protein", "G", 114, lo=165, state="under"),
+        row(1005, "Carbohydrate, by difference", "G", 250, hi=312),
+        row(1004, "Total lipid (fat)", "G", 78, hi=78),
+        row(1079, "Fiber, total dietary", "G", 30, lo=38, state="under"),
+        row(1087, "Calcium, Ca", "MG", 1357, lo=1000),
+        row(1089, "Iron, Fe", "MG", 13, lo=8),
+        row(1095, "Zinc, Zn", "MG", 21, lo=11),
+    ]
+    out = day_card(DAY, prog, [], coverage={r["nutrient_id"]: 1.0 for r in prog})
+    assert "Worth a look (1 of 4)" in out, out
+    assert "3 other nutrients are where they should be" in out
+
+    # /today all lists them instead of counting them.
+    every = day_card(DAY, prog, [], show_all=True,
+                     coverage={r["nutrient_id"]: 1.0 for r in prog})
+    assert "where they should be" not in every
+    assert "Calcium" in every

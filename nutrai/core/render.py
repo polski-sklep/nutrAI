@@ -416,7 +416,7 @@ def day_card(
     # under "attention" is the phantom-deficiency failure. It moves to a
     # separate, explicitly-labelled group instead of being dropped, because
     # "nobody measured this" is itself worth seeing.
-    rest, unmeasured = [], []
+    rest, unmeasured, settled = [], [], 0
     for r in progress:
         if r["nutrient_id"] in (ENERGY_KCAL, PROTEIN, CARB, FAT):
             continue
@@ -425,10 +425,17 @@ def day_card(
             unmeasured.append(r)
         elif show_all or r["state"] != "ok":
             rest.append(r)
+        else:
+            # Counted, not listed. The section shows only what needs
+            # attention, which is right — but with nothing said about the rest
+            # a short list reads as missing data rather than as good news.
+            settled += 1
 
     if rest:
         table.append("")
-        table.append("Worth a look" if not show_all else "Vitamins and minerals")
+        table.append(
+            f"Worth a look ({len(rest)} of {len(rest) + settled})"
+            if not show_all else "Vitamins and minerals")
         for r in sorted(rest, key=lambda x: (x["state"] == "ok", _short(x["nutrient_name"]))):
             table.append(_row(r, cov.get(r["nutrient_id"])))
 
@@ -457,6 +464,11 @@ def day_card(
         lines.append("")
     if table:
         lines.append("<pre>" + "\n".join(table) + "</pre>")
+
+    if settled and not show_all:
+        lines.append(
+            f"<i>✅ {settled} other nutrients are where they should be — "
+            "<code>/today all</code> to see them.</i>")
 
     if pct_measured is not None:
         # The number that decides whether anything above it is worth reading.
