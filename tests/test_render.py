@@ -209,7 +209,9 @@ def test_day_score_excludes_what_nothing_measured():
         row(1004, "Total lipid (fat)", "G", 100, hi=81, state="over"),
         row(1178, "Vitamin B-12", "UG", 0.0, lo=2.4, state="under"),
     ]
-    reached, assessable, short, breached, nearing, unmeasured = day_score(prog, {1178: 0.0})
+    sc = day_score(prog, {1178: 0.0})
+    reached, assessable, short = sc.reached, sc.assessable, sc.short
+    breached, nearing, unmeasured = sc.breached, sc.nearing, sc.unmeasured
     # Only Protein has a floor and is measured; B-12's floor is unmeasured.
     assert (reached, assessable, unmeasured) == (1, 1, 1)
     assert short == []
@@ -221,7 +223,9 @@ def test_day_score_counts_a_real_shortfall():
     from nutrai.core.render import day_score
 
     prog = [row(1003, "Protein", "G", 50, lo=180, state="under")]
-    reached, assessable, short, breached, nearing, unmeasured = day_score(prog, {1003: 1.0})
+    sc = day_score(prog, {1003: 1.0})
+    reached, assessable, short = sc.reached, sc.assessable, sc.short
+    breached, nearing, unmeasured = sc.breached, sc.nearing, sc.unmeasured
     assert (reached, assessable, unmeasured) == (0, 1, 0)
     assert short == ["Protein"]
 
@@ -237,7 +241,7 @@ def test_score_line_names_the_misses_rather_than_hiding_them():
     ]
     out = score_line(prog, {1008: 1.0, 1003: 1.0})
     # Energy is a ceiling and is not counted as an achievement for being under it.
-    assert "0 of 1 daily minimums met" in out
+    assert "0 of 1 fully met" in out
     assert "Protein" in out
 
 
@@ -256,7 +260,7 @@ def test_a_ceiling_is_not_an_achievement():
         row(1079, "Fiber, total dietary", "G", 0.2, lo=38, state="under"),
     ]
     out = score_line(barely_eaten, {n: 1.0 for n in (1008, 1005, 1004, 1093, 1003, 1079)})
-    assert "0 of 2 daily minimums met" in out, out
+    assert "0 of 2 fully met" in out, out
     assert "7 of" not in out
     assert "over:" not in out
 
@@ -276,7 +280,7 @@ def test_a_ceiling_is_flagged_before_it_is_crossed():
     assert "over:" in out and "Fat 111%" in out
     assert "close:" in out and "Energy 92%" in out
     assert "Sodium" not in out
-    assert "1 of 1 daily minimums met" in out
+    assert "1 of 1 fully met" in out
 
 
 def test_a_count_is_shown_so_the_reading_can_be_checked():
@@ -449,3 +453,42 @@ def test_the_confirm_card_names_the_food_row_it_matched():
     quiet = confirm_card("Chia pudding", comps, {1008: 117.0}, confidence=0.9,
                          warnings=[], matched={2707590: "Chia seeds"})
     assert "→" not in quiet
+
+
+def test_the_score_weights_partial_progress_not_just_boxes_ticked():
+    """"8 of 13 met" throws away the difference between a day at 95% of every
+    remaining floor and one at nothing, which is most of what you want to know
+    before deciding what to eat next."""
+    from nutrai.core.render import day_score
+
+    nearly = [row(1003, "Protein", "G", 160, lo=165, state="under"),
+              row(1079, "Fiber, total dietary", "G", 36, lo=38, state="under")]
+    barely = [row(1003, "Protein", "G", 8, lo=165, state="under"),
+              row(1079, "Fiber, total dietary", "G", 2, lo=38, state="under")]
+
+    a, b = day_score(nearly), day_score(barely)
+    assert a.reached == b.reached == 0          # identical on the old measure
+    assert a.covered > 0.9 and b.covered < 0.1  # and nothing like each other
+
+
+def test_one_overshot_floor_cannot_cover_for_an_untouched_one():
+    """Three times your protein does not make up for no iron, and a score that
+    let it would reward the easy floor over the one you are missing."""
+    from nutrai.core.render import day_score
+
+    lopsided = [row(1003, "Protein", "G", 500, lo=165),
+                row(1089, "Iron, Fe", "MG", 0, lo=8, state="under")]
+    assert abs(day_score(lopsided).covered - 0.5) < 1e-9
+
+
+def test_a_floor_barely_touched_is_not_called_part_way():
+    """0.2 g of protein against a 180 g floor is 0.1%, and calling that
+    "part-way" beside a headline of 0% reads as a contradiction."""
+    from nutrai.core.render import day_score, score_line
+
+    trace = [row(1003, "Protein", "G", 0.2, lo=180, state="under"),
+             row(1079, "Fiber, total dietary", "G", 0.2, lo=38, state="under")]
+    sc = day_score(trace)
+    assert sc.partial == 0
+    assert len(sc._untouched) == 2
+    assert "not started" in score_line(trace, {1003: 1.0, 1079: 1.0})

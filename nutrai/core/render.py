@@ -18,6 +18,7 @@ supported.
 from __future__ import annotations
 
 import datetime as dt
+from dataclasses import dataclass, field
 from html import escape
 from typing import Any, Sequence
 
@@ -28,6 +29,8 @@ BAR_EMPTY = "░"
 # incomplete and the row says so. 0.995 rather than 1.0 because floating-point
 # mass sums land a hair under.
 COVERAGE_FULL = 0.995
+# Below this share of a floor, nothing meaningful has gone in yet.
+BARELY_STARTED = 0.05
 
 # A ceiling is worth mentioning before it is crossed, not only after. 0.85 sits
 # in the band where there is still a decision to make — at 92% of your energy
@@ -748,10 +751,33 @@ def supplement_pick_card(stack: Sequence[Any], selected: Sequence[int],
 # ------------------------------------------------------------- day score
 
 
+@dataclass(frozen=True)
+class DayScore:
+    reached: int          # floors fully met
+    assessable: int       # floors that can be judged today
+    short: list[str]      # names of the ones still under
+    breached: list[str]   # ceilings crossed
+    nearing: list[str]    # ceilings close to crossing
+    unmeasured: int       # floors nothing you ate reports at all
+    # Mean of each floor's progress, capped at 1 apiece. "8 of 13" throws away
+    # the difference between a day at 95% of every floor and one at 5%, which
+    # is most of what you want to know at four in the afternoon.
+    covered: float
+
+    # Floors nothing you ate today reports any amount of at all. Separated
+    # from "short" because 5% of a floor and 0% of it are different days.
+    _untouched: tuple[str, ...] = field(default_factory=tuple)
+
+    @property
+    def partial(self) -> int:
+        """Floors started but not finished."""
+        return self.assessable - self.reached - len(self._untouched)
+
+
 def day_score(
     progress: Sequence[Any], coverage: dict[int, float] | None = None
-) -> tuple[int, int, list[str], list[str], list[str], int]:
-    """(reached, assessable, short, breached, nearing, unmeasured).
+) -> DayScore:
+    """How the day is going against its floors, counted and weighted.
 
     Floors and ceilings are counted separately because they are not the same
     kind of achievement, and mixing them produces nonsense. A ceiling is
@@ -768,6 +794,8 @@ def day_score(
     cov = coverage or {}
     reached = assessable = unmeasured = 0
     short: list[str] = []
+    progress_sum = 0.0
+    untouched: list[str] = []
     breached: list[str] = []
     nearing: list[str] = []
 
@@ -790,12 +818,26 @@ def day_score(
             unmeasured += 1
             continue
         assessable += 1
+        # Capped at 1 each: three times your protein cannot make up for no
+        # iron, and a score that let it would reward the easy floor over the
+        # one you are actually missing.
+        progress_sum += min(amount / float(lo), 1.0) if float(lo) > 0 else 0.0
         if amount >= float(lo):
             reached += 1
         else:
             short.append(_short(r["nutrient_name"]))
+            # 0.2 g of protein against a 180 g floor is 0.1%, and calling that
+            # "part-way" alongside a headline of 0% reads as a contradiction.
+            # Below a twentieth of the target it has not been started.
+            if float(lo) <= 0 or amount / float(lo) < BARELY_STARTED:
+                untouched.append(_short(r["nutrient_name"]))
 
-    return reached, assessable, short, breached, nearing, unmeasured
+    return DayScore(
+        reached=reached, assessable=assessable, short=short, breached=breached,
+        nearing=nearing, unmeasured=unmeasured,
+        covered=(progress_sum / assessable) if assessable else 0.0,
+        _untouched=tuple(untouched),
+    )
 
 
 def score_line(progress: Sequence[Any], coverage: dict[int, float] | None = None) -> str:
@@ -805,18 +847,27 @@ def score_line(progress: Sequence[Any], coverage: dict[int, float] | None = None
     target was missed invites optimising the score, and the number that is
     easiest to move is rarely the one worth moving.
     """
-    reached, assessable, short, breached, nearing, unmeasured = day_score(progress, coverage)
+    sc = day_score(progress, coverage)
+    reached, assessable = sc.reached, sc.assessable
+    short, breached, nearing, unmeasured = sc.short, sc.breached, sc.nearing, sc.unmeasured
     out: list[str] = []
 
     if assessable:
         pct = reached / assessable * 100
         face = "🟢" if pct >= 80 else "🟡" if pct >= 50 else "🔴"
-        # "floors reached" is the internal word for it, and it reads as
-        # jargon on a phone. What the number means is: of the daily minimums
-        # that can be judged today, how many are already met.
-        out.append(
-            f"{face} <b>{reached} of {assessable} daily minimums met</b>  {bar(pct)}  {pct:.0f}%"
-        )
+        # Lead with how much of the day's requirements are actually covered,
+        # not how many boxes are ticked. "8 of 13 met" says nothing about
+        # whether the other five are at 95% or at nothing, which is most of
+        # what you want to know before deciding what to eat next.
+        covered = sc.covered * 100
+        face = "🟢" if covered >= 80 else "🟡" if covered >= 50 else "🔴"
+        out.append(f"{face} <b>{covered:.0f}% of today's minimums covered</b>  {bar(covered)}")
+        detail = f"{reached} of {assessable} fully met"
+        if sc.partial:
+            detail += f" · {sc.partial} part-way"
+        if sc._untouched:
+            detail += f" · {len(sc._untouched)} not started"
+        out.append(f"<i>{detail}</i>")
         if short:
             shown = ", ".join(_esc(m) for m in short[:6])
             more = f" and {len(short) - 6} more" if len(short) > 6 else ""
