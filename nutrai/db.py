@@ -152,9 +152,17 @@ async def profiles_for(fdc_ids: Iterable[int]) -> dict[int, dict[int, float]]:
 
 async def top_dishes(user_id: int, limit: int = 8) -> list[asyncpg.Record]:
     p = await pool()
+    # Only dishes actually eaten at least once.
+    #
+    # `_present` creates the dish before the entry is confirmed, so every meal
+    # ever parsed leaves one behind whether or not it was logged — including the
+    # ones discarded precisely because they were wrong. A cappuccino containing
+    # a phantom whisky cocktail was sitting in this menu at ×0, one tap from
+    # being logged again. "Repeat" means something you have eaten; a dish with
+    # no confirmed entry has never been a meal.
     return await p.fetch(
         """SELECT id, slug, name, default_slot, times_logged, score
-             FROM v_dish_rank WHERE user_id = $1
+             FROM v_dish_rank WHERE user_id = $1 AND times_logged > 0
          ORDER BY score DESC, last_logged_at DESC NULLS LAST LIMIT $2""",
         user_id, limit,
     )
@@ -988,3 +996,70 @@ async def is_first_entry_of_day(user_id: int, day: dt.date, entry_id: int) -> bo
               AND id <> $3""",
         user_id, day, entry_id,
     )
+
+
+async def week_rows(user_id: int, end_day: dt.date, days: int = 7) -> list[asyncpg.Record]:
+    """Per-nutrient, per-day progress across a window.
+
+    A lateral join over day_progress() rather than a second aggregation: the
+    per-day arithmetic, the supplement split and the versioned target lookup are
+    already correct there, and writing them again for the weekly view is how the
+    two come to disagree.
+
+    Days with nothing confirmed are excluded. A day you did not log is not a day
+    you missed every floor, and counting it as one turns "did not use the app on
+    Saturday" into "ate badly on Saturday".
+    """
+    p = await pool()
+    return await p.fetch(
+        """
+        WITH span AS (
+            SELECT generate_series($2::date - ($3::int - 1), $2::date, '1 day')::date AS d
+        ),
+        logged AS (
+            SELECT s.d FROM span s
+             WHERE EXISTS (SELECT 1 FROM log_entry e
+                            WHERE e.user_id = $1 AND e.local_date = s.d
+                              AND e.status = 'confirmed')
+        )
+        SELECT l.d AS day, p.*
+          FROM logged l, LATERAL day_progress($1, l.d) p
+      ORDER BY l.d, p.nutrient_id
+        """,
+        user_id, end_day, days,
+    )
+
+
+async def week_context(user_id: int, end_day: dt.date, days: int = 7) -> dict[str, Any]:
+    """The non-nutrient facts a weekly report needs."""
+    p = await pool()
+    start = end_day - dt.timedelta(days=days - 1)
+    row = await p.fetchrow(
+        """
+        SELECT (SELECT count(*) FROM log_entry
+                 WHERE user_id = $1 AND status = 'confirmed'
+                   AND local_date BETWEEN $2 AND $3)                       AS meals,
+               (SELECT count(DISTINCT local_date) FROM log_entry
+                 WHERE user_id = $1 AND status = 'confirmed'
+                   AND local_date BETWEEN $2 AND $3)                       AS days_logged,
+               (SELECT round(avg(pct_measured)) FROM v_day_mass_confidence
+                 WHERE user_id = $1 AND local_date BETWEEN $2 AND $3)      AS pct_measured,
+               (SELECT count(DISTINCT local_date) FROM supplement_log
+                 WHERE user_id = $1 AND local_date BETWEEN $2 AND $3)      AS supp_days,
+               (SELECT round(sum(cost_usd) * 100, 1) FROM llm_call
+                 WHERE user_id = $1 AND created_at::date BETWEEN $2 AND $3) AS cents,
+               (SELECT count(*) FROM activity
+                 WHERE user_id = $1 AND local_date BETWEEN $2 AND $3)      AS sessions
+        """,
+        user_id, start, end_day,
+    )
+    weights = await p.fetch(
+        """SELECT local_date, value FROM body_metric
+            WHERE user_id = $1 AND kind = 'weight_kg' AND local_date BETWEEN $2 AND $3
+         ORDER BY local_date""",
+        user_id, start, end_day,
+    )
+    out = dict(row) if row else {}
+    out["weights"] = [(r["local_date"], float(r["value"])) for r in weights]
+    out["start"], out["end"] = start, end_day
+    return out

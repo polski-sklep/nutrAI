@@ -112,6 +112,25 @@ async def sweep(bot) -> None:
                 log.warning("notify failed for %s: %s", u["telegram_id"], exc)
 
 
+async def weekly_summary(bot) -> None:
+    """Sunday evening. Silent for a week with nothing in it."""
+    p = await db.pool()
+    now = dt.datetime.now(dt.timezone.utc)
+    for u in await p.fetch("SELECT id, telegram_id, tz, day_rollover_hour FROM app_user"):
+        day = db.local_date_for(now, u["tz"], u["day_rollover_hour"])
+        rows = await db.week_rows(u["id"], day)
+        if not rows:
+            continue
+        try:
+            await bot.send_message(
+                u["telegram_id"],
+                render.week_card(rows, await db.week_context(u["id"], day)),
+                parse_mode="HTML",
+            )
+        except Exception as exc:
+            log.warning("weekly failed for %s: %s", u["telegram_id"], exc)
+
+
 async def daily_summary(bot) -> None:
     p = await db.pool()
     users = await p.fetch("SELECT id, telegram_id, tz, day_rollover_hour FROM app_user")
@@ -142,5 +161,11 @@ def start_scheduler(bot) -> AsyncIOScheduler:
     from .audit import audit_and_report
 
     sched.add_job(audit_and_report, CronTrigger(hour=19, minute=5), args=[bot], id="audit")
+    # Sunday 20:00 Europe/Warsaw, after the day's summary and the audit, when
+    # the week is as complete as it is going to get.
+    sched.add_job(
+        weekly_summary, CronTrigger(day_of_week="sun", hour=18, minute=0),
+        args=[bot], id="weekly",
+    )
     sched.start()
     return sched

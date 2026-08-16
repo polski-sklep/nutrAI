@@ -74,6 +74,7 @@ COMMANDS: list[tuple[str, str]] = [
     ("/weight", "log a weigh-in, e.g. <code>/weight 78.2</code>"),
     ("/supp", "log today's supplement stack · <code>/supp add</code> to set one up"),
     ("/undo", "unlog the last thing you logged today"),
+    ("/week", "the last seven days: excesses, shortfalls, how much to trust it"),
     ("/audit", "check the last week's entries for wrong matches"),
     ("/insight", "fat-loss rate and what the data actually supports"),
     ("/spend", "what this has cost in API calls"),
@@ -133,6 +134,17 @@ async def _send_day(msg: Message, u: Any, day: dt.date, show_all: bool = False) 
             coverage=coverage,
             tz=u["tz"],
         ),
+        parse_mode="HTML",
+    )
+
+
+@dp.message(Command("week"))
+async def week(msg: Message) -> None:
+    """The last seven days, on demand. Sent unprompted on Sunday evening."""
+    u = await _user(msg)
+    day = _today(u)
+    await msg.answer(
+        render.week_card(await db.week_rows(u["id"], day), await db.week_context(u["id"], day)),
         parse_mode="HTML",
     )
 

@@ -732,3 +732,108 @@ def score_line(progress: Sequence[Any], coverage: dict[int, float] | None = None
 
 
 
+
+
+# --------------------------------------------------------- weekly report
+
+
+def week_card(rows: Sequence[Any], ctx: dict) -> str:
+    """The week, as the handful of facts worth acting on.
+
+    Ordered by what can change next week rather than by nutrient id: the
+    ceilings you crossed repeatedly, then the floors you kept missing, then the
+    measurement quality that decides whether any of it is trustworthy. A weekly
+    report that lists all twenty nutrients in database order is a report nobody
+    reads twice.
+    """
+    from statistics import median
+
+    if not rows:
+        return (
+            f"📅 <b>{ctx['start']:%-d %b} – {ctx['end']:%-d %b}</b>\n\n"
+            "Nothing logged this week."
+        )
+
+    by_nutrient: dict[int, list[Any]] = {}
+    for r in rows:
+        by_nutrient.setdefault(r["nutrient_id"], []).append(r)
+
+    over: list[tuple[int, int, str, float]] = []   # days over, nid, name, worst share
+    under: list[tuple[float, int, str, int, str]] = []  # miss rate, nid, name, days met, median
+    for nid, rs in by_nutrient.items():
+        name = _short(rs[0]["nutrient_name"])
+        unit = rs[0]["unit"]
+        amounts = [float(r["amount"]) for r in rs]
+
+        hi = rs[0]["max_amount"]
+        if hi is not None and float(hi) > 0:
+            shares = [a / float(hi) for a in amounts]
+            n_over = sum(1 for sh in shares if sh > 1)
+            if n_over:
+                over.append((n_over, nid, name, max(shares)))
+
+        lo = rs[0]["min_amount"]
+        if lo is not None and float(lo) > 0:
+            n_met = sum(1 for a in amounts if a >= float(lo))
+            if n_met < len(rs):
+                under.append((
+                    n_met / len(rs), nid, name, n_met,
+                    f"{fmt_amount(median(amounts), unit)} of {fmt_amount(float(lo), unit)}",
+                ))
+
+    n_days = len({r["day"] for r in rows})
+    lines = [
+        f"📅 <b>{ctx['start']:%-d %b} – {ctx['end']:%-d %b}</b>",
+        f"<i>{n_days} day{'s' if n_days != 1 else ''} logged · "
+        f"{ctx.get('meals') or 0} meals</i>",
+    ]
+
+    if over:
+        lines += ["", "⚠️ <b>Over the ceiling</b>"]
+        for n_over, nid, name, worst in sorted(over, reverse=True)[:6]:
+            lines.append(
+                f"   • {_emoji(nid)} {_esc(name)} — {n_over} of {n_days} days, "
+                f"worst {worst * 100:.0f}%"
+            )
+
+    if under:
+        lines += ["", "🎯 <b>Floors you kept missing</b>"]
+        for _rate, nid, name, n_met, typical in sorted(under)[:6]:
+            lines.append(
+                f"   • {_emoji(nid)} {_esc(name)} — reached on {n_met} of {n_days} days "
+                f"<i>(typical {_esc(typical)})</i>"
+            )
+
+    met_every_day = [
+        _short(rs[0]["nutrient_name"])
+        for rs in by_nutrient.values()
+        if rs[0]["min_amount"] is not None and float(rs[0]["min_amount"]) > 0
+        and all(float(r["amount"]) >= float(r["min_amount"]) for r in rs)
+    ]
+    if met_every_day:
+        lines += ["", "✅ <b>Every day</b>", "   " + _esc(", ".join(sorted(met_every_day)[:8]))]
+
+    lines += ["", "📊 <b>How much to trust this</b>"]
+    pct = ctx.get("pct_measured")
+    if pct is not None:
+        verdict = "" if float(pct) >= 80 else "  ← the number to move" if float(pct) < 50 else ""
+        lines.append(f"   • ⚖️ {float(pct):.0f}% of mass weighed or stated{verdict}")
+    if ctx.get("supp_days") is not None:
+        lines.append(f"   • 💊 supplements logged on {ctx['supp_days']} of {n_days} days")
+    if ctx.get("sessions"):
+        lines.append(f"   • 🏋 {ctx['sessions']} training session(s)")
+
+    weights = ctx.get("weights") or []
+    if len(weights) >= 2:
+        change = weights[-1][1] - weights[0][1]
+        lines.append(
+            f"   • ⚖ weight {weights[0][1]:g} → {weights[-1][1]:g} kg ({change:+.1f})"
+            + ("  <i>a week is mostly water; see /insight</i>" if abs(change) > 0.5 else "")
+        )
+    elif len(weights) < 2:
+        lines.append("   • ⚖ too few weigh-ins to say anything about weight")
+
+    if ctx.get("cents") is not None:
+        lines.append(f"   • 💸 {float(ctx['cents']):.1f}¢")
+
+    return "\n".join(lines)

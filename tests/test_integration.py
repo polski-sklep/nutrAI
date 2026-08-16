@@ -372,8 +372,11 @@ def test_repeat_is_zero_token(harness):
 
 def test_a_discarded_dish_cannot_be_repeated_without_a_gate(harness):
     """Invariant 5. `_present` upserts the dish before the entry exists, so a
-    meal you look at and discard still leaves a repeatable dish behind. That
-    dish has never been through a human, and repeating it must not log."""
+    meal you look at and discard still leaves a repeatable dish behind.
+
+    It is no longer offered in the numbered menu — that only lists things
+    actually eaten — but it is still reachable by slug, and that path must gate.
+    """
 
     async def scenario():
         uid = await _reset()
@@ -384,15 +387,13 @@ def test_a_discarded_dish_cannot_be_repeated_without_a_gate(harness):
         await harness.press(f"no:{_confirm_id(card)}", card.message_id)
 
         p = await db.pool()
-        assert await p.fetchval(
-            "SELECT count(*) FROM dish WHERE user_id=$1", uid
-        ) == 1, "discarding should still leave the dish for later"
+        slug = await p.fetchval("SELECT slug FROM dish WHERE user_id=$1", uid)
+        assert slug, "discarding should still leave the dish for later"
+        assert not await db.top_dishes(uid), "a never-eaten dish was offered as a repeat"
 
-        await harness.feed("/r")
         harness.sent.clear()
-        await harness.feed("1")
+        await harness.feed(slug)
 
-        # It must offer a confirm gate, not log.
         gated = harness.sent.last()
         assert [b for b in gated.buttons if b.startswith("ok:")], gated.text
         assert "never been confirmed" in gated.text
@@ -400,10 +401,10 @@ def test_a_discarded_dish_cannot_be_repeated_without_a_gate(harness):
             "SELECT count(*) FROM log_entry WHERE user_id=$1 AND status='confirmed'", uid
         ) == 0, "a never-confirmed dish was logged with no gate"
 
-        # Confirm it once, and the repeat becomes instant from then on.
+        # Confirm it once and the repeat becomes instant from then on.
         await harness.press(f"ok:{_confirm_id(gated)}", gated.message_id)
         harness.sent.clear()
-        await harness.feed("1")
+        await harness.feed(slug)
         assert not harness.sent.last().buttons
         assert await p.fetchval(
             "SELECT count(*) FROM log_entry WHERE user_id=$1 AND status='confirmed'", uid
@@ -578,7 +579,7 @@ def test_no_slash_command_is_ever_dropped(harness):
         from nutrai.bot import COMMANDS
 
         # Commands that do not exist come back with the list of ones that do.
-        for typed in ("/improve", "/targets", "/week", "/nonsense", "/r0"):
+        for typed in ("/improve", "/targets", "/nonsense", "/r0"):
             harness.sent.clear()
             await harness.feed(typed)
             assert harness.sent.sent, f"{typed} produced no reply at all"
@@ -1481,5 +1482,37 @@ def test_sleep_is_joined_to_the_day_before_not_the_morning_after(harness):
         assert float(r["kcal_yesterday"]) > 500, dict(r)
         assert int(r["training_minutes"]) == 45
         assert r["lifted"] is True
+
+    run(scenario())
+
+
+def test_the_repeat_menu_offers_only_things_actually_eaten(harness):
+    """`_present` creates the dish before the entry is confirmed, so a meal you
+    discarded because it was wrong still left a dish behind — and a cappuccino
+    containing a phantom whisky cocktail sat in the menu at ×0, one tap from
+    being logged again."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        # Parse a meal and throw it away.
+        await harness.feed("250 g minced beef, 164 g rice, a splash of olive oil")
+        card = harness.sent.last()
+        await harness.press(f"no:{_confirm_id(card)}", card.message_id)
+
+        p = await db.pool()
+        assert await p.fetchval("SELECT count(*) FROM dish WHERE user_id=$1", uid) == 1
+        assert not await db.top_dishes(uid), "a discarded meal was offered as a repeat"
+
+        harness.sent.clear()
+        await harness.feed("/r")
+        assert "Nothing to repeat yet" in harness.sent.last().text
+
+        # Confirm one and it appears.
+        await harness.feed("250 g minced beef, 164 g rice, a splash of olive oil")
+        card = harness.sent.last()
+        await harness.press(f"ok:{_confirm_id(card)}", card.message_id)
+        assert len(await db.top_dishes(uid)) == 1
 
     run(scenario())

@@ -61,8 +61,10 @@ def test_the_commands_we_deliberately_do_not_have_are_not_advertised():
     """`core/plan.py` is written but deliberately unwired — stage 5 work.
 
     Advertising it is what made it look like a bug rather than a decision.
+    `/week` was on this list until it was built; the guard that matters is the
+    one above, which fails if anything advertised lacks a handler.
     """
-    for gone in ("/improve", "/targets", "/week"):
+    for gone in ("/improve", "/targets"):
         assert gone not in command_list()
 
 
