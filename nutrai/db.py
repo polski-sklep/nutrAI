@@ -1509,3 +1509,67 @@ async def clear_measured_tdee(user_id: int) -> None:
             WHERE id = $1""",
         user_id,
     )
+
+
+async def nutrient_attribution(user_id: int, day: dt.date, nutrient_id: int) -> list[dict]:
+    """Which entries produced one nutrient, and which components within them.
+
+    Entry totals come from `log_nutrient` — the immutable snapshot taken when
+    you confirmed. The per-component split has to be recomputed, because the
+    snapshot is stored per entry and nothing recorded the breakdown at the
+    time. So the parts are scaled to sum to the stored whole: current USDA
+    figures may have drifted since, and a breakdown whose pieces disagreed
+    with the total the day card shows would be worse than no breakdown.
+    """
+    p = await pool()
+    entries = await p.fetch(
+        """SELECT e.id, e.name, e.slot, e.logged_at, ln.amount
+             FROM log_entry e JOIN log_nutrient ln ON ln.entry_id = e.id
+            WHERE e.user_id = $1 AND e.local_date = $2
+              AND e.status = 'confirmed' AND ln.nutrient_id = $3
+              AND ln.amount > 0
+         ORDER BY ln.amount DESC""",
+        user_id, day, nutrient_id,
+    )
+    out: list[dict] = []
+    for e in entries:
+        parts = await p.fetch(
+            """SELECT c.label, f.description,
+                      c.grams * c.yield_factor * fn.amount / 100.0 AS amount
+                 FROM log_component c
+                 JOIN food f ON f.fdc_id = c.fdc_id
+                 JOIN food_nutrient fn
+                   ON fn.fdc_id = c.fdc_id AND fn.nutrient_id = $2
+                WHERE c.entry_id = $1 AND fn.amount > 0
+             ORDER BY amount DESC""",
+            e["id"], nutrient_id,
+        )
+        total_parts = sum(float(r["amount"]) for r in parts)
+        stored = float(e["amount"])
+        scale = (stored / total_parts) if total_parts > 0 else 0.0
+        out.append({
+            "name": e["name"], "slot": e["slot"], "logged_at": e["logged_at"],
+            "amount": stored,
+            "parts": [
+                {"label": r["label"], "food": r["description"],
+                 "amount": float(r["amount"]) * scale}
+                for r in parts
+            ],
+        })
+    return out
+
+
+async def supplement_contribution(user_id: int, day: dt.date, nutrient_id: int) -> list[dict]:
+    """Supplements are not food rows and never appear in a food breakdown.
+    A micronutrient met by a capsule has to be visible as one."""
+    p = await pool()
+    rows = await p.fetch(
+        """SELECT s.name, sn.amount * sl.servings AS amount
+             FROM supplement_log sl
+             JOIN supplement s ON s.id = sl.supplement_id
+             JOIN supplement_nutrient sn ON sn.supplement_id = s.id
+            WHERE sl.user_id = $1 AND sl.local_date = $2 AND sn.nutrient_id = $3
+         ORDER BY amount DESC""",
+        user_id, day, nutrient_id,
+    )
+    return [{"name": r["name"], "amount": float(r["amount"])} for r in rows]

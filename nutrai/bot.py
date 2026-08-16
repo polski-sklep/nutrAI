@@ -62,6 +62,10 @@ async def _user(msg: Message) -> Any:
     return u
 
 
+def _local_now(u: Any) -> dt.datetime:
+    return dt.datetime.now(dt.timezone.utc).astimezone(zoneinfo.ZoneInfo(u["tz"]))
+
+
 def _today(u: Any) -> dt.date:
     return db.local_date_for(dt.datetime.now(dt.timezone.utc), u["tz"], u["day_rollover_hour"])
 
@@ -78,6 +82,7 @@ def _today(u: Any) -> dt.date:
 # reading, so it is now findable by running the tests instead.
 COMMANDS: list[tuple[str, str]] = [
     ("/repeat", "repeat something you have eaten before"),
+    ("/why", "where a nutrient came from today, meal by meal"),
     ("/next", "what would close today's remaining gaps"),
     ("/today", "where you stand · <code>/today all</code> for every nutrient"),
     ("/yesterday", "the same, for yesterday"),
@@ -1232,6 +1237,56 @@ async def cb_use_measured_tdee(cq: CallbackQuery) -> None:
     await _recalculate_targets(cq.message, u)
 
 
+@dp.message(Command("why", "breakdown"))
+async def why_cmd(msg: Message) -> None:
+    """`/why cholesterol` — which meal, and which thing on it.
+
+    A day card can say 250% of a ceiling and leave you no way to find out
+    where it came from short of reading every entry. That makes a breach
+    something that happens to you rather than something you did.
+    """
+    u = await _user(msg)
+    term = (msg.text or "").split(maxsplit=1)
+    if len(term) < 2:
+        await msg.answer(
+            "Name a nutrient — <code>/why cholesterol</code>, "
+            "<code>/why fat</code>, <code>/why sugar</code>.",
+            parse_mode="HTML")
+        return
+    term = term[1].strip()
+
+    matches = await db.find_nutrients(render.usda_name_for(term) or term)
+    if not matches:
+        await msg.answer(
+            f"No nutrient matches {render._esc(term)}. <code>/target</code> lists "
+            "the names as they are stored.", parse_mode="HTML")
+        return
+    exact = [m for m in matches
+             if term.lower() in (m["name"].lower(), render._short(m["name"]).lower())]
+    n = exact[0] if exact else matches[0]
+
+    day = _today(u)
+    progress = {r["nutrient_id"]: r for r in await db.day_progress(u["id"], day)}
+    row = progress.get(n["id"])
+    target = None
+    is_ceiling = False
+    if row:
+        if row["max_amount"] is not None:
+            target, is_ceiling = float(row["max_amount"]), True
+        elif row["min_amount"] is not None:
+            target = float(row["min_amount"])
+
+    await msg.answer(
+        render.why_card(
+            n["name"], n["unit"], day,
+            await db.nutrient_attribution(u["id"], day, n["id"]),
+            await db.supplement_contribution(u["id"], day, n["id"]),
+            target, is_ceiling, tz=u["tz"],
+        ),
+        parse_mode="HTML",
+    )
+
+
 @dp.message(Command("stack"))
 async def supp_stack_cmd(msg: Message) -> None:
     """`/supp list` under its own name.
@@ -2223,7 +2278,8 @@ async def _present(
         # a better database later. Every rollup filters on status='confirmed',
         # so it counts towards nothing.
         entry_id = await db.create_pending_entry(
-            u["id"], parsed.dish_name, [], source=source, slot=parsed.slot,
+            u["id"], parsed.dish_name, [],
+            source=source, slot=dsl.slot_for_hour(_local_now(u).hour, parsed.slot),
             confidence=parsed.confidence, model=parsed.model, parse=parsed.raw,
             photo_file_id=photo_file_id, dish_id=None, tz=u["tz"],
             rollover_hour=u["day_rollover_hour"],
@@ -2250,10 +2306,12 @@ async def _present(
     totals = total_nutrients(res.components, profs)
 
     slug = _slugify(parsed.dish_name)
-    dish_id = await db.upsert_dish(u["id"], slug, parsed.dish_name, parsed.slot, res.components)
+    # The clock decides the meal, not the model — see dsl.slot_for_hour.
+    slot = dsl.slot_for_hour(_local_now(u).hour, parsed.slot)
+    dish_id = await db.upsert_dish(u["id"], slug, parsed.dish_name, slot, res.components)
 
     entry_id = await db.create_pending_entry(
-        u["id"], parsed.dish_name, res.components, source=source, slot=parsed.slot,
+        u["id"], parsed.dish_name, res.components, source=source, slot=slot,
         confidence=parsed.confidence, model=parsed.model, parse=parsed.raw,
         photo_file_id=photo_file_id, dish_id=dish_id, tz=u["tz"],
         rollover_hour=u["day_rollover_hour"], grams_sources=res.grams_sources,

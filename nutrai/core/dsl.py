@@ -424,3 +424,25 @@ def resolve_date(op: SetDate, today: "dt.date") -> "dt.date":
     if op.days_back:
         return today - _dt.timedelta(days=max(0, op.days_back))
     return today
+
+
+# Meal slots, from the clock rather than from the model.
+#
+# The tool schema offered breakfast/lunch/dinner/snack/drink with no
+# description and no time of day, so the model classified by dish *type*: a
+# chia seed pudding eaten at 16:11 came back "breakfast", because a chia
+# pudding is a breakfast food. Most entries came back with nothing at all.
+#
+# When you ate is something this system knows exactly and the model cannot
+# know, so it is not a question worth asking. "drink" is kept from the model,
+# because that is a fact about the thing rather than about the hour.
+SLOT_BOUNDARIES = ((11, "breakfast"), (15, "lunch"), (17, "snack"), (22, "dinner"))
+
+
+def slot_for_hour(hour: int, model_slot: str | None = None) -> str:
+    if model_slot == "drink":
+        return "drink"
+    for cutoff, name in SLOT_BOUNDARIES:
+        if hour < cutoff:
+            return name
+    return "snack"

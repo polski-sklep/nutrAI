@@ -2294,3 +2294,62 @@ def test_a_supplement_with_a_future_start_date_is_not_due_yet(harness):
         await p.execute("DELETE FROM supplement WHERE user_id=$1", uid)
 
     run(scenario())
+
+
+def test_why_attributes_a_nutrient_to_meals_and_ingredients(harness):
+    """"250% of your cholesterol ceiling" is a fact about a number. Without an
+    answer to which plate and which thing on it, a breach is something that
+    happens to you rather than something you did."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await harness.feed("250 g minced beef, 164 g rice, a splash of olive oil")
+        card = harness.sent.last()
+        await harness.press(f"ok:{_confirm_id(card)}", card.message_id)
+
+        day = dt.date.today()
+        rows = await db.nutrient_attribution(uid, day, 1004)   # fat
+        assert rows, "nothing attributed"
+
+        # The parts sum to the stored snapshot, not to whatever current USDA
+        # rows happen to say today.
+        for e in rows:
+            stored = await p.fetchval(
+                """SELECT ln.amount FROM log_nutrient ln JOIN log_entry le ON le.id=ln.entry_id
+                    WHERE le.user_id=$1 AND le.local_date=$2 AND ln.nutrient_id=1004
+                      AND le.name=$3""", uid, day, e["name"])
+            assert abs(float(stored) - e["amount"]) < 0.01
+            if e["parts"]:
+                assert abs(sum(x["amount"] for x in e["parts"]) - e["amount"]) < 0.01
+
+        harness.sent.clear()
+        await harness.feed("/why fat")
+        out = harness.sent.last().text
+        assert "Fat" in out and "minced beef" in out.lower() or "beef" in out.lower()
+
+        # A name the card shows, not only the one USDA stores.
+        harness.sent.clear()
+        await harness.feed("/why fibre")
+        assert "Fibre" in harness.sent.last().text
+
+    run(scenario())
+
+
+def test_the_clock_decides_the_meal_slot_not_the_model():
+    """A chia seed pudding eaten at 16:11 came back "breakfast", because the
+    tool schema offered the enum with no description and no time of day, so the
+    model classified by dish type."""
+    from nutrai.core.dsl import slot_for_hour
+
+    assert slot_for_hour(8) == "breakfast"
+    assert slot_for_hour(13) == "lunch"
+    assert slot_for_hour(16) == "snack"
+    assert slot_for_hour(19) == "dinner"
+    assert slot_for_hour(23) == "snack"
+    # The model said breakfast about a 16:11 pudding; the clock overrules it.
+    assert slot_for_hour(16, "breakfast") == "snack"
+    # "drink" is a fact about the thing, not about the hour, so it survives.
+    assert slot_for_hour(16, "drink") == "drink"

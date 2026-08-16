@@ -342,6 +342,10 @@ def usda_name_for(term: str) -> str | None:
     return DISPLAY_TO_USDA.get(term.strip().lower())
 
 
+SLOT_ABBREV = {"breakfast": "bfast", "lunch": "lunch", "dinner": "dinner",
+               "snack": "snack", "drink": "drink"}
+
+
 # --------------------------------------------------------------- day view
 
 
@@ -418,7 +422,9 @@ def day_card(
             # other message called 16:09 — and the disagreement looked like an
             # entry that had failed to disappear.
             when = e["logged_at"].astimezone(zone).strftime("%H:%M")
-            slot = (e["slot"] or "").upper()[:6]
+            # Abbreviated deliberately rather than truncated: "breakfast"
+            # cut to six characters reads "BREAKF", which looks like a bug.
+            slot = SLOT_ABBREV.get(e["slot"] or "", "")
             table.append(
                 f"{when} {slot:<6} {_esc(e['name'])} — "
                 f"{float(e['kcal']):,.0f} kcal, {float(e['protein']):.0f} g P"
@@ -1445,4 +1451,61 @@ def measured_tdee_offer(flr: Any, current_target: float | None,
     else:
         lines += ["", "<i>Measured over three weeks or more, so this is a "
                       "better number than any equation can give you.</i>"]
+    return "\n".join(lines)
+
+
+def why_card(nutrient_name: str, unit: str, day: dt.date, entries: Sequence[Any],
+             supplements: Sequence[Any], target: float | None,
+             is_ceiling: bool, tz: str = "UTC") -> str:
+    """Where a day's figure for one nutrient actually came from.
+
+    "250% of your cholesterol allowance" is a fact about a number. This is the
+    question underneath it — which plate, and which thing on the plate — and
+    without an answer the ceiling is something that happens to you rather than
+    something you did.
+    """
+    import zoneinfo
+
+    zone = zoneinfo.ZoneInfo(tz)
+    food = sum(float(e["amount"]) for e in entries)
+    supp = sum(float(s["amount"]) for s in supplements)
+    total = food + supp
+
+    lines = [f"🔎 <b>{_esc(_short(nutrient_name))}</b> — {day:%a %-d %b}", ""]
+    if not total:
+        return "\n".join(lines + ["<i>Nothing logged today reports it.</i>"])
+
+    head = f"<b>{fmt_amount(total, unit)}</b> so far"
+    if target:
+        pct = total / target * 100
+        head += f" — {pct:.0f}% of your {fmt_amount(target, unit)} " \
+                + ("ceiling" if is_ceiling else "target")
+    lines += [head, ""]
+
+    rows: list[str] = []
+    for e in entries:
+        amount = float(e["amount"])
+        when = e["logged_at"].astimezone(zone).strftime("%H:%M")
+        rows.append(f"{when} {_short_note(e['name'])[:26]:<28}"
+                    f"{fmt_amount(amount, unit):>10}  {amount / total * 100:>3.0f}%")
+        # The component behind it, when one clearly dominates. Naming the plate
+        # is half an answer: "boiled eggs, avocado and bread" does not tell you
+        # it was the eggs.
+        for part in e["parts"][:2]:
+            share = part["amount"] / amount if amount else 0
+            if share < 0.15:
+                continue
+            rows.append(f"        └ {_short_note(part['label'])[:22]:<24}"
+                        f"{fmt_amount(part['amount'], unit):>10}")
+    for s in supplements:
+        rows.append(f"  💊  {_short_note(s['name'])[:26]:<28}"
+                    f"{fmt_amount(s['amount'], unit):>10}  "
+                    f"{s['amount'] / total * 100:>3.0f}%")
+    lines.append("<pre>" + "\n".join(_esc(r) for r in rows) + "</pre>")
+
+    lines.append(
+        "<i>Totals per meal are the snapshot taken when you confirmed it. The "
+        "indented lines are that total split across the ingredients, so they "
+        "add up to it by construction rather than by luck.</i>"
+    )
     return "\n".join(lines)
