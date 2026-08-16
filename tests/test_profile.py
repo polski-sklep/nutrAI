@@ -232,3 +232,41 @@ def test_numeric_columns_do_not_store_a_floats_binary_expansion():
     # Integral values normalise without an exponent creeping in.
     assert str(num(180.0)) == "180"
     assert str(num(2000.0)) == "2000"
+
+
+def test_a_goal_that_needs_a_deficit_says_so_when_none_is_set():
+    """Goal "build muscle, lose fat", target 2,586, maintenance 2,586. Every
+    number correct, and the result is not what was asked for — the arithmetic
+    cannot see the contradiction, so it has to be named."""
+    assert prof.goal_conflict("recomp", None) is not None
+    assert prof.goal_conflict("recomp", 0) is not None
+    assert prof.goal_conflict("lose", None) is not None
+    assert "maintenance" in prof.goal_conflict("recomp", None)
+
+    # Set, and it goes quiet.
+    assert prof.goal_conflict("recomp", 350) is None
+    assert prof.goal_conflict("lose", 500) is None
+    # Maintaining on maintenance is not a conflict.
+    assert prof.goal_conflict("maintain", None) is None
+    assert prof.goal_conflict(None, None) is None
+
+
+def test_gaining_needs_a_surplus_not_a_deficit():
+    assert prof.goal_conflict("gain", 0) is not None
+    assert prof.goal_conflict("gain", 500) is not None      # a deficit, while bulking
+    assert prof.goal_conflict("gain", -300) is None
+
+
+def test_the_recalculation_card_carries_the_warning():
+    working = {"ree": 1668.0, "tdee": 2586.0, "kcal": 2586.0,
+               "protein": 165.0, "fat": 60.0, "carb": 346.0}
+    out = render.profile_recalc_card(working, 22, 75.2, goal="recomp", deficit=None)
+    assert "⚠️" in out and "maintenance" in out
+    quiet = render.profile_recalc_card(working, 22, 75.2, goal="recomp", deficit=350)
+    assert "⚠️" not in quiet
+
+
+def test_the_profile_card_flags_it_before_you_recalculate():
+    card = render.profile_card(_data(user={"deficit_kcal": None, "goal": "recomp"}),
+                               dt.date(2026, 8, 16))
+    assert "⚠️" in card and "deficit" in card

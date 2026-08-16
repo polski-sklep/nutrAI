@@ -104,6 +104,38 @@ class IncompleteProfile(ValueError):
 PROTEIN_PER_KG = {"lose": 2.0, "recomp": 2.2, "gain": 1.8, "maintain": 1.6}
 DEFAULT_PROTEIN_PER_KG = 1.8
 
+# Goals that only mean something with an energy offset. A stated goal of
+# "lose fat" and a derived target equal to maintenance is a contradiction the
+# arithmetic cannot see: every number is correct and the result is not what was
+# asked for. Named here so both the profile card and the recalculation can say
+# so rather than presenting a plausible figure that quietly does nothing.
+NEEDS_DEFICIT = {"lose", "recomp"}
+NEEDS_SURPLUS = {"gain"}
+
+# Typical starting offsets, stated as a range because the right one depends on
+# how fast you want to move and how much you are willing to lose alongside fat.
+SUGGESTED_OFFSET = {
+    "lose": (400, 600),
+    # Shallower than a straight cut: the 2.2 g/kg protein floor is doing the
+    # muscle-sparing work, and a deep deficit leaves nothing to train on.
+    "recomp": (250, 400),
+    "gain": (-300, -150),
+}
+
+
+def goal_conflict(goal: str | None, deficit: float | None) -> str | None:
+    """The sentence to show when the goal and the energy offset disagree."""
+    d = float(deficit or 0)
+    if goal in NEEDS_DEFICIT and d <= 0:
+        lo, hi = SUGGESTED_OFFSET[goal]
+        return (f"your goal needs an energy deficit and none is set, so this "
+                f"target is maintenance — {lo}–{hi} kcal is the usual range")
+    if goal in NEEDS_SURPLUS and d >= 0:
+        lo, hi = SUGGESTED_OFFSET["gain"]
+        return ("your goal needs an energy surplus and none is set, so this "
+                f"target is maintenance — try a deficit of {lo} to {hi}")
+    return None
+
 
 def derive_targets(
     *,

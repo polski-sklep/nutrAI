@@ -871,7 +871,8 @@ async def cb_profile_recalc(cq: CallbackQuery) -> None:
     await db.mark_targets_derived(u["id"], data["weight_kg"], today)
     await cq.answer("Recalculated")
     await cq.message.answer(
-        render.profile_recalc_card(working, applied, data["weight_kg"]),
+        render.profile_recalc_card(working, applied, data["weight_kg"],
+                                   goal=row["goal"], deficit=row["deficit_kcal"]),
         parse_mode="HTML",
     )
 

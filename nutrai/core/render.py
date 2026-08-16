@@ -1063,6 +1063,9 @@ def profile_card(data: dict[str, Any], today: dt.date | None = None) -> str:
             f"🔥 Energy target <b>{data['energy_target']:,.0f} kcal</b>"
             + (f", set {data['targets_from']:%-d %b}" if data["targets_from"] else "")
         )
+        conflict = prof.goal_conflict(u["goal"], u["deficit_kcal"])
+        if conflict:
+            lines.append(f"   ⚠️ {_esc(conflict)}")
         set_at = u["targets_set_at_kg"]
         if missing:
             lines.append(
@@ -1128,10 +1131,18 @@ def profile_card(data: dict[str, Any], today: dt.date | None = None) -> str:
     return "\n".join(lines)
 
 
-def profile_recalc_card(working: dict[str, float], applied: int, weight: float) -> str:
+def profile_recalc_card(working: dict[str, float], applied: int, weight: float,
+                        goal: str | None = None, deficit: float | None = None) -> str:
+    from . import profile as prof
+
+    conflict = prof.goal_conflict(goal, deficit)
+    warn = ([f"⚠️ <b>{_esc(conflict)}</b>",
+             "   <i>Set it with <code>/profile 8 350</code>, then recalculate.</i>", ""]
+            if conflict else [])
     return "\n".join([
         "✅ <b>Targets recalculated</b>",
         "",
+        *warn,
         "<pre>"
         f"{'At weight':<12}{weight:g} kg\n"
         f"{'Resting':<12}{working['ree']:,.0f} kcal\n"
