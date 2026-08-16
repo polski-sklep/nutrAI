@@ -597,14 +597,14 @@ def _esc(s: str) -> str:
     return escape(str(s), quote=False)
 
 
-def supplement_stack_card(stack: Sequence[Any]) -> str:
+def supplement_stack_card(stack: Sequence[Any], retired: Sequence[Any] = ()) -> str:
     lines = ["💊 <b>Your daily stack</b>", ""]
     cadence = {"alternate": "every other day", "occasional": "occasional"}
-    for s in stack:
+    for i, s in enumerate(stack, start=1):
         serving = f"{float(s['servings_per_day']):g} × {s['serving_desc']}"
         extra = cadence.get(s["schedule"], "")
         lines.append(
-            f"   • <b>{_esc(s['name'])}</b> — {_esc(serving)}"
+            f"   <b>{i}. {_esc(s['name'])}</b> — {_esc(serving)}"
             + (f" · {extra}" if extra else "")
         )
         detail = [f"{s['n_nutrients']} tracked nutrient(s)"]
@@ -615,6 +615,11 @@ def supplement_stack_card(stack: Sequence[Any]) -> str:
         lines.append(f"     <i>{' · '.join(detail)}</i>")
         if s["note"]:
             lines.append(f"     <i>{_esc(s['note'])}</i>")
+    if retired:
+        # Shown, not hidden. A supplement you stopped still accounts for the
+        # micronutrients in every past day, and a stack that silently forgets
+        # it makes those days look unexplained.
+        lines += ["", "<i>Stopped: " + _esc(", ".join(r["name"] for r in retired)) + "</i>"]
     lines += ["", "<code>/supp</code> logs the lot for today."]
     return "\n".join(lines)
 

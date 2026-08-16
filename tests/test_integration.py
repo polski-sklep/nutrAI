@@ -1986,3 +1986,54 @@ def test_another_users_session_cannot_be_deleted_by_id(harness):
         await p.execute("DELETE FROM app_user WHERE id=$1", other)
 
     run(scenario())
+
+
+def test_a_supplement_is_stopped_not_deleted(harness):
+    """supplement_log references supplement ON DELETE CASCADE, so deleting one
+    would erase the record of every day it was taken. Stopping is a fact about
+    the future; it does not make the past untrue."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        sid = await p.fetchval(
+            """INSERT INTO supplement (user_id, name, serving_desc, servings_per_day, source)
+               VALUES ($1,'Test Boron','1 capsule',1,'label_photo') RETURNING id""", uid)
+        day = dt.date.today()
+        await p.execute(
+            """INSERT INTO supplement_log (user_id, supplement_id, local_date, servings)
+               VALUES ($1,$2,$3,1)""", uid, sid, day)
+
+        harness.sent.clear()
+        await harness.feed("/supp list")
+        card = harness.sent.last()
+        assert "Test Boron" in card.text
+        assert [b for b in card.buttons if b.startswith("suppoff:")], card.buttons
+
+        await harness.press(f"suppoff:{sid}", card.message_id)
+        assert "Stop taking" in harness.sent.last().text
+        assert (await db.supplement_by_id(uid, sid))["active"] is True, "stopped before confirming"
+
+        await harness.press(f"suppoff!:{sid}", harness.sent.last().message_id)
+        assert (await db.supplement_by_id(uid, sid))["active"] is False
+
+        # The history survives. That is the whole reason this is not a DELETE.
+        assert await p.fetchval(
+            "SELECT count(*) FROM supplement_log WHERE supplement_id=$1", sid) == 1
+
+        # Gone from the daily stack, still named on the list as stopped.
+        assert sid not in [r["id"] for r in await db.supplement_stack(uid)]
+        harness.sent.clear()
+        await harness.feed("/supp list")
+        assert "Stopped:" in harness.sent.last().text
+
+        # And restorable.
+        await harness.press(f"suppon:{sid}", harness.sent.last().message_id)
+        assert (await db.supplement_by_id(uid, sid))["active"] is True
+
+        await p.execute("DELETE FROM supplement_log WHERE supplement_id=$1", sid)
+        await p.execute("DELETE FROM supplement WHERE id=$1", sid)
+
+    run(scenario())

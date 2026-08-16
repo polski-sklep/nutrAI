@@ -1345,3 +1345,27 @@ async def delete_activity(user_id: int, activity_id: int) -> bool:
         "DELETE FROM activity WHERE id = $1 AND user_id = $2", activity_id, user_id
     )
     return result.endswith(" 1")
+
+
+async def set_supplement_active(user_id: int, supplement_id: int, active: bool) -> str | None:
+    """Retire or restore one supplement. Returns its name, or None if not yours.
+
+    Deactivated rather than deleted, and not because deletion is hard: every
+    `supplement_log` row references it `ON DELETE CASCADE`, so removing the
+    supplement would erase the record of every day you took it. Stopping a
+    supplement is a fact about the future — it does not make the past untrue.
+    """
+    p = await pool()
+    return await p.fetchval(
+        """UPDATE supplement SET active = $3
+            WHERE id = $1 AND user_id = $2 RETURNING name""",
+        supplement_id, user_id, active,
+    )
+
+
+async def supplement_by_id(user_id: int, supplement_id: int) -> asyncpg.Record | None:
+    """Owner-scoped: the id comes from callback data, which the client controls."""
+    p = await pool()
+    return await p.fetchrow(
+        "SELECT * FROM supplement WHERE id = $1 AND user_id = $2", supplement_id, user_id
+    )

@@ -87,7 +87,7 @@ COMMANDS: list[tuple[str, str]] = [
     ("/target", "set a nutrient target yourself, e.g. <code>/target fibre 40</code>"),
     ("/weight", "log a weigh-in, e.g. <code>/weight 78.2</code>"),
     ("/training", "sessions posted by the workout bot, and the week's total"),
-    ("/supp", "log today's supplement stack · <code>/supp add</code> to set one up"),
+    ("/supp", "log today's stack · <code>/supp list</code> to add, stop or restore"),
     ("/undo", "unlog the last thing you logged today"),
     ("/week", "last seven days: excesses and shortfalls"),
     ("/audit", "check the last week's entries for wrong matches"),
@@ -946,6 +946,77 @@ async def _record_weight(msg: Message, u: Any, kg: float) -> None:
     await msg.answer("\n".join(lines), parse_mode="HTML")
 
 
+def _supp_manage_keyboard(stack: Sequence[Any],
+                          retired: Sequence[Any] = ()) -> InlineKeyboardMarkup | None:
+    """A ❌ per supplement, numbered to match the card, plus ↩️ to restore."""
+    rows: list[list[InlineKeyboardButton]] = []
+    for chunk in (list(enumerate(stack, start=1))[i:i + 5] for i in range(0, len(stack), 5)):
+        rows.append([
+            InlineKeyboardButton(text=f"❌ {i}", callback_data=f"suppoff:{s['id']}")
+            for i, s in chunk
+        ])
+    for r in retired[:5]:
+        rows.append([InlineKeyboardButton(
+            text=f"↩️ restore {render._short_note(r['name'])}",
+            callback_data=f"suppon:{r['id']}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+
+@dp.callback_query(F.data.startswith("suppoff:"))
+async def cb_supp_stop(cq: CallbackQuery) -> None:
+    """Ask first. Stopping is reversible, but the confirmation is where the
+    distinction between stopping and deleting gets said out loud."""
+    u = await db.get_or_create_user(cq.from_user.id)
+    sid = int(cq.data.split(":", 1)[1])
+    row = await db.supplement_by_id(u["id"], sid)
+    await cq.answer()
+    if not row:
+        await cq.message.answer("That one is not in your stack.")
+        return
+    await cq.message.answer(
+        f"Stop taking <b>{render._esc(row['name'])}</b>?\n\n"
+        "<i>It comes off the daily list from now on. Every day you already "
+        "logged it keeps counting — the past does not change because you "
+        "stopped.</i>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ stop it", callback_data=f"suppoff!:{sid}"),
+            InlineKeyboardButton(text="keep taking it", callback_data="suppkeep:"),
+        ]]),
+    )
+
+
+@dp.callback_query(F.data.startswith("suppoff!:"))
+async def cb_supp_stop_confirm(cq: CallbackQuery) -> None:
+    u = await db.get_or_create_user(cq.from_user.id)
+    sid = int(cq.data.split(":", 1)[1])
+    name = await db.set_supplement_active(u["id"], sid, False)
+    await cq.answer("Stopped")
+    await cq.message.edit_text(
+        f"💊 Stopped <b>{render._esc(name or 'it')}</b>. "
+        "<code>/supp list</code> to restore it.",
+        parse_mode="HTML",
+    )
+
+
+@dp.callback_query(F.data.startswith("suppon:"))
+async def cb_supp_restore(cq: CallbackQuery) -> None:
+    u = await db.get_or_create_user(cq.from_user.id)
+    sid = int(cq.data.split(":", 1)[1])
+    name = await db.set_supplement_active(u["id"], sid, True)
+    await cq.answer("Restored")
+    await cq.message.edit_text(
+        f"💊 <b>{render._esc(name or 'it')}</b> is back in the daily stack.",
+        parse_mode="HTML",
+    )
+
+
+@dp.callback_query(F.data.startswith("suppkeep:"))
+async def cb_supp_keep(cq: CallbackQuery) -> None:
+    await cq.answer("Kept")
+    await cq.message.edit_text("Kept. Nothing changed.")
+
+
 @dp.message(Command("supp", "supplements"))
 async def supp(msg: Message) -> None:
     """`/supp` logs today's stack · `/supp list` shows it · `/supp add` + photo.
@@ -980,7 +1051,13 @@ async def supp(msg: Message) -> None:
         return
 
     if sub.startswith("list"):
-        await msg.answer(render.supplement_stack_card(stack), parse_mode="HTML")
+        retired = [r for r in await db.supplement_stack(u["id"], active_only=False)
+                   if not r["active"]]
+        await msg.answer(
+            render.supplement_stack_card(stack, retired),
+            parse_mode="HTML",
+            reply_markup=_supp_manage_keyboard(stack, retired),
+        )
         return
 
     if sub.startswith(("skip", "clear", "none")):
