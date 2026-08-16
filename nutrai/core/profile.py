@@ -98,6 +98,13 @@ class IncompleteProfile(ValueError):
     worse than no target, because it looks exactly like a real one."""
 
 
+# Protein floor in g per kg of bodyweight, by goal. 1.8 is the general
+# recommendation for an active adult; a recomposition or a deficit both raise
+# it, because protein is what decides whether the weight you lose is fat.
+PROTEIN_PER_KG = {"lose": 2.0, "recomp": 2.2, "gain": 1.8, "maintain": 1.6}
+DEFAULT_PROTEIN_PER_KG = 1.8
+
+
 def derive_targets(
     *,
     sex: str,
@@ -106,6 +113,7 @@ def derive_targets(
     age: int,
     activity: float,
     deficit: float,
+    goal: str | None = None,
     protein_g: float | None = None,
     fat_g: float | None = None,
 ) -> tuple[dict[int, tuple[float | None, float | None]], dict[str, float]]:
@@ -122,7 +130,8 @@ def derive_targets(
     ree = mifflin_st_jeor(sex, weight_kg, height_cm, age)
     tdee = ree * activity
     kcal = tdee - (deficit or 0)
-    protein = protein_g or round(1.8 * weight_kg)
+    protein = protein_g or round(
+        PROTEIN_PER_KG.get(goal or "", DEFAULT_PROTEIN_PER_KG) * weight_kg)
     fat = fat_g or round(0.8 * weight_kg)
     carb = max(0, round((kcal - protein * 4 - fat * 9) / 4))
 

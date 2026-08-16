@@ -185,3 +185,34 @@ def test_a_meal_is_not_mistaken_for_a_profile_edit():
     assert _profile_edits("2 eggs, 3 rashers bacon") is None
     assert _profile_edits("250 g chicken and rice") is None
     assert _profile_edits("2. M\ngnocchi with pesto") is None   # partial: not profile
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("Moderate", 1.55), ("moderate", 1.55), ("3", 1.55),
+    ("Seated", 1.25), ("1", 1.25), ("Heavy", 1.85), ("1.6", 1.6),
+])
+def test_activity_accepts_the_word_the_card_shows(raw, expected):
+    """The card prints "Moderate" and the validator took only numbers, so the
+    one word on screen was the one word it refused."""
+    from nutrai.bot import PROFILE_VALIDATORS
+    assert PROFILE_VALIDATORS["activity_factor"](raw) == expected
+
+
+@pytest.mark.parametrize("raw", [
+    "Muscle gain and fat loss", "recomp", "recomposition", "lose fat and build muscle",
+])
+def test_recomposition_is_a_goal_in_its_own_right(raw):
+    """lose/maintain/gain had no room for it, and an enum that refuses the true
+    answer collects false ones."""
+    from nutrai.bot import PROFILE_VALIDATORS
+    assert PROFILE_VALIDATORS["goal"](raw) == "recomp"
+
+
+def test_the_goal_sets_the_protein_floor():
+    base = dict(sex="male", weight_kg=78, height_cm=173, age=34,
+                activity=1.55, deficit=400)
+    recomp, _ = prof.derive_targets(**base, goal="recomp")
+    cut, _ = prof.derive_targets(**base, goal="lose")
+    assert recomp[1003][0] == round(2.2 * 78)
+    assert cut[1003][0] == round(2.0 * 78)
+    assert recomp[1003][0] > cut[1003][0]

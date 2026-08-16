@@ -941,7 +941,7 @@ PROFILE_ROWS: list[tuple[str, str, str]] = [
     ("birth_date",      "Date of birth",  "21/09/1991"),
     ("height_cm",       "Height",         "cm"),
     ("activity_factor", "Daily activity", "1 – 5, or tap a button below"),
-    ("goal",            "Goal",           "lose / maintain / gain"),
+    ("goal",            "Goal",           "lose / gain / recomp / maintain"),
     ("goal_weight_kg",  "Goal weight",    "kg — optional"),
     ("deficit_kcal",    "Daily deficit",  "kcal"),
     ("tz",              "Timezone",       "e.g. Europe/Warsaw"),
@@ -972,6 +972,10 @@ def profile_card(data: dict[str, Any], today: dt.date | None = None) -> str:
             shown = f"{float(v):g} kg"
         elif field == "deficit_kcal":
             shown = f"{float(v):g} kcal"
+        elif field == "goal":
+            shown = {"lose": "lose fat", "gain": "gain weight",
+                     "recomp": "build muscle, lose fat",
+                     "maintain": "maintain"}.get(str(v), str(v))
         elif field == "activity_factor":
             shown = prof.activity_label(float(v))
         else:

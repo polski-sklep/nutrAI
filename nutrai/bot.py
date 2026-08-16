@@ -419,6 +419,23 @@ def _num(v: str, lo: float, hi: float) -> float | None:
     return n if lo <= n <= hi else None
 
 
+def _activity(v: str) -> float | None:
+    """A level name, a 1-5 position, or a raw multiplier.
+
+    The card prints "Moderate" and the validator used to accept only numbers,
+    so the one word the screen showed you was the one word it refused.
+
+    An integer 1-5 is read as a position in the list and anything with a
+    decimal point as a raw factor. They overlap only at 1 and 2, and nobody
+    means a 1.0 multiplier when they type "1" under a numbered list of five.
+    """
+    txt = v.strip().lower()
+    for i, (factor, name, _gloss) in enumerate(profile_mod.ACTIVITY_LEVELS, start=1):
+        if txt == name.lower() or txt == str(i):
+            return factor
+    return _num(v, 1.0, 2.5)
+
+
 def _date(v: str) -> dt.date:
     """ISO, or the day-first forms a European keyboard produces.
 
@@ -446,11 +463,22 @@ PROFILE_VALIDATORS: dict[str, Any] = {
     "sex": lambda v: {"m": "male", "male": "male", "man": "male",
                       "f": "female", "female": "female", "woman": "female"}.get(v.strip().lower()),
     "goal": lambda v: {"lose": "lose", "lose weight": "lose", "cut": "lose",
+                       "fat loss": "lose", "cutting": "lose",
                        "maintain": "maintain", "maintenance": "maintain",
-                       "gain": "gain", "bulk": "gain"}.get(v.strip().lower()),
+                       "gain": "gain", "bulk": "gain", "bulking": "gain",
+                       "muscle gain": "gain", "gain weight": "gain",
+                       # Body recomposition: both at once. Not a synonym for
+                       # either — it earns a higher protein floor and a
+                       # shallower deficit than a straight cut.
+                       "recomp": "recomp", "recomposition": "recomp",
+                       "muscle gain and fat loss": "recomp",
+                       "fat loss and muscle gain": "recomp",
+                       "build muscle and lose fat": "recomp",
+                       "lose fat and build muscle": "recomp",
+                       }.get(v.strip().lower()),
     "birth_date": _date,
     "height_cm": lambda v: _num(v, 100, 250),
-    "activity_factor": lambda v: _num(v, 1.0, 2.5),
+    "activity_factor": lambda v: _activity(v),
     "goal_weight_kg": lambda v: _num(v, 20, 400),
     "deficit_kcal": lambda v: _num(v, -1500, 1500),
     "tz": lambda v: v.strip() if zoneinfo.ZoneInfo(v.strip()) else None,
@@ -671,6 +699,7 @@ async def cb_profile_recalc(cq: CallbackQuery) -> None:
             age=profile_mod.age_years(row["birth_date"], today),
             activity=float(row["activity_factor"]) if row["activity_factor"] else None,
             deficit=float(row["deficit_kcal"] or 0),
+            goal=row["goal"],
         )
     except (profile_mod.IncompleteProfile, TypeError) as exc:
         missing = str(exc) if isinstance(exc, profile_mod.IncompleteProfile) else "some fields"
@@ -1307,6 +1336,13 @@ async def _consume_awaited_reply(msg: Message, u: Any, text: str) -> bool:
 
     if kind == "fix_entry":
         return await _try_fix(msg, u, text)
+
+    if kind == "profile_await":
+        edits = _profile_edits(text)
+        if not edits:
+            return False   # not numbered lines, so it is a meal: let it through
+        await _apply_profile_edits(msg, u, edits)
+        return True
 
     # The numeric prompts decline anything that is not a number, so a message
     # that happens to arrive while one is open is still read as a meal.

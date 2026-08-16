@@ -1805,3 +1805,54 @@ def test_recalculating_targets_needs_a_complete_profile_and_versions_them(harnes
             uid) >= 1
 
     run(scenario())
+
+
+def test_profile_lines_after_the_card_do_not_reach_the_food_parser(harness):
+    """The routing branch was silently missing: the card said "reply 2. male",
+    the reply went to the meal parser, and it cost a model call to be told
+    "No match in the food database for: No meal provided".
+
+    The unit tests covered _profile_edits and the validators directly and
+    passed the whole time, because neither of them is what was broken.
+    """
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await p.execute(
+            """UPDATE app_user SET sex=NULL, birth_date=NULL, height_cm=NULL,
+                 activity_factor=NULL, goal=NULL WHERE id=$1""", uid)
+
+        await harness.feed("/profile")
+        harness.llm.calls.clear()
+        harness.sent.clear()
+
+        await harness.feed("2. M\n3. 21/09/1991\n4. 173cm\n5. Moderate\n"
+                           "6. Muscle gain and fat loss")
+
+        assert not harness.llm.calls, f"a model was called: {harness.llm.calls}"
+        reply = harness.sent.last().text
+        assert "No match in the food database" not in reply, reply
+
+        row = await p.fetchrow(
+            """SELECT sex, birth_date, height_cm, activity_factor, goal
+                 FROM app_user WHERE id=$1""", uid)
+        assert row["sex"] == "male"
+        assert row["birth_date"] == dt.date(1991, 9, 21)
+        assert float(row["height_cm"]) == 173.0
+        assert float(row["activity_factor"]) == 1.55        # "Moderate"
+        assert row["goal"] == "recomp"                      # not lose, not gain
+
+        # The prompt stays open: a profile is filled in over several messages.
+        await harness.feed("8. 400")
+        assert float(await p.fetchval(
+            "SELECT deficit_kcal FROM app_user WHERE id=$1", uid)) == 400.0
+
+        # But a meal still gets through while it is open.
+        harness.sent.clear()
+        await harness.feed("250 g minced beef, 164 g rice")
+        assert harness.llm.calls, "the meal was swallowed by the profile prompt"
+
+    run(scenario())
