@@ -1285,3 +1285,15 @@ async def standing_targets(user_id: int) -> list[asyncpg.Record]:
          ORDER BY (t.rationale = 'manual') DESC, n.name""",
         user_id,
     )
+
+
+async def activity_range(user_id: int, start: dt.date, end: dt.date) -> list[asyncpg.Record]:
+    """Sessions in a date window, oldest first."""
+    p = await pool()
+    return await p.fetch(
+        """SELECT local_date, kind, minutes, kcal_burned, intensity, rpe, note
+             FROM activity
+            WHERE user_id = $1 AND local_date BETWEEN $2 AND $3
+         ORDER BY local_date, id""",
+        user_id, start, end,
+    )

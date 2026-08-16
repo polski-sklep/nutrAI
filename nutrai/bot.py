@@ -85,6 +85,7 @@ COMMANDS: list[tuple[str, str]] = [
     ("/profile", "your details and the targets derived from them"),
     ("/target", "set a nutrient target yourself, e.g. <code>/target fibre 40</code>"),
     ("/weight", "log a weigh-in, e.g. <code>/weight 78.2</code>"),
+    ("/training", "sessions posted by the workout bot, and the week's total"),
     ("/supp", "log today's supplement stack · <code>/supp add</code> to set one up"),
     ("/undo", "unlog the last thing you logged today"),
     ("/week", "last seven days: excesses and shortfalls"),
@@ -663,6 +664,25 @@ async def _try_target_lines(msg: Message, u: Any, text: str) -> bool:
         await _set_one_target(msg, u, m.group("name").strip(),
                               m.group("bound"), m.group("value"))
     return True
+
+
+@dp.message(Command("training", "train"))
+async def training(msg: Message) -> None:
+    """What the workout bot has actually posted.
+
+    Until now the only way to see whether a session had landed was to query
+    Postgres by hand — which meant three failed forwards in a row looked
+    exactly like three successful ones from inside Telegram.
+    """
+    u = await _user(msg)
+    day = _today(u)
+    week_start = day - dt.timedelta(days=day.weekday())
+    rows = await db.activity_range(u["id"], week_start, day)
+    today_rows = [r for r in rows if r["local_date"] == day]
+    await msg.answer(
+        render.training_card(today_rows, rows, day, week_start),
+        parse_mode="HTML",
+    )
 
 
 @dp.message(Command("target"))

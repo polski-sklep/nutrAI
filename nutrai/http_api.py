@@ -18,6 +18,7 @@ new package.
 from __future__ import annotations
 
 import datetime as dt
+import decimal
 import hmac
 import logging
 import os
@@ -112,7 +113,16 @@ async def post_activity(request: web.Request) -> web.Response:
                 f"intensity must be one of {sorted(INTENSITIES)} "
                 f"(got {intensity!r})", 400)
     try:
-        rpe = float(body["rpe"]) if body.get("rpe") is not None else None
+        # Decimal, not float. `rpe` is a numeric column, and a Python float
+        # arrives as its full binary expansion: 9.2 stored itself as
+        # 9.199999999999999289457264239899814128875732421875. round() does not
+        # help, because 9.2 *is* that value in binary — the fix is to stop
+        # going through float at all. An RPE is a one-decimal judgement and
+        # eighteen significant figures of it claim a precision it lacks.
+        rpe = (
+            decimal.Decimal(f"{float(body['rpe']):.1f}")
+            if body.get("rpe") is not None else None
+        )
     except (TypeError, ValueError):
         return _reject("rpe must be a number", 400)
     if rpe is not None and not 1 <= rpe <= 10:

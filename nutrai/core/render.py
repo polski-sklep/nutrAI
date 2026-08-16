@@ -1159,3 +1159,71 @@ def target_list_card(rows: Sequence[Any]) -> str:
         "• <code>/target fibre clear</code> — back to derived",
     ]
     return "\n".join(out)
+
+
+# Sessions are shown as they were reported, never re-derived. The training log
+# is another system's record; nutrai stores it and reads it back, and inventing
+# a number here would be the same mistake as letting a model return a calorie.
+_INTENSITY_MARK = {"easy": "🟢", "moderate": "🟡", "hard": "🟠", "max": "🔴"}
+
+
+def _hm(minutes: float) -> str:
+    h, m = divmod(int(round(minutes)), 60)
+    return f"{h} h {m:02d} m" if h else f"{m} min"
+
+
+def training_card(today_rows: Sequence[Any], week_rows: Sequence[Any],
+                  day: dt.date, week_start: dt.date) -> str:
+    lines = ["🏋️ <b>Training</b>", ""]
+
+    lines.append(f"<b>{day:%a %-d %b}</b>")
+    if today_rows:
+        for r in today_rows:
+            bits = [r["kind"]]
+            if r["minutes"]:
+                bits.append(_hm(float(r["minutes"])))
+            if r["intensity"]:
+                bits.append(f"{_INTENSITY_MARK.get(r['intensity'], '')} {r['intensity']}")
+            if r["rpe"] is not None:
+                bits.append(f"RPE {float(r['rpe']):g}")
+            if r["kcal_burned"]:
+                bits.append(f"{float(r['kcal_burned']):,.0f} kcal")
+            lines.append("   • " + _esc(" · ".join(bits)))
+            if r["note"]:
+                lines.append(f"     <i>{_esc(_short_note(r['note']))}</i>")
+    else:
+        lines.append("   <i>nothing logged yet</i>")
+
+    lines.append("")
+    lines.append(f"<b>This week</b>  <i>{week_start:%-d %b} – {day:%-d %b}</i>")
+    if not week_rows:
+        lines.append("   <i>no sessions yet this week</i>")
+        return "\n".join(lines)
+
+    total_min = sum(float(r["minutes"] or 0) for r in week_rows)
+    by_kind: dict[str, int] = {}
+    for r in week_rows:
+        by_kind[r["kind"]] = by_kind.get(r["kind"], 0) + 1
+    hard = sum(1 for r in week_rows if r["intensity"] in ("hard", "max"))
+    days = len({r["local_date"] for r in week_rows})
+
+    n = len(week_rows)
+    lines.append(
+        f"   • {n} session{'s' if n != 1 else ''} across {days} day{'s' if days != 1 else ''}"
+        + (f" — {_hm(total_min)}" if total_min else "")
+    )
+    lines.append("   • " + _esc(", ".join(
+        f"{k} ×{c}" for k, c in sorted(by_kind.items(), key=lambda kv: -kv[1]))))
+    if hard:
+        lines.append(f"   • {hard} at hard or above")
+    kcal = sum(float(r["kcal_burned"] or 0) for r in week_rows)
+    if kcal:
+        # Reported, not spent. Energy targets are not raised by training — see
+        # the activity-factor note in core/profile.py.
+        lines.append(f"   • {kcal:,.0f} kcal reported burned "
+                     "<i>(not added to your target)</i>")
+    return "\n".join(lines)
+
+
+def _short_note(note: str) -> str:
+    return note if len(note) <= 60 else note[:57] + "…"

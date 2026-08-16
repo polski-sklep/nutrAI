@@ -170,3 +170,34 @@ def test_a_valid_intensity_and_rpe_are_stored(api):
                  (SELECT id FROM app_user WHERE telegram_id = 1)""")
 
     run(scenario())
+
+
+@pytest.mark.integration
+def test_rpe_is_stored_at_the_precision_it_actually_has(api):
+    """`rpe numeric` receiving a Python float stored 9.2 as
+    9.199999999999999289457264239899814128875732421875 — eighteen significant
+    figures of a one-decimal judgement."""
+
+    async def scenario():
+        h = {"X-Nutrai-Token": TOKEN}
+        async with TestClient(TestServer(api.build_app())) as c:
+            r = await c.post(
+                "/activity",
+                json={"telegram_id": 1, "kind": "lifting", "minutes": 7,
+                      "intensity": "hard", "rpe": 9.2},
+                headers=h,
+            )
+            assert r.status in (200, 201), await r.text()
+
+        from nutrai import db
+        pool = await db.pool()
+        stored = await pool.fetchval(
+            """SELECT rpe FROM activity WHERE user_id =
+                 (SELECT id FROM app_user WHERE telegram_id = 1)
+               ORDER BY id DESC LIMIT 1""")
+        assert str(stored) == "9.2", stored
+        await pool.execute(
+            """DELETE FROM activity WHERE user_id =
+                 (SELECT id FROM app_user WHERE telegram_id = 1)""")
+
+    run(scenario())
