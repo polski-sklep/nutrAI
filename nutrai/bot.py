@@ -749,7 +749,17 @@ async def insight_cmd(msg: Message) -> None:
             continue
         xs = [float(o["hours_fasted"]) for o in obs]
         ys = [float(o["value"]) for o in obs]
-        clock = [o["observed_at"].hour + o["observed_at"].minute / 60 for o in obs]
+        # Local, not UTC. This is the confounder check that decides whether a
+        # correlation is really about the clock, so getting the clock wrong
+        # defeats its whole purpose — and an offset that wraps past midnight
+        # reorders the ranks rather than merely shifting them.
+        import zoneinfo
+
+        zone = zoneinfo.ZoneInfo(u["tz"])
+        clock = [
+            (lambda t: t.hour + t.minute / 60)(o["observed_at"].astimezone(zone))
+            for o in obs
+        ]
         f = insight.correlate(label, xs, ys, clock_hours=clock)
         out.append(escape(f.verdict))
         if f.caveat:

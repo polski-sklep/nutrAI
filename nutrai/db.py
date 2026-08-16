@@ -952,6 +952,7 @@ async def sleep_predictors(user_id: int, days: int = 120) -> list[asyncpg.Record
              WHERE o.user_id = $1 AND o.kind = 'sleep'
                AND o.local_date > current_date - $2::int
         ),
+        tz AS (SELECT tz FROM app_user WHERE id = $1),
         intake AS (
             SELECT e.local_date,
                    sum(CASE WHEN ln.nutrient_id = 1008 THEN ln.amount END) AS kcal,
@@ -960,8 +961,12 @@ async def sleep_predictors(user_id: int, days: int = 120) -> list[asyncpg.Record
                    -- Caffeine's half-life is about five hours, so a 16:00 coffee
                    -- is still half-present at 21:00. The total says little; the
                    -- afternoon share is the part that reaches bedtime.
+                   -- In the user's own timezone. logged_at is stored UTC, and
+                   -- reading its hour raw put the cutoff at 14:00 Warsaw in
+                   -- summer and 13:00 in winter — a threshold that drifts with
+                   -- daylight saving is not a threshold.
                    sum(CASE WHEN ln.nutrient_id = 1057
-                             AND extract(hour from e.logged_at AT TIME ZONE 'UTC') >= 12
+                             AND extract(hour from e.logged_at AT TIME ZONE (SELECT tz FROM tz)) >= 12
                             THEN ln.amount END)                            AS caffeine_pm_mg,
                    max(e.logged_at) FILTER (
                        WHERE ln.nutrient_id = 1057 AND ln.amount > 0)      AS last_caffeine_at,

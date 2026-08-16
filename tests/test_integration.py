@@ -1516,3 +1516,52 @@ def test_the_repeat_menu_offers_only_things_actually_eaten(harness):
         assert len(await db.top_dishes(uid)) == 1
 
     run(scenario())
+
+
+def test_afternoon_caffeine_is_measured_in_local_time(harness):
+    """logged_at is stored UTC. Reading its hour raw put the "afternoon" cutoff
+    at 14:00 Warsaw in summer and 13:00 in winter — a threshold that drifts with
+    daylight saving is not a threshold."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        for t in ("observation", "activity"):
+            await p.execute(f"DELETE FROM {t} WHERE user_id = $1", uid)
+
+        today = db.local_date_for(dt.datetime.now(dt.timezone.utc), "Europe/Warsaw", 4)
+        yesterday = today - dt.timedelta(days=1)
+
+        # 10:30 UTC == 12:30 Warsaw: afternoon locally, morning in UTC.
+        await harness.feed("250 g minced beef, 164 g rice, a splash of olive oil")
+        card = harness.sent.last()
+        entry_id = _confirm_id(card)
+        await harness.press(f"ok:{entry_id}", card.message_id)
+        await p.execute(
+            """UPDATE log_entry SET local_date = $2,
+                   logged_at = ($2::date + time '10:30') AT TIME ZONE 'UTC'
+                WHERE id = $1""",
+            entry_id, yesterday,
+        )
+        await p.execute(
+            """INSERT INTO log_nutrient (entry_id, nutrient_id, amount)
+               VALUES ($1, 1057, 90)
+               ON CONFLICT (entry_id, nutrient_id) DO UPDATE SET amount = 90""",
+            entry_id,
+        )
+        await p.execute(
+            """INSERT INTO observation (user_id, local_date, kind, value)
+               VALUES ($1, $2, 'sleep', 5)""",
+            uid, today,
+        )
+
+        rows = await db.sleep_predictors(uid)
+        assert len(rows) == 1, rows
+        assert float(rows[0]["caffeine_yesterday"]) == pytest.approx(90.0)
+        assert float(rows[0]["caffeine_pm_yesterday"]) == pytest.approx(90.0), (
+            "12:30 local was counted as morning because the hour was read in UTC"
+        )
+
+    run(scenario())
