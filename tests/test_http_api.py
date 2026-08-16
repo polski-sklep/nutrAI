@@ -136,8 +136,15 @@ def test_a_rejection_says_why_in_the_log(api, caplog):
                for rec in caplog.records), [r.message for r in caplog.records]
 
 
+@pytest.mark.integration
 def test_a_valid_intensity_and_rpe_are_stored(api):
-    """Guards the enum the client has to send."""
+    """Guards the enum the client has to send.
+
+    Marked integration because it reaches the real database — the endpoint has
+    no seam short of one — and it removes the rows it made. The first version
+    left four sessions under telegram_id 1 in the live activity table, which is
+    a test that lies about the day it ran on.
+    """
     async def scenario():
         h = {"X-Nutrai-Token": TOKEN}
         async with TestClient(TestServer(api.build_app())) as c:
@@ -155,5 +162,11 @@ def test_a_valid_intensity_and_rpe_are_stored(api):
                 headers=h,
             )
             assert r.status == 400
+
+        from nutrai import db
+        pool = await db.pool()
+        await pool.execute(
+            """DELETE FROM activity WHERE user_id =
+                 (SELECT id FROM app_user WHERE telegram_id = 1)""")
 
     run(scenario())
