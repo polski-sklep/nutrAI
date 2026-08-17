@@ -159,33 +159,43 @@ def _today(u: Any) -> dt.date:
 # typing them did nothing at all — aiogram matched nothing and dropped the
 # message. Advertising a command you have not written is a bug you only find by
 # reading, so it is now findable by running the tests instead.
+# Ordered by how often each is likely to be wanted, not alphabetically and not
+# by when it was built. The menu is a list you scan under a keyboard, so the
+# six you use every day sit above the fold and the setup screens you touched
+# once are at the bottom.
+#
 # Descriptions are the menu, and Telegram truncates a long one mid-word on a
 # phone — "Sessions posted by the workout bot, and the week's…" told you less
 # than four words would have. Sentence case, under about forty characters, no
 # worked examples: the card that opens explains itself far better than a menu
 # row can, and a row that has to be read twice is worse than a short one.
 COMMANDS: list[tuple[str, str]] = [
+    # Logging and checking, which is nearly everything.
     ("/repeat", "Log something you have had before"),
-    ("/why", "Where a nutrient came from today"),
-    ("/food", "Foods you define yourself"),
-    ("/next", "What would close today's gaps"),
     ("/today", "Where you stand today"),
+    ("/next", "What would close today's gaps"),
     ("/yesterday", "Where you stood yesterday"),
+    ("/why", "Where a nutrient came from today"),
+    ("/undo", "Unlog your last entry"),
+    # The other things you record daily.
+    ("/supp", "Log today's supplements"),
+    ("/weight", "Log a weigh-in"),
+    ("/rate", "Rate sleep, focus, mood or effort"),
+    ("/training", "Sessions, and this week's total"),
     ("/fast", "Your current fast"),
     ("/window", "Your eating window"),
-    ("/rate", "Rate sleep, focus, mood or effort"),
-    ("/profile", "Your details, and targets from them"),
-    ("/target", "Set a nutrient target yourself"),
-    ("/weight", "Log a weigh-in"),
-    ("/training", "Sessions, and this week's total"),
-    ("/supp", "Log today's supplements"),
-    ("/stack", "Add, stop or restore a supplement"),
-    ("/schedule", "When each supplement is taken"),
-    ("/undo", "Unlog your last entry"),
+    # Looking back, weekly or thereabouts.
     ("/week", "The last seven days"),
-    ("/audit", "Check entries for wrong matches"),
     ("/report", "The weekly review"),
     ("/insight", "What your own data supports"),
+    # Setting things up, rarely after the first week.
+    ("/food", "Foods you define yourself"),
+    ("/stack", "Add, stop or restore a supplement"),
+    ("/schedule", "When each supplement is taken"),
+    ("/profile", "Your details, and targets from them"),
+    ("/target", "Set a nutrient target yourself"),
+    # Checking on the system rather than on yourself.
+    ("/audit", "Check entries for wrong matches"),
     ("/spend", "What this has cost so far"),
 ]
 
