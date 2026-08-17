@@ -63,6 +63,9 @@ def test_the_search_endpoint_is_the_current_one():
     compatibility rather than for use."""
     import inspect
 
-    src = inspect.getsource(off.search)
-    assert "cgi/search.pl" not in src
-    assert "SEARCH" in src
+    # The code, not the prose. The docstring names the old endpoint precisely
+    # so nobody reinstates it, and a naive substring check flagged that.
+    body = [ln for ln in inspect.getsource(off.search).splitlines()
+            if "_get(" in ln]
+    assert body and "SEARCH" in body[0], body
+    assert off.SEARCH == "https://search.openfoodfacts.org"
