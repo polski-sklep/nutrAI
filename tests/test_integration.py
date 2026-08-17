@@ -1936,7 +1936,7 @@ def test_a_forwarded_session_can_be_removed_from_telegram(harness):
         harness.sent.clear()
         await harness.feed("/training")
         card = harness.sent.last()
-        assert "hard" in card.text and "RPE 9.2" in card.text
+        assert "hard" in card.text and "effort 9.2/10" in card.text
         assert [b for b in card.buttons if b.startswith("actdel:")], card.buttons
 
         # Asking first: a delete cannot be taken back.

@@ -564,7 +564,10 @@ def test_a_weighted_floor_moves_the_score_and_is_named():
     plain, heavy = day_score(prog(1)), day_score(prog(2.5))
     assert plain.covered > heavy.covered      # the miss now costs more
     assert heavy.weighted_by == ("Protein ×2.5",)
-    assert "weighted: Protein ×2.5" in score_line(prog(2.5), {1003: 1.0, 1089: 1.0})
+    # Not repeated on the day card: it is stated when you set it and shown in
+    # /target, and on a card read six times a day it is a standing footnote
+    # about a decision already made.
+    assert "weighted" not in score_line(prog(2.5), {1003: 1.0, 1089: 1.0})
 
 
 def test_an_unbreached_ceiling_is_not_a_nutrient_that_is_fine():

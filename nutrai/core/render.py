@@ -392,7 +392,6 @@ def day_card(
     entries: Sequence[Any],
     *,
     show_all: bool = False,
-    show_weights: bool = True,
     pct_measured: float | None = None,
     energy_sigma: float = 0.0,
     coverage: dict[int, float] | None = None,
@@ -433,21 +432,31 @@ def day_card(
     # under "attention" is the phantom-deficiency failure. It moves to a
     # separate, explicitly-labelled group instead of being dropped, because
     # "nobody measured this" is itself worth seeing.
-    rest, unmeasured, settled = [], [], 0
+    # Three groups, always computed the same way. `show_all` decides whether
+    # the on-track ones are listed or counted, not how they are sorted: the
+    # off-target rows lead either way, because flattening everything into one
+    # alphabetical block buried the four that needed reading.
+    rest, fine, unmeasured, settled = [], [], [], 0
     for r in progress:
         if r["nutrient_id"] in (ENERGY_KCAL, PROTEIN, CARB, FAT):
             continue
         c = cov.get(r["nutrient_id"])
         if c is not None and c <= 0 and float(r["amount"]) <= 0:
             unmeasured.append(r)
-        elif (show_all and r["min_amount"] is None
-              and float(r["amount"]) <= 0):
+        elif r["min_amount"] is None and float(r["amount"]) <= 0:
             # "Alcohol 0 g, 0% of a 16 g ceiling" is a row that tells you
             # nothing you did not know from having eaten nothing containing it.
-            settled += 1
-        elif show_all or r["state"] != "ok":
+            continue
+        elif r["state"] != "ok":
             rest.append(r)
-        elif r["min_amount"] is not None:
+        else:
+            # Listed if there is anything to list — caffeine at 191 mg of a
+            # 400 mg ceiling is on track and worth seeing. Counted only if it
+            # is a floor: an unbreached ceiling is not a nutrient "where it
+            # should be", which is how an empty day claimed six were fine.
+            fine.append(r)
+            if r["min_amount"] is None:
+                continue
             # Counted, not listed. The section shows only what needs
             # attention, which is right — but with nothing said about the rest
             # a short list reads as missing data rather than as good news.
@@ -461,11 +470,24 @@ def day_card(
 
     if rest:
         table.append("")
-        table.append(
-            f"Worth a look ({len(rest)} of {len(rest) + settled})"
-            if not show_all else "Everything else")
+        table.append(f"Worth a look ({len(rest)} of {len(rest) + settled})")
         for r in sorted(rest, key=lambda x: (x["state"] == "ok", _short(x["nutrient_name"]))):
             table.append(_row(r, cov.get(r["nutrient_id"])))
+
+    if fine and show_all:
+        # Two headings, not one. "On track · Caffeine 48%" reads as a floor
+        # you are half-way to when caffeine is a ceiling you are half-way
+        # *under* — the same percentage means opposite things and only the
+        # heading can say which. Floors are met; ceilings are stayed within.
+        met = [r for r in fine if r["min_amount"] is not None]
+        under = [r for r in fine if r["min_amount"] is None]
+        for heading, group in (("Met", met), ("Within limits", under)):
+            if not group:
+                continue
+            table.append("")
+            table.append(f"{heading} ({len(group)})")
+            for r in sorted(group, key=lambda x: _short(x["nutrient_name"])):
+                table.append(_row(r, cov.get(r["nutrient_id"])))
 
     if entries:
         table.append("")
@@ -486,7 +508,7 @@ def day_card(
                 f"{float(e['kcal']):,.0f} kcal, {float(e['protein']):.0f} g P"
             )
 
-    score = score_line(progress, coverage, show_weights=show_weights)
+    score = score_line(progress, coverage)
     if score:
         lines.append(score)
         lines.append("")
@@ -908,8 +930,7 @@ def day_score(
     )
 
 
-def score_line(progress: Sequence[Any], coverage: dict[int, float] | None = None,
-               *, show_weights: bool = True) -> str:
+def score_line(progress: Sequence[Any], coverage: dict[int, float] | None = None) -> str:
     """One bar for the day, counting the thing worth counting.
 
     Deliberately not a single number in isolation. A score that hides which
@@ -936,11 +957,10 @@ def score_line(progress: Sequence[Any], coverage: dict[int, float] | None = None
             detail += f" · {sc.partial} part-way"
         if sc._untouched:
             detail += f" · {len(sc._untouched)} not started"
-        if sc.weighted_by and show_weights:
-            # A headline that quietly means something different from
-            # yesterday's is worse than no headline — but it only needs saying
-            # where you can act on it, not on every retrospective card.
-            detail += " · weighted: " + ", ".join(sc.weighted_by)
+        # The weighting is deliberately not repeated here. It is stated when
+        # you set it and it is visible in /target; on a card you read six
+        # times a day it is a standing footnote about a decision you already
+        # made, and it crowds out the part that changes.
         out.append(f"<i>{_esc(detail)}</i>")
         if short:
             shown = ", ".join(_esc(m) for m in short[:6])
@@ -1388,7 +1408,7 @@ def training_card(today_rows: Sequence[Any], week_rows: Sequence[Any],
             if r["intensity"]:
                 bits.append(f"{_INTENSITY_MARK.get(r['intensity'], '')} {r['intensity']}")
             if r["rpe"] is not None:
-                bits.append(f"RPE {float(r['rpe']):g}")
+                bits.append(f"effort {float(r['rpe']):g}/10")
             if r["kcal_burned"]:
                 bits.append(f"{float(r['kcal_burned']):,.0f} kcal")
             lines.append("   • " + _esc(" · ".join(bits)))

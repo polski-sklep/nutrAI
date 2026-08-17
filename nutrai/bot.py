@@ -159,29 +159,34 @@ def _today(u: Any) -> dt.date:
 # typing them did nothing at all — aiogram matched nothing and dropped the
 # message. Advertising a command you have not written is a bug you only find by
 # reading, so it is now findable by running the tests instead.
+# Descriptions are the menu, and Telegram truncates a long one mid-word on a
+# phone — "Sessions posted by the workout bot, and the week's…" told you less
+# than four words would have. Sentence case, under about forty characters, no
+# worked examples: the card that opens explains itself far better than a menu
+# row can, and a row that has to be read twice is worse than a short one.
 COMMANDS: list[tuple[str, str]] = [
-    ("/repeat", "repeat something you have eaten before"),
-    ("/why", "where a nutrient came from today, meal by meal"),
-    ("/food", "your own foods, for things USDA does not have"),
-    ("/next", "what would close today's remaining gaps"),
-    ("/today", "where you stand · <code>/today all</code> for every nutrient"),
-    ("/yesterday", "the same, for yesterday"),
-    ("/fast", "current fast, duration and phase"),
-    ("/window", "your eating window, midpoint and stability"),
-    ("/rate", "rate focus, energy, mood, hunger, sleep or rpe"),
-    ("/profile", "your details and the targets derived from them"),
-    ("/target", "set a nutrient target yourself, e.g. <code>/target fibre 40</code>"),
-    ("/weight", "log a weigh-in, e.g. <code>/weight 78.2</code>"),
-    ("/training", "sessions posted by the workout bot, and the week's total"),
-    ("/supp", "log today's supplement stack"),
-    ("/stack", "add, stop or restore a supplement"),
-    ("/schedule", "when each supplement moment is, and what is in it"),
-    ("/undo", "unlog the last thing you logged today"),
-    ("/week", "last seven days: excesses and shortfalls"),
-    ("/audit", "check the last week's entries for wrong matches"),
-    ("/report", "the weekly review — findings and proposed changes"),
-    ("/insight", "fat-loss rate and what the data actually supports"),
-    ("/spend", "what this has cost in API calls"),
+    ("/repeat", "Log something you have had before"),
+    ("/why", "Where a nutrient came from today"),
+    ("/food", "Foods you define yourself"),
+    ("/next", "What would close today's gaps"),
+    ("/today", "Where you stand today"),
+    ("/yesterday", "Where you stood yesterday"),
+    ("/fast", "Your current fast"),
+    ("/window", "Your eating window"),
+    ("/rate", "Rate sleep, focus, mood or effort"),
+    ("/profile", "Your details, and targets from them"),
+    ("/target", "Set a nutrient target yourself"),
+    ("/weight", "Log a weigh-in"),
+    ("/training", "Sessions, and this week's total"),
+    ("/supp", "Log today's supplements"),
+    ("/stack", "Add, stop or restore a supplement"),
+    ("/schedule", "When each supplement is taken"),
+    ("/undo", "Unlog your last entry"),
+    ("/week", "The last seven days"),
+    ("/audit", "Check entries for wrong matches"),
+    ("/report", "The weekly review"),
+    ("/insight", "What your own data supports"),
+    ("/spend", "What this has cost so far"),
 ]
 
 
@@ -215,17 +220,18 @@ async def repeat_menu(msg: Message) -> None:
 @dp.message(Command("today"))
 async def today(msg: Message) -> None:
     u = await _user(msg)
-    await _send_day(msg, u, _today(u), show_all="all" in (msg.text or ""))
+    # Everything by default. "Worth a look" still leads and the rest follows
+    # under "On track", so the full card is longer without being flatter.
+    await _send_day(msg, u, _today(u), show_all="brief" not in (msg.text or ""))
 
 
 @dp.message(Command("yesterday"))
 async def yesterday(msg: Message) -> None:
     u = await _user(msg)
-    await _send_day(msg, u, _today(u) - dt.timedelta(days=1), show_weights=False)
+    await _send_day(msg, u, _today(u) - dt.timedelta(days=1))
 
 
-async def _send_day(msg: Message, u: Any, day: dt.date, show_all: bool = False,
-                    show_weights: bool = True) -> None:
+async def _send_day(msg: Message, u: Any, day: dt.date, show_all: bool = False) -> None:
     prog = await db.day_progress(u["id"], day, core_only=not show_all)
     entries = await db.day_entries(u["id"], day)
     conf = await db.day_mass_confidence(u["id"], day)
@@ -233,7 +239,7 @@ async def _send_day(msg: Message, u: Any, day: dt.date, show_all: bool = False,
     coverage = await db.day_coverage(u["id"], day)
     await msg.answer(
         render.day_card(
-            day, prog, entries, show_all=show_all, show_weights=show_weights,
+            day, prog, entries, show_all=show_all,
             pct_measured=float(conf["pct_measured"]) if conf and conf["pct_measured"] is not None else None,
             energy_sigma=sigma,
             coverage=coverage,
@@ -361,7 +367,7 @@ RATE_KINDS: dict[str, tuple[str, str]] = {
     "mood": ("🙂", "how you feel in yourself"),
     "hunger": ("🍽", "how hungry, 1 full to 10 ravenous"),
     "sleep": ("😴", "last night's sleep quality"),
-    "rpe": ("🏋", "how hard the session felt, 1 easy to 10 maximal"),
+    "rpe": ("🏋", "how hard training felt — 1 is easy, 10 is all you had"),
 }
 
 
@@ -818,7 +824,7 @@ def _describe_activity(r: Any) -> str:
     if r["intensity"]:
         bits.append(str(r["intensity"]))
     if r["rpe"] is not None:
-        bits.append(f"RPE {float(r['rpe']):g}")
+        bits.append(f"effort {float(r['rpe']):g}/10")
     return " · ".join(bits)
 
 
@@ -2213,7 +2219,8 @@ async def insight_cmd(msg: Message) -> None:
         # while the real number sat two lines above it, read and ignored.
         tdee_offer = await _tdee_offer(u, flr)
 
-    for kind, label in (("focus", "focus vs hours fasted"), ("rpe", "session RPE vs hours fasted")):
+    for kind, label in (("focus", "focus vs hours fasted"),
+                        ("rpe", "training effort vs hours fasted")):
         obs = await db.observations(u["id"], kind)
         out.append("")
         out.append(f"<b>{escape(label)}</b>")
