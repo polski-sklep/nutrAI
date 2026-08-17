@@ -2675,3 +2675,50 @@ def test_a_single_food_repeat_takes_a_modifier(harness):
         assert float(grams) == base * 2
 
     run(scenario())
+
+
+def test_why_takes_several_nutrients_at_once(harness):
+    """"fat and sodium" is one reply about two nutrients. It used to reach the
+    meal parser, which paid for a model call to report "No match in the food
+    database for: Unknown meal"."""
+
+    async def scenario():
+        uid = await _reset()
+
+        await harness.feed("250 g minced beef, 164 g rice")
+        card = harness.sent.last()
+        await harness.press(f"ok:{_confirm_id(card)}", card.message_id)
+
+        await harness.feed("/why")
+        harness.llm.calls.clear()
+        harness.sent.clear()
+        await harness.feed("fat and sodium")
+
+        assert not harness.llm.calls, f"a model was called: {harness.llm.calls}"
+        texts = harness.sent.texts()
+        assert any("Fat" in t for t in texts), texts
+        assert any("Sodium" in t for t in texts), texts
+
+        # Commas and ampersands too.
+        await harness.feed("/why")
+        harness.sent.clear()
+        await harness.feed("iron, calcium")
+        assert len(harness.sent.sent) == 2
+
+    run(scenario())
+
+
+def test_a_meal_naming_one_nutrient_is_still_a_meal(harness):
+    """All-or-nothing: a reply where one word is a nutrient and the rest is
+    dinner is dinner. Answering the half that resolved would log nothing while
+    looking like it had done something."""
+
+    async def scenario():
+        await _reset()
+        await harness.feed("/why")
+        harness.llm.calls.clear()
+        harness.sent.clear()
+        await harness.feed("chicken and rice")
+        assert harness.llm.calls, "a meal was swallowed by the why prompt"
+
+    run(scenario())

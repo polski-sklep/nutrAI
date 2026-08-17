@@ -1378,10 +1378,14 @@ async def why_cmd(msg: Message) -> None:
         # into the meal parser is the bug this registry exists to prevent.
         await _ask(msg, u, "why_await",
                    "Which nutrient? Reply with a name — <code>cholesterol</code>, "
-                   "<code>fat</code>, <code>sugar</code> — or "
-                   "<code>/why fibre</code> in one go.")
+                   "<code>fat</code>, <code>sugar</code>. Several at once is "
+                   "fine: <code>fat and sodium</code>.")
         return
-    await _explain_nutrient(msg, u, parts[1].strip())
+    for term in _nutrient_terms(parts[1]) or [parts[1].strip()]:
+        if not await _explain_nutrient(msg, u, term):
+            await msg.answer(
+                f"No nutrient matches {render._esc(term)}. <code>/target</code> "
+                "lists the names as they are stored.", parse_mode="HTML")
 
 
 async def _explain_nutrient(msg: Message, u: Any, term: str) -> bool:
@@ -2604,9 +2608,36 @@ async def _consume_targets(msg: Message, u: Any, text: str, payload: dict) -> bo
     return await _try_target_lines(msg, u, text)
 
 
+# "fat and sodium" is one reply about two nutrients, and it used to reach the
+# meal parser — which paid for a model call to report "No match in the food
+# database for: Unknown meal". Split on the words people join lists with.
+NUTRIENT_SEPARATORS = re.compile(r"\s*(?:,|&|\+|\band\b|\bplus\b)\s*", re.IGNORECASE)
+
+
+def _nutrient_terms(text: str) -> list[str]:
+    return [t for t in NUTRIENT_SEPARATORS.split(text.strip()) if t]
+
+
 @consumes("why_await")
 async def _consume_why(msg: Message, u: Any, text: str, payload: dict) -> bool:
-    return await _explain_nutrient(msg, u, text.strip())
+    """Answers for every nutrient named, or none.
+
+    All-or-nothing on purpose: a reply where one word is a nutrient and the
+    rest is dinner is dinner, and answering the half that resolved would log
+    nothing while looking like it had done something.
+    """
+    terms = _nutrient_terms(text)
+    if not terms or len(terms) > 4:
+        return False
+    resolved = []
+    for term in terms:
+        matches = await db.find_nutrients(render.usda_name_for(term) or term)
+        if not matches:
+            return False
+        resolved.append(term)
+    for term in resolved:
+        await _explain_nutrient(msg, u, term)
+    return True
 
 
 @consumes("weight_await")
