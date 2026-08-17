@@ -1874,7 +1874,10 @@ async def supp(msg: Message) -> None:
     arg = (msg.text or "").split(maxsplit=1)
     sub = arg[1].strip().lower() if len(arg) > 1 else ""
     day = _today(u)
-    stack = await db.supplement_stack(u["id"])
+    # The daily picker hides what has not started. /stack and /schedule show
+    # everything, because a supplement decided on but not begun is exactly
+    # what those two screens exist to display.
+    stack = await db.supplement_stack(u["id"], on_day=day)
 
     if sub.startswith("add"):
         await db.put_pending(u["id"], "supp_label", {"awaiting": True})

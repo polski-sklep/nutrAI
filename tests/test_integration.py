@@ -2577,3 +2577,37 @@ def test_a_time_is_never_moved_forwards(harness):
         assert moved < dt.datetime.now(dt.timezone.utc), moved
 
     run(scenario())
+
+
+def test_a_supplement_that_has_not_started_cannot_be_logged(harness):
+    """starts_on was honoured only where things are pre-ticked, so a product
+    dated to October could be ticked by hand in August — and it contributed
+    nothing, because a product you have not begun has no panel read off it."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await p.execute("DELETE FROM supplement WHERE user_id=$1", uid)
+        later = await p.fetchval(
+            """INSERT INTO supplement (user_id, name, serving_desc, servings_per_day,
+                 source, slot, starts_on)
+               VALUES ($1,'Vitamin D3 + K2','1 drop',1,'manual','breakfast',$2)
+               RETURNING id""", uid, dt.date.today() + dt.timedelta(days=45))
+        day = dt.date.today()
+
+        # Not in the daily picker...
+        assert later not in [s_["id"] for s_ in
+                             await db.supplement_stack(uid, on_day=day)]
+        # ...but visible in /stack, which is where you check what is coming.
+        assert later in [s_["id"] for s_ in await db.supplement_stack(uid)]
+
+        # And refused even when named directly.
+        assert await db.log_supplements(uid, day, [later]) == 0
+        assert await p.fetchval(
+            "SELECT count(*) FROM supplement_log WHERE supplement_id=$1", later) == 0
+
+        await p.execute("DELETE FROM supplement WHERE user_id=$1", uid)
+
+    run(scenario())

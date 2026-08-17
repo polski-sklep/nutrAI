@@ -869,15 +869,23 @@ async def upsert_supplement(
     return sup_id
 
 
-async def supplement_stack(user_id: int, active_only: bool = True) -> list[asyncpg.Record]:
+async def supplement_stack(user_id: int, active_only: bool = True,
+                           on_day: dt.date | None = None) -> list[asyncpg.Record]:
+    """`on_day` hides anything not started yet — for the daily picker.
+
+    /stack and /schedule pass nothing, because a supplement you have decided on
+    but not begun is exactly what those screens exist to show.
+    """
     p = await pool()
+    started = "AND (s.starts_on IS NULL OR s.starts_on <= $2)" if on_day else ""
+    args: list[Any] = [user_id] + ([on_day] if on_day else [])
     return await p.fetch(
         f"""SELECT s.*, (SELECT count(*) FROM supplement_nutrient sn
                           WHERE sn.supplement_id = s.id) AS n_nutrients
               FROM supplement s
-             WHERE s.user_id = $1 {'AND s.active' if active_only else ''}
+             WHERE s.user_id = $1 {'AND s.active' if active_only else ''} {started}
           ORDER BY s.name""",
-        user_id,
+        *args,
     )
 
 
@@ -887,13 +895,22 @@ async def log_supplements(user_id: int, day: dt.date, supplement_ids: Sequence[i
     async with p.acquire() as con, con.transaction():
         if supplement_ids is None:
             rows = await con.fetch(
-                "SELECT id, servings_per_day FROM supplement WHERE user_id=$1 AND active", user_id
+                """SELECT id, servings_per_day FROM supplement
+                    WHERE user_id=$1 AND active
+                      AND (starts_on IS NULL OR starts_on <= $2)""",
+                user_id, day,
             )
         else:
+            # starts_on is checked here as well as in the picker. It was only
+            # honoured where things are pre-ticked, so a supplement dated to
+            # October could still be ticked by hand in August and logged —
+            # and it contributed nothing, because a product you have not
+            # started has no panel read off it yet either.
             rows = await con.fetch(
                 """SELECT id, servings_per_day FROM supplement
-                    WHERE user_id=$1 AND id = ANY($2::bigint[])""",
-                user_id, list(supplement_ids),
+                    WHERE user_id=$1 AND id = ANY($2::bigint[])
+                      AND (starts_on IS NULL OR starts_on <= $3)""",
+                user_id, list(supplement_ids), day,
             )
         for r in rows:
             await con.execute(
