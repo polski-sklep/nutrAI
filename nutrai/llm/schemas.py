@@ -313,3 +313,87 @@ This is transcription, not estimation. The difference matters more here than any
 8. The source may be a photograph of one packet or a written description of several products. Return one entry per distinct product either way.
 9. The dose someone takes is not always the label's serving. "Magnesium 175 mg, 1 capsule" against a panel stating 350 mg per 2-capsule serving means half a serving: set servings_per_day to 0.5 and leave the per-serving amounts as printed. Getting this backwards doubles the recorded dose every day.
 10. Record cadence where the source gives it. "Zinc 22 mg, every other day" is schedule 'alternate', not 'daily'. Assuming daily overstates a nutrient by half, permanently, and nothing downstream can detect it."""
+
+
+# ------------------------------------------------------------- food labels
+
+FOOD_LABEL_TOOL = {
+    "name": "read_food_label",
+    "description": (
+        "Transcribe the nutrition panel of one packaged food. Report only what "
+        "is printed. Do not supply typical values from memory."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "product_name": {
+                "type": "string",
+                "description": "As printed on the pack, without marketing words.",
+            },
+            "basis": {
+                "type": "string",
+                "enum": ["per_100g", "per_serving"],
+                "description": (
+                    "Which column the amounts below were read from. Prefer "
+                    "per_100g whenever the panel has one."
+                ),
+            },
+            "serving_grams": {
+                "type": ["number", "null"],
+                "description": (
+                    "Grams in one serving, when the panel states it. Required "
+                    "if basis is per_serving, because the amounts cannot be "
+                    "put on a per-100 g footing without it."
+                ),
+            },
+            "serving_includes_additions": {
+                "type": "boolean",
+                "description": (
+                    "True when the serving column includes something not in "
+                    "the pack — 'with 125 ml semi-skimmed milk' is the common "
+                    "case on cereal. That column describes a meal rather than "
+                    "the product and must not be used."
+                ),
+            },
+            "nutrients": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "nutrient_id": {"type": "integer"},
+                        "amount": {"type": "number"},
+                        "unit": {"type": "string"},
+                        "as_printed": {
+                            "type": "string",
+                            "description": "The panel line, verbatim, for checking.",
+                        },
+                    },
+                    "required": ["nutrient_id", "amount", "unit", "as_printed"],
+                },
+            },
+            "not_tracked": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Printed lines with no nutrient id available here.",
+            },
+            "unreadable": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Lines where a digit or unit could not be read.",
+            },
+        },
+        "required": ["product_name", "basis", "nutrients"],
+    },
+}
+
+FOOD_LABEL_SYSTEM = """You transcribe the nutrition panel of a packaged food from a photograph.
+
+This is transcription, not estimation. The number you report becomes the stored composition of that food and every future portion of it is computed from it, so:
+
+1. Report only what is printed in the photograph. If you happen to know what this product usually contains, that knowledge is not evidence and must not appear in the output.
+2. Prefer the per-100 g column. Set `basis` to say which column you read. If the panel gives only a per-serving column, set basis to per_serving and give serving_grams, without which the figures cannot be put on a per-100 g footing at all.
+3. Watch for a serving column that includes something not in the pack. Breakfast cereals routinely print "per serving: 30 g plus 125 ml semi-skimmed milk", and that column describes a bowl of cereal and milk rather than the cereal. Set serving_includes_additions true when you see it, and read the per-100 g column instead.
+4. Use only the nutrient ids supplied to you. A line with no id in that list goes in not_tracked, never approximated onto a neighbour. Vitamin B6 is not vitamin B12, and folic acid is not the same id as food folate.
+5. If a digit or a unit is unclear, put the line in `unreadable` rather than guessing. A wrong digit here is wrong in every future serving of this food, silently.
+6. A printed zero is a measurement and should be reported as 0. A line that is simply absent from the panel must be omitted entirely — an absent nutrient and a nutrient present at zero are different facts, and recording the first as the second understates nothing but claims a certainty the label does not give.
+7. Copy each line verbatim into `as_printed`. The person will check your transcription against the packet in their hand, and that is only possible if they can see what you read."""

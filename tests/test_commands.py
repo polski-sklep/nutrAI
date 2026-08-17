@@ -151,6 +151,7 @@ def test_every_prompt_opened_has_something_that_consumes_it():
         "confirm_entry",  # ✅ / ❌ / ✏️ on a parse
         "off_product",    # ✅ save it / ✏️ rename / 🗑 no on a looked-up panel
         "off_choices",    # the numbered pick buttons under a search
+        "food_panel",     # ✅ save it / 🗑 no on a transcribed panel
     }
 
     missing = {k for k in opened if k not in not_typed} - set(botmod.PROMPT_CONSUMERS)

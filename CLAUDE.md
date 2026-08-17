@@ -192,14 +192,16 @@ numbers are the record, and if one is wrong the packet is still in the cupboard.
 Agreed changes with the reasoning already settled. Do them when next in the
 area; do not re-litigate them.
 
-- **Remembered products.** Photograph a product's label once (panko, sauces,
-  branded staples) and reuse the panel thereafter. These *are* meal components,
-  so unlike supplements they belong in `food` with `data_type = 'user_product'`
-  and their panel in `food_nutrient` — which keeps `log_component.fdc_id`,
-  `profiles_for`, coverage, `portion_history` and the audit working unchanged,
-  and lets `precedence` rank your own label above USDA's generic row. Decided:
-  **ask every time** before reusing a saved product, rather than resolving to it
-  silently.
+- ~~**Remembered products.**~~ Built 17 Aug 2026. `/food` takes a photographed
+  panel, a barcode (OpenFoodFacts) or an ingredient list, and stores the result
+  in `food` with `data_type = 'user_product'` and a negative `fdc_id`, so
+  `log_component.fdc_id`, `profiles_for`, coverage, `portion_history`, `/why`
+  and the audit all work unchanged. `precedence` was rebuilt to rank
+  `user_product` at 0, above Foundation. The "ask every time" decision was
+  overtaken: a saved product wins on similarity and precedence, and the confirm
+  card names the row it matched, which turned out to be the better answer to
+  the same worry.
+
 - **NOVA processing score.** Scoped 16 Aug 2026, to be built after the eval
   fortnight ends (on or after 30 Aug 2026). Decisions below are settled; do not
   re-litigate them.

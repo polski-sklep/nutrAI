@@ -69,3 +69,73 @@ def test_the_search_endpoint_is_the_current_one():
             if "_get(" in ln]
     assert body and "SEARCH" in body[0], body
     assert off.SEARCH == "https://search.openfoodfacts.org"
+
+
+# --------------------------------------------------- transcribed food panels
+
+
+def test_a_per_serving_panel_is_scaled_and_says_so():
+    from nutrai.llm.parse import per_100g
+
+    panel, warns = per_100g({
+        "basis": "per_serving", "serving_grams": 30,
+        "nutrients": [{"nutrient_id": 1008, "amount": 111.6, "unit": "kcal",
+                       "as_printed": "Calories 111.6"}],
+    })
+    assert round(panel[1008]) == 372
+    assert any("30 g" in w for w in warns)
+
+
+def test_a_per_serving_panel_with_no_serving_weight_reads_nothing():
+    """Dividing by a number nobody supplied is how a made-up composition gets
+    stored and then trusted for every future portion."""
+    from nutrai.llm.parse import per_100g
+
+    panel, warns = per_100g({
+        "basis": "per_serving", "serving_grams": None,
+        "nutrients": [{"nutrient_id": 1008, "amount": 172, "unit": "kcal",
+                       "as_printed": "Calories 172"}],
+    })
+    assert panel == {}
+    assert warns and "cannot" in warns[0]
+
+
+def test_a_serving_column_that_includes_milk_is_flagged():
+    """Nesquik prints 'per serving: 30 g plus 125 ml semi-skimmed milk'. That
+    column describes a bowl of cereal and milk, not the cereal."""
+    from nutrai.llm.parse import per_100g
+
+    _panel, warns = per_100g({
+        "basis": "per_100g", "serving_includes_additions": True,
+        "nutrients": [{"nutrient_id": 1008, "amount": 372, "unit": "kcal",
+                       "as_printed": "Calories 372"}],
+    })
+    assert any("milk" in w for w in warns)
+
+
+def test_folic_acid_also_counts_as_total_folate():
+    """The target sits on total folate. Under 1186 alone it would count toward
+    nothing; under 1177 alone it would claim to be food folate, which it is
+    not."""
+    from nutrai.llm.parse import per_100g
+
+    panel, _w = per_100g({
+        "basis": "per_100g",
+        "nutrients": [{"nutrient_id": 1186, "amount": 185, "unit": "ug",
+                       "as_printed": "Folic Acid (ug) 185"}],
+    })
+    assert panel[1186] == 185 and panel[1177] == 185
+
+
+def test_the_card_shows_each_line_as_printed():
+    """A transcription is checkable at the moment it is made, and only if you
+    can see what was read."""
+    from nutrai.core.render import food_label_card
+
+    data = {"nutrients": [
+        {"nutrient_id": 1089, "amount": 10.4, "unit": "mg", "as_printed": "Iron(mg) 10.4"},
+    ], "unreadable": ["Trans fat (g)"]}
+    out = food_label_card("nesquik cereal", {1089: 10.4}, data)
+    assert "Iron(mg) 10.4" in out
+    assert "Could not read" in out and "Trans fat" in out
+    assert "Nesquik cereal" in out       # capitalised for display

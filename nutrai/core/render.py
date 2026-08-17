@@ -1936,3 +1936,45 @@ def off_choices_card(results: Sequence[dict], term: str) -> str:
     lines += ["", "<i>Tap one to see its panel. Nothing is saved until you "
                   "have looked at it.</i>"]
     return "\n".join(lines)
+
+
+def food_label_card(name: str, panel: dict, data: dict,
+                    warnings: Sequence[str] = ()) -> str:
+    """A transcribed food panel, verbatim beside the reading.
+
+    The `as printed` column is the point. A transcription is checkable at the
+    moment it is made — against the packet in your hand — and only if you can
+    see what was read. Without it this is just another number to trust.
+    """
+    lines = [f"🏷 <b>{_esc(_title(name))}</b>", ""]
+    for w in warnings:
+        lines.append(f"⚠️ <i>{_esc(w)}</i>")
+    if warnings:
+        lines.append("")
+
+    if not panel:
+        lines.append("<i>Nothing usable was read from that photo.</i>")
+        return "\n".join(lines)
+
+    rows = []
+    for n in data.get("nutrients") or []:
+        nid = int(n.get("nutrient_id", 0))
+        if nid not in panel:
+            continue
+        rows.append(f"{_short_note(str(n.get('as_printed', '')))[:30]:<32}"
+                    f"{panel[nid]:>9,.1f}")
+    lines.append("<pre>" + "\n".join(_esc(r) for r in rows) + "</pre>")
+    lines.append("<i>as printed · per 100 g</i>")
+
+    if data.get("not_tracked"):
+        lines.append(f"\n<i>Read but not counted, no nutrient id here: "
+                     f"{_esc(', '.join(data['not_tracked'][:6]))}</i>")
+    if data.get("unreadable"):
+        lines.append(f"\n⚠️ <b>Could not read:</b> "
+                     f"{_esc(', '.join(data['unreadable'][:4]))}"
+                     "\n<i>Left out rather than guessed. Retake the photo if "
+                     "those matter.</i>")
+
+    lines.append("\n<i>Check these against the packet before saving. A wrong "
+                 "digit here is wrong in every future serving of this food.</i>")
+    return "\n".join(lines)

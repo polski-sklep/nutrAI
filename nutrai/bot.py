@@ -1466,8 +1466,8 @@ async def _consume_food_name(msg: Message, u: Any, text: str, payload: dict) -> 
         f"🥫 Making a food called <b>{render._esc(name)}</b>.\n\n"
         "<b>What goes into it?</b> Reply with ingredients and amounts:\n"
         "<code>1000 ml water, 30 g salt, 100 ml white vinegar</code>\n\n"
-        "<i>Or send its <b>barcode</b> if it is a packaged product, and I will "
-        "look the panel up. Ingredients are resolved against USDA and added "
+        "<i>Or <b>photograph the nutrition panel</b>, or send its "
+        "<b>barcode</b>. Ingredients are resolved against USDA and added "
         "up — nothing estimated; an ingredient with no row is left out and "
         "named, not guessed around.</i>",
         parse_mode="HTML",
@@ -1829,6 +1829,83 @@ async def cb_off_discard(cq: CallbackQuery) -> None:
     await cq.message.edit_reply_markup(reply_markup=None)
     await cq.message.answer("Nothing saved. Send the ingredients instead, or "
                             "another barcode.")
+
+
+async def _handle_food_label(msg: Message, u: Any, name: str) -> None:
+    """Transcribe a packaged food's panel and offer to store it.
+
+    Same amendment as the supplement panel: a model may transcribe a printed
+    figure, never estimate one. What makes that safe is that it is checkable
+    at the moment it is made — so the card shows each line as printed beside
+    the figure taken from it.
+    """
+    f = await msg.bot.get_file(msg.photo[-1].file_id)
+    buf = await msg.bot.download_file(f.file_path)
+    b64, _w, _h = llm.prepare_image(buf.read())
+
+    note = await msg.answer("🏷 reading the panel…")
+    try:
+        data, cost = await llm.read_food_label(
+            user_id=u["id"], image_b64=b64, name_hint=name)
+    except Exception as exc:
+        await _parse_failed(note, exc)
+        return
+
+    panel, warnings = llm.per_100g(data)
+    label_name = name or data.get("product_name") or "unnamed"
+    if not panel:
+        await note.edit_text(
+            render.food_label_card(label_name, {}, data, warnings), parse_mode="HTML")
+        return
+
+    await db.put_pending(u["id"], "food_panel", {
+        "name": label_name,
+        "panel": {str(k): v for k, v in panel.items()},
+        "cost": cost,
+    })
+    await note.edit_text(
+        render.food_label_card(label_name, panel, data, warnings)
+        + f"\n<i>💸 {cost*100:.1f}¢</i>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ save it", callback_data="panelok:"),
+            InlineKeyboardButton(text="🗑 no", callback_data="panelno:"),
+        ]]),
+    )
+
+
+@dp.callback_query(F.data.startswith("panelok:"))
+async def cb_food_panel_save(cq: CallbackQuery) -> None:
+    u = await db.get_or_create_user(cq.from_user.id)
+    pending = await db.latest_pending(u["id"], "food_panel")
+    await cq.answer()
+    if not pending:
+        await cq.message.answer("That panel has expired. <code>/food</code> again.",
+                                parse_mode="HTML")
+        return
+    name = pending["name"]
+    panel = {int(k): float(v) for k, v in pending["panel"].items()}
+    fdc_id = await db.create_user_food(
+        u["id"], name, panel, note="transcribed from the printed panel")
+    await db.upsert_alias(u["id"], name, fdc_id, None)
+    await db.clear_awaits(u["id"], ("food_await", "food_panel"))
+    await cq.message.answer(
+        f"🥫 <b>{render._esc(render._title(name))}</b> saved — "
+        f"{len(panel)} nutrients from the packet.\n\n"
+        "<i>It outranks USDA's generic row whenever you log that name. "
+        "Photograph the panel again to correct it.</i>",
+        parse_mode="HTML",
+    )
+
+
+@dp.callback_query(F.data.startswith("panelno:"))
+async def cb_food_panel_discard(cq: CallbackQuery) -> None:
+    u = await db.get_or_create_user(cq.from_user.id)
+    await db.clear_pending(u["id"], "food_panel")
+    await cq.answer()
+    await cq.message.edit_reply_markup(reply_markup=None)
+    await cq.message.answer("Nothing saved. Send a clearer photo, a barcode, "
+                            "or the ingredients.")
 
 
 @dp.message(Command("stack"))
@@ -2327,6 +2404,12 @@ async def _handle_photos(msgs: list[Message]) -> None:
     u = await _user(msg)
     bot: Bot = msg.bot
     caption = next((m.caption for m in msgs if m.caption), None)
+
+    # A photo sent while naming a food is that food's nutrition panel.
+    food = await db.latest_pending(u["id"], "food_await", within_minutes=30)
+    if food:
+        await _handle_food_label(msg, u, food.get("name") or "")
+        return
 
     # A photo sent *just* after "add a supplement" is a label. One sent hours
     # later is dinner: the prompt was still open because only a command clears

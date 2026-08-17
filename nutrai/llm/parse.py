@@ -24,6 +24,8 @@ from ..core.estimate import MassEstimate, choose_mass
 from ..core.nutrition import ResolvedComponent, energy_cross_check, total_nutrients
 from .client import ToolResult, cached, call_tool
 from .schemas import (
+    FOOD_LABEL_SYSTEM,
+    FOOD_LABEL_TOOL,
     DISAMBIGUATE_SYSTEM,
     DISAMBIGUATE_TOOL,
     MODIFIER_SYSTEM,
@@ -561,3 +563,79 @@ def _nutrient_menu() -> str:
     }
     del CORE_NUTRIENTS
     return "\n".join(f"  {nid} = {label}" for nid, label in sorted(names.items()))
+
+
+async def read_food_label(
+    *, user_id: int, image_b64: str, name_hint: str = ""
+) -> tuple[dict[str, Any], float]:
+    """Transcribe a packaged food's panel into a per-100 g composition.
+
+    Same amendment as the supplement panel: a model may transcribe a printed
+    figure, never estimate one. The difference from a supplement is the
+    per-serving column, which on cereal routinely means "with 125 ml milk" and
+    describes a bowl rather than a product — so the tool is asked which column
+    it read and told to prefer per 100 g.
+    """
+    content: list[dict[str, Any]] = [{
+        "type": "image",
+        "source": {"type": "base64", "media_type": "image/jpeg", "data": image_b64},
+    }]
+    if name_hint:
+        content.append({"type": "text",
+                        "text": f"The user calls this food: {name_hint}"})
+    content.append({
+        "type": "text",
+        "text": "Transcribe the panel. Use only these nutrient ids:\n" + _nutrient_menu(),
+    })
+    res = await call_tool(
+        model=MODEL_PHOTO,
+        tool=FOOD_LABEL_TOOL,
+        system=[cached(FOOD_LABEL_SYSTEM)],
+        content=content,
+        max_tokens=3000,
+    )
+    await _log(res, "food_label", user_id)
+    return res.data, res.cost_usd
+
+
+def per_100g(data: dict[str, Any]) -> tuple[dict[int, float], list[str]]:
+    """(nutrient_id -> per 100 g, warnings).
+
+    Conversion happens here rather than in the model, which is told to report
+    what is printed and nothing else. A per-serving panel with no serving
+    weight cannot be converted at all, and saying so beats dividing by a
+    number nobody supplied.
+    """
+    warnings: list[str] = []
+    basis = data.get("basis", "per_100g")
+    grams = data.get("serving_grams")
+
+    if data.get("serving_includes_additions"):
+        warnings.append(
+            "the serving column on this pack includes something added to it — "
+            "milk, usually — so the per-100 g column was used instead")
+
+    scale = 1.0
+    if basis == "per_serving":
+        if not grams or float(grams) <= 0:
+            return {}, ["the panel gives only a per-serving column and no "
+                        "serving weight, so it cannot be put on a per-100 g "
+                        "footing — nothing was read"]
+        scale = 100.0 / float(grams)
+        warnings.append(f"read from the per-serving column and scaled up from "
+                        f"{float(grams):g} g")
+
+    out: dict[int, float] = {}
+    for n in data.get("nutrients") or []:
+        try:
+            out[int(n["nutrient_id"])] = float(n["amount"]) * scale
+        except (TypeError, ValueError, KeyError):
+            continue
+
+    # Folic acid on a label is the only stated contributor to total folate, and
+    # the target sits on total. Recorded under both rather than either alone:
+    # under 1186 only it would count toward nothing, under 1177 only it would
+    # claim to be food folate, which it is not.
+    if 1186 in out and 1177 not in out:
+        out[1177] = out[1186]
+    return out, warnings
