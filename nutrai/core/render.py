@@ -1152,6 +1152,7 @@ PROFILE_ROWS: list[tuple[str, str, str]] = [
     ("goal_weight_kg",  "Goal weight",    "kg — optional"),
     ("deficit_kcal",    "Daily deficit",  "kcal"),
     ("tz",              "Timezone",       "e.g. Europe/Warsaw"),
+    ("wake_hour",       "Usually up at",  "7, or blank to learn it"),
 ]
 
 
@@ -1179,6 +1180,8 @@ def profile_card(data: dict[str, Any], today: dt.date | None = None) -> str:
             shown = f"{float(v):g} kg"
         elif field == "deficit_kcal":
             shown = f"{float(v):g} kcal"
+        elif field == "wake_hour":
+            shown = f"{int(v):02d}:00 — note arrives {int(v)-1:02d}:30"
         elif field == "goal":
             shown = {"lose": "lose fat", "gain": "gain weight",
                      "recomp": "build muscle, lose fat",
@@ -1803,3 +1806,57 @@ def plan_card(data: dict, cost_usd: float | None = None) -> str:
     if cost_usd:
         lines.append(f"<i>💸 {cost_usd*100:.1f}¢</i>")
     return "\n".join(lines)
+
+
+def morning_note(name: str | None, yesterday: Sequence[Any],
+                 coverage: dict | None = None) -> str:
+    """Good morning, and at most one thing to do about yesterday.
+
+    Template and SQL only — invariant 4. It reads a ceiling that was crossed
+    and names the food that crossed it, which is arithmetic on last night's
+    log rather than an opinion about it.
+
+    One suggestion, never a list. A morning message that opens with five
+    corrections is one you learn to swipe away, and the point of it is to be
+    read.
+    """
+    hi = f"☀️ Good morning{', ' + _esc(_title(name)) if name else ''}."
+    if not yesterday:
+        return (f"{hi}\n\n<i>Nothing logged yesterday, so nothing to report. "
+                "A clean slate either way.</i>")
+
+    sc = day_score(yesterday, coverage or {})
+    lines = [hi, ""]
+
+    # The single most useful thing, chosen in a fixed order: a breached ceiling
+    # first because it is actionable this morning, then the weightiest floor
+    # you missed, then praise, which is what is left when neither applies.
+    if sc.breached:
+        worst = sc.breached[0]
+        # "Cholesterol 250%" carries the percentage; the lever is separate and
+        # only offered where there is an honest one-line answer.
+        bare = worst.split()[0] if worst else ""
+        lever = next((v for k, v in MORNING_LEVERS.items() if k.startswith(bare)), None)
+        lines.append(f"Yesterday you went over on <b>{_esc(worst)}</b>."
+                     + (f" Today, {lever}." if lever else ""))
+    elif sc.short:
+        lines.append(f"Yesterday came up short on <b>{_esc(sc.short[0])}</b>.")
+    else:
+        lines.append("Yesterday hit every floor without crossing a ceiling. "
+                     "Hard to improve on.")
+    lines.append(f"<i>{sc.covered:.0%} of your minimums covered.</i>")
+    return "\n".join(lines)
+
+
+# Ceilings that have an obvious, single, sayable lever. Deliberately short:
+# a suggestion for every nutrient would be a lookup table pretending to be
+# advice, and most excesses have no one-line answer.
+MORNING_LEVERS: dict[str, str] = {
+    "Cholesterol": "fewer egg yolks would be the biggest single change",
+    "Sodium": "most of it is usually bread, cheese and anything jarred",
+    "Saturated fat": "butter, cheese and fatty cuts are where it concentrates",
+    "Total Sugars": "the sweet drinks and snacks first, before the fruit",
+    "Alcohol": "a night off is the whole lever",
+    "Energy": "the largest single item is usually easier to halve than to drop",
+    "Caffeine": "an earlier last coffee matters more than a smaller one",
+}

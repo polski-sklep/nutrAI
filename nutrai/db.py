@@ -1197,7 +1197,8 @@ async def last_weight(user_id: int) -> list[asyncpg.Record]:
 
 
 PROFILE_FIELDS = ("display_name", "sex", "birth_date", "height_cm",
-                  "activity_factor", "goal", "goal_weight_kg", "deficit_kcal", "tz")
+                  "activity_factor", "goal", "goal_weight_kg", "deficit_kcal", "tz",
+                  "wake_hour")
 
 
 async def mark_targets_derived(user_id: int, weight_kg: float | None, day: dt.date) -> None:  # noqa: D401
@@ -1734,3 +1735,62 @@ async def weak_labels(entry_id: int) -> list[str]:
 
     data = json.loads(raw) if isinstance(raw, str) else raw
     return list(data.get("_weak") or [])
+
+
+async def set_entry_time(entry_id: int, when: dt.datetime, tz: str,
+                         rollover_hour: int) -> dt.date:
+    """Move an entry to a different moment, and to the day that moment falls in.
+
+    local_date is recomputed rather than left alone: a meal moved to 01:00
+    belongs to the day that has not ended yet, and an entry whose timestamp and
+    day disagree would show on one card and count toward another.
+    """
+    p = await pool()
+    day = local_date_for(when, tz, rollover_hour)
+    await p.execute(
+        "UPDATE log_entry SET logged_at = $2, local_date = $3 WHERE id = $1",
+        entry_id, when, day,
+    )
+    return day
+
+
+async def note_first_contact(user_id: int, day: dt.date) -> None:
+    """Record the first message of a local day. Silent if already recorded."""
+    p = await pool()
+    await p.execute(
+        """INSERT INTO first_contact (user_id, local_date) VALUES ($1,$2)
+           ON CONFLICT DO NOTHING""",
+        user_id, day,
+    )
+
+
+async def wake_hour_estimate(user_id: int, tz: str) -> int | None:
+    """The hour you are usually up, from when you usually first speak.
+
+    A median, not a mean: one 03:00 insomnia message should not drag the whole
+    estimate an hour earlier. Needs a week before it will say anything, because
+    three days of data would move the note around at random.
+    """
+    p = await pool()
+    row = await p.fetchrow(
+        """SELECT count(*) AS n,
+                  percentile_disc(0.5) WITHIN GROUP (
+                      ORDER BY EXTRACT(hour FROM at AT TIME ZONE $2)) AS med
+             FROM first_contact
+            WHERE user_id = $1 AND local_date > current_date - 14""",
+        user_id, tz,
+    )
+    if not row or (row["n"] or 0) < 7 or row["med"] is None:
+        return None
+    return int(row["med"])
+
+
+async def morning_note_sent(user_id: int, day: dt.date) -> bool:
+    """Claims the day. False means someone else already sent it."""
+    p = await pool()
+    result = await p.execute(
+        """INSERT INTO morning_note_log (user_id, local_date) VALUES ($1,$2)
+           ON CONFLICT DO NOTHING""",
+        user_id, day,
+    )
+    return result.endswith(" 1")

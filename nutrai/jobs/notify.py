@@ -180,6 +180,55 @@ async def supplement_reminders(bot) -> None:
                 log.warning("supplement reminder failed for %s: %s", u["telegram_id"], exc)
 
 
+async def morning_notes(bot) -> None:
+    """Good morning, half an hour before you are usually up.
+
+    Template and SQL only, like everything else in this module. The one line
+    of judgement it contains — which excess to mention — is a fixed ordering
+    over yesterday's own numbers, not a model's opinion of them.
+    """
+    import zoneinfo
+
+    p = await db.pool()
+    now = dt.datetime.now(dt.timezone.utc)
+    for u in await p.fetch(
+        """SELECT id, telegram_id, tz, day_rollover_hour, display_name,
+                  wake_hour, morning_note FROM app_user"""
+    ):
+        if not u["morning_note"]:
+            continue
+        wake = u["wake_hour"]
+        if wake is None:
+            wake = await db.wake_hour_estimate(u["id"], u["tz"])
+        if wake is None:
+            continue   # not told, and not enough history to have learned
+
+        local = now.astimezone(zoneinfo.ZoneInfo(u["tz"]))
+        send_at = (local.replace(hour=int(wake), minute=0, second=0, microsecond=0)
+                   - dt.timedelta(minutes=30))
+        # A greeting three hours late is not a greeting.
+        if not (dt.timedelta(0) <= local - send_at <= dt.timedelta(hours=2)):
+            continue
+
+        day = db.local_date_for(now, u["tz"], u["day_rollover_hour"])
+        if not await db.morning_note_sent(u["id"], day):
+            continue
+
+        yday = day - dt.timedelta(days=1)
+        try:
+            await bot.send_message(
+                u["telegram_id"],
+                render.morning_note(
+                    u["display_name"],
+                    await db.day_progress(u["id"], yday),
+                    await db.day_coverage(u["id"], yday),
+                ),
+                parse_mode="HTML",
+            )
+        except Exception as exc:
+            log.warning("morning note failed for %s: %s", u["telegram_id"], exc)
+
+
 async def sweep(bot) -> None:
     """Periodic pass. Catches 'under' rules, which a write can never trigger:
     the reason you missed your protein floor is that you stopped eating."""
@@ -241,6 +290,10 @@ def start_scheduler(bot) -> AsyncIOScheduler:
     # a frequent sweep safe.
     sched.add_job(supplement_reminders, "interval", minutes=10, args=[bot],
                   id="supp_reminders")
+    # Same cadence: the note has to land near a time that differs per person
+    # and moves as the wake estimate does, so a cron hour cannot express it.
+    sched.add_job(morning_notes, "interval", minutes=10, args=[bot],
+                  id="morning_notes")
     # 21:00 Europe/Warsaw. Move this to a per-user job once there is more than
     # one user; a single cron is honest for a single-user deployment.
     sched.add_job(daily_summary, CronTrigger(hour=19, minute=0), args=[bot], id="daily")

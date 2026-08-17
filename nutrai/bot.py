@@ -108,6 +108,7 @@ def kb_confirm(entry_id: int,
                weak: Sequence[tuple[str, float]] = ()) -> InlineKeyboardMarkup:
     rows = [[
         InlineKeyboardButton(text="✅ log it", callback_data=f"ok:{entry_id}"),
+        InlineKeyboardButton(text="🕐 time", callback_data=f"when:{entry_id}"),
         InlineKeyboardButton(text="✏️ fix", callback_data=f"fix:{entry_id}"),
         InlineKeyboardButton(text="🗑 discard", callback_data=f"no:{entry_id}"),
     ]]
@@ -131,6 +132,10 @@ async def _user(msg: Message) -> Any:
     # the next meal you send is parsed as a supplement panel — expensively, and
     # wrongly. `on_text` never reaches here, so a reply to a prompt is safe;
     # only a command clears one.
+    # When you first speak each day, which is what the morning note's timing
+    # is learned from. Cheap, and it makes the estimate a measurement rather
+    # than a guess about a guess.
+    await db.note_first_contact(u["id"], _today(u))
     if (msg.text or "").startswith("/"):
         await db.clear_awaits(u["id"], tuple(PROMPT_CONSUMERS))
     return u
@@ -569,6 +574,7 @@ PROFILE_VALIDATORS: dict[str, Any] = {
     "goal_weight_kg": lambda v: _num(v, 20, 400),
     "deficit_kcal": lambda v: _num(v, -1500, 1500),
     "tz": lambda v: v.strip() if zoneinfo.ZoneInfo(v.strip()) else None,
+    "wake_hour": lambda v: int(_num(v, 0, 23)) if _num(v, 0, 23) is not None else None,
     "display_name": lambda v: v.strip()[:80] or None,
 }
 
@@ -1596,6 +1602,66 @@ async def _consume_plan_apply(msg: Message, u: Any, text: str, payload: dict) ->
         "✅ Applied:\n" + "\n".join(f"   • {render._esc(a)}" for a in applied)
         + "\n\n<i>Targets are versioned, so past days keep the ones they were "
           "judged against.</i>",
+        parse_mode="HTML",
+    )
+    return True
+
+
+@dp.callback_query(F.data.startswith("when:"))
+async def cb_set_time(cq: CallbackQuery) -> None:
+    """Move an entry to when you actually ate it.
+
+    Logging happens when you get round to it, not when you eat — and the
+    fasting window, the caffeine-after-noon covariate and every sleep
+    correlation are computed from the timestamp, so a meal filed an hour late
+    is a small error in four places at once.
+    """
+    u = await db.get_or_create_user(cq.from_user.id)
+    entry_id = int(cq.data.split(":", 1)[1])
+    await db.put_pending(u["id"], "time_await", {"entry_id": entry_id})
+    await cq.answer()
+    await cq.message.answer(
+        "🕐 <b>When did you have it?</b>\n\n"
+        "<code>08:30</code> · <code>yesterday 19:00</code> · "
+        "<code>-2h</code> for two hours ago",
+        parse_mode="HTML",
+    )
+
+
+TIME_REPLY = re.compile(
+    r"^\s*(?:(?P<rel>-\d{1,2})\s*h"
+    r"|(?:(?P<yday>yesterday|yday)\s+)?(?P<h>\d{1,2})[:.](?P<m>\d{2}))\s*$",
+    re.IGNORECASE,
+)
+
+
+@consumes("time_await")
+async def _consume_time(msg: Message, u: Any, text: str, payload: dict) -> bool:
+    m = TIME_REPLY.match(text)
+    if not m:
+        return False    # not a time, so it is a meal and passes through
+    now = _local_now(u)
+    if m.group("rel"):
+        when = now + dt.timedelta(hours=int(m.group("rel")))
+    else:
+        when = now.replace(hour=int(m.group("h")), minute=int(m.group("m")),
+                           second=0, microsecond=0)
+        if m.group("yday"):
+            when -= dt.timedelta(days=1)
+        elif when > now:
+            # 23:40 typed at 00:10 means last night, not tonight. Never
+            # forward: you cannot have eaten something you have not eaten.
+            when -= dt.timedelta(days=1)
+
+    entry_id = int(payload["entry_id"])
+    day = await db.set_entry_time(
+        entry_id, when.astimezone(dt.timezone.utc), u["tz"], u["day_rollover_hour"])
+    await db.clear_pending(u["id"], "time_await")
+    same_day = day == _today(u)
+    await msg.answer(
+        f"🕐 Moved to <b>{when:%H:%M}</b>"
+        + ("" if same_day else f" on <b>{day:%a %-d %b}</b>")
+        + ".\n\n<i>Confirm it above when you are ready.</i>",
         parse_mode="HTML",
     )
     return True

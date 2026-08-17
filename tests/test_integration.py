@@ -2511,3 +2511,69 @@ def test_a_weak_match_offers_to_define_the_food(harness):
             assert await db.delete_user_food(uid, f["fdc_id"])
 
     run(scenario())
+
+
+def test_the_time_of_a_new_entry_can_be_corrected(harness):
+    """Logging happens when you get round to it, not when you eat — and the
+    fasting window, the caffeine-after-noon covariate and every sleep
+    correlation read the timestamp, so a meal filed an hour late is a small
+    error in four places at once."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await harness.feed("250 g minced beef, 164 g rice")
+        card = harness.sent.last()
+        entry_id = _confirm_id(card)
+        assert [b for b in card.buttons if b.startswith("when:")], card.buttons
+
+        harness.sent.clear()
+        await harness.press(f"when:{entry_id}", card.message_id)
+        assert "When did you have it" in harness.sent.last().text
+
+        harness.llm.calls.clear()
+        await harness.feed("08:30")
+        assert not harness.llm.calls, "the time went to the meal parser"
+
+        import zoneinfo
+        row = await p.fetchrow(
+            "SELECT logged_at, local_date FROM log_entry WHERE id=$1", entry_id)
+        local = row["logged_at"].astimezone(zoneinfo.ZoneInfo("Europe/Warsaw"))
+        assert (local.hour, local.minute) == (8, 30), local
+
+        # A reply that is not a time is still a meal.
+        await harness.press(f"when:{entry_id}", card.message_id)
+        harness.llm.calls.clear()
+        await harness.feed("a bowl of porridge")
+        assert harness.llm.calls, "a meal was swallowed by the time prompt"
+
+    run(scenario())
+
+
+def test_a_time_is_never_moved_forwards(harness):
+    """23:40 typed at 00:10 means last night. You cannot have eaten something
+    you have not eaten."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await harness.feed("250 g minced beef, 164 g rice")
+        card = harness.sent.last()
+        entry_id = _confirm_id(card)
+        await harness.press(f"when:{entry_id}", card.message_id)
+
+        import zoneinfo
+        now = dt.datetime.now(dt.timezone.utc).astimezone(
+            zoneinfo.ZoneInfo("Europe/Warsaw"))
+        ahead = (now + dt.timedelta(hours=3)).strftime("%H:%M")
+        await harness.feed(ahead)
+
+        moved = (await p.fetchrow(
+            "SELECT logged_at FROM log_entry WHERE id=$1", entry_id))["logged_at"]
+        assert moved < dt.datetime.now(dt.timezone.utc), moved
+
+    run(scenario())

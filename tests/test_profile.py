@@ -78,7 +78,7 @@ def _data(**over):
         "goal_weight_kg": 74, "deficit_kcal": 500, "tz": "Europe/Warsaw",
         "targets_set_at_kg": 78.0,
         "measured_tdee_kcal": None, "measured_tdee_days": None,
-        "measured_tdee_on": None,
+        "measured_tdee_on": None, "wake_hour": None,
     })
     user.update(over.pop("user", {}))
     d = {"user": user, "weight_kg": 78.0, "weighed_on": dt.date(2026, 8, 16),
@@ -105,7 +105,8 @@ def test_an_empty_profile_says_what_is_missing_rather_than_showing_zeros():
     empty = {k: None for k in
              ("display_name", "sex", "birth_date", "height_cm", "activity_factor",
               "goal", "goal_weight_kg", "deficit_kcal", "tz", "targets_set_at_kg",
-              "measured_tdee_kcal", "measured_tdee_days", "measured_tdee_on")}
+              "measured_tdee_kcal", "measured_tdee_days", "measured_tdee_on",
+              "wake_hour")}
     card = render.profile_card(
         _data(user=empty, weight_kg=None, weighed_on=None, energy_target=None,
               targets_from=None),

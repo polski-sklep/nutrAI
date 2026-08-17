@@ -581,3 +581,41 @@ def test_an_unbreached_ceiling_is_not_a_nutrient_that_is_fine():
     ]
     out = day_card(DAY, empty, [], coverage={r["nutrient_id"]: 1.0 for r in empty})
     assert "where they should be" not in out, out
+
+
+def test_the_morning_note_names_one_thing_not_five():
+    """A morning message opening with five corrections is one you learn to
+    swipe away, and the point of it is to be read."""
+    from nutrai.core.render import morning_note
+
+    heavy = [
+        row(1253, "Cholesterol", "MG", 749, hi=300, state="over"),
+        row(1093, "Sodium, Na", "MG", 2738, hi=2300, state="over"),
+        row(1003, "Protein", "G", 114, lo=165, state="under"),
+        row(1079, "Fiber, total dietary", "G", 30, lo=38, state="under"),
+    ]
+    out = morning_note("jacob", heavy, {r["nutrient_id"]: 1.0 for r in heavy})
+    assert "Good morning, Jacob" in out
+    assert out.count("went over") == 1
+    assert "Cholesterol" in out and "Sodium" not in out
+    assert "egg yolks" in out          # the lever, where an honest one exists
+
+
+def test_the_morning_note_praises_a_clean_day_and_says_nothing_on_an_empty_one():
+    from nutrai.core.render import morning_note
+
+    clean = [row(1003, "Protein", "G", 170, lo=165),
+             row(1093, "Sodium, Na", "MG", 1800, hi=2300)]
+    assert "Hard to improve on" in morning_note(
+        "jacob", clean, {r["nutrient_id"]: 1.0 for r in clean})
+    assert "Nothing logged yesterday" in morning_note("jacob", [])
+
+
+def test_a_shortfall_is_named_when_nothing_was_breached():
+    from nutrai.core.render import morning_note
+
+    short = [row(1003, "Protein", "G", 60, lo=165, state="under"),
+             row(1093, "Sodium, Na", "MG", 1200, hi=2300)]
+    out = morning_note(None, short, {r["nutrient_id"]: 1.0 for r in short})
+    assert "came up short" in out and "Protein" in out
+    assert "Good morning." in out      # no name, no dangling comma
