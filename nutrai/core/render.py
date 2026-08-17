@@ -1860,3 +1860,59 @@ MORNING_LEVERS: dict[str, str] = {
     "Energy": "the largest single item is usually easier to halve than to drop",
     "Caffeine": "an earlier last coffee matters more than a smaller one",
 }
+
+
+def off_product_card(p: dict, name: str) -> str:
+    """An OpenFoodFacts panel, shown before anything is saved.
+
+    Says where the numbers came from. USDA rows are laboratory assays, a
+    photographed label is a panel you were holding, and this is a database
+    anyone may edit — three different claims, and a card that blurred them
+    would be the most quietly wrong thing here.
+    """
+    from ..config import CARB, ENERGY_KCAL, FAT, FIBER, PROTEIN, SAT_FAT, SODIUM, SUGAR
+
+    panel = p["panel"]
+    lines = [f"🌍 <b>{_esc(p['name'] or name)}</b>"]
+    bits = [b for b in (p.get("brand"), p.get("quantity")) if b]
+    if bits:
+        lines.append(f"<i>{_esc(' · '.join(bits))}</i>")
+    lines.append("")
+
+    rows = []
+    for nid, label, unit in (
+        (ENERGY_KCAL, "Energy", "kcal"), (PROTEIN, "Protein", "g"),
+        (CARB, "Carbs", "g"), (SUGAR, "of which sugars", "g"),
+        (FAT, "Fat", "g"), (SAT_FAT, "of which saturated", "g"),
+        (FIBER, "Fibre", "g"), (SODIUM, "Sodium", "mg"),
+    ):
+        if nid in panel:
+            rows.append(f"{label:<20}{panel[nid]:>8,.1f} {unit}")
+    lines.append("<pre>" + "\n".join(_esc(r) for r in rows) + "</pre>")
+    lines.append("<i>per 100 g</i>")
+
+    if p.get("serving"):
+        lines.append(f"<i>label serving: {_esc(p['serving'])}</i>")
+
+    lines += ["", f"<i>From OpenFoodFacts, which anyone can edit — {len(panel)} "
+                  f"nutrients populated, and it rates its own entry "
+                  f"{p['completeness']:.0%} complete. Check the figures against "
+                  "the packet before saving; nothing missing has been filled in "
+                  "with a guess.</i>"]
+    return "\n".join(lines)
+
+
+def off_choices_card(results: Sequence[dict], term: str) -> str:
+    if not results:
+        return (f"🌍 Nothing on OpenFoodFacts for <b>{_esc(term)}</b> with a "
+                "usable panel.\n\n<i>A barcode finds it reliably where a name "
+                "does not — the long number under the stripes.</i>")
+    lines = [f"🌍 <b>Found on OpenFoodFacts</b> for {_esc(term)}", ""]
+    for i, p in enumerate(results, 1):
+        brand = f" · {_esc(p['brand'])}" if p["brand"] else ""
+        kcal = p["panel"].get(1008)
+        lines.append(f"<code>{i}</code> {_esc(p['name'])}{brand}"
+                     + (f" — {kcal:,.0f} kcal/100 g" if kcal else ""))
+    lines += ["", "<i>Tap one to see its panel. Nothing is saved until you "
+                  "have looked at it.</i>"]
+    return "\n".join(lines)

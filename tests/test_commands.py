@@ -149,6 +149,8 @@ def test_every_prompt_opened_has_something_that_consumes_it():
         "repeat_menu",    # answered by the repeat grammar, not free text
         "plan_proposal",  # core/plan.py, deliberately unwired
         "confirm_entry",  # ✅ / ❌ / ✏️ on a parse
+        "off_product",    # ✅ save it / ✏️ rename / 🗑 no on a looked-up panel
+        "off_choices",    # the numbered pick buttons under a search
     }
 
     missing = {k for k in opened if k not in not_typed} - set(botmod.PROMPT_CONSUMERS)

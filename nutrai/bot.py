@@ -19,7 +19,7 @@ from aiogram.types import (
     Message,
 )
 
-from . import db
+from . import db, off
 from .config import CONFIDENCE_FLOOR, settings
 from .core import dsl, estimate, fasting, insight, plan, render, suggest
 from .core import profile as profile_mod
@@ -1450,14 +1450,17 @@ async def _consume_food_name(msg: Message, u: Any, text: str, payload: dict) -> 
         f"🥫 Making a food called <b>{render._esc(name)}</b>.\n\n"
         "<b>What goes into it?</b> Reply with ingredients and amounts:\n"
         "<code>1000 ml water, 30 g salt, 100 ml white vinegar</code>\n\n"
-        "<i>I will resolve each against USDA, add them up and store the result "
-        "per 100 g. Nothing is estimated — an ingredient with no row is left "
-        "out and named, not guessed around.</i>",
+        "<i>Or send its <b>barcode</b> if it is a packaged product, and I will "
+        "look the panel up. Ingredients are resolved against USDA and added "
+        "up — nothing estimated; an ingredient with no row is left out and "
+        "named, not guessed around.</i>",
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="🍽 no — log it as a meal",
-                                 callback_data="foodmeal:"),
-        ]]),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔎 search OpenFoodFacts",
+                                  callback_data="offsearch:")],
+            [InlineKeyboardButton(text="🍽 no — log it as a meal",
+                                  callback_data="foodmeal:")],
+        ]),
     )
     return True
 
@@ -1496,6 +1499,20 @@ async def cb_food_as_meal(cq: CallbackQuery) -> None:
 async def _consume_food_recipe(msg: Message, u: Any, text: str, payload: dict) -> bool:
     """Turn a list of ingredients into one food row, by arithmetic only."""
     name = payload.get("name") or "unnamed"
+
+    bc = BARCODE.match(text)
+    if bc:
+        note = await msg.answer("🔎 looking up the barcode…")
+        p = await off.by_barcode(bc.group(1))
+        if not p:
+            await note.edit_text(
+                "That barcode is not on OpenFoodFacts. Send the ingredients "
+                "instead and I will build the panel from USDA rows.")
+            return True
+        await note.delete()
+        await _offer_off_product(msg, u, p, name)
+        return True
+
     note = await msg.answer("🥫 working it out…")
     try:
         parsed = await llm.parse_text(text, user_id=u["id"])
@@ -1665,6 +1682,137 @@ async def _consume_time(msg: Message, u: Any, text: str, payload: dict) -> bool:
         parse_mode="HTML",
     )
     return True
+
+
+BARCODE = re.compile(r"^\s*(\d{8,14})\s*$")
+
+
+async def _offer_off_product(msg: Message, u: Any, p: dict, name: str) -> None:
+    """Show a looked-up panel and wait for a decision. Never saves first."""
+    await db.put_pending(u["id"], "off_product", {"product": {
+        "name": p["name"], "brand": p["brand"], "barcode": p["barcode"],
+        "panel": {str(k): v for k, v in p["panel"].items()},
+    }, "name": name})
+    await msg.answer(
+        render.off_product_card(p, name),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ save it", callback_data="offok:"),
+            InlineKeyboardButton(text="✏️ rename", callback_data="offname:"),
+            InlineKeyboardButton(text="🗑 no", callback_data="offno:"),
+        ]]),
+    )
+
+
+@dp.callback_query(F.data.startswith("offsearch:"))
+async def cb_off_search(cq: CallbackQuery) -> None:
+    u = await db.get_or_create_user(cq.from_user.id)
+    pending = await db.latest_pending(u["id"], "food_await")
+    name = (pending or {}).get("name", "")
+    await cq.answer()
+    if not name:
+        await cq.message.answer("Start with <code>/food</code> and a name.",
+                                parse_mode="HTML")
+        return
+    note = await cq.message.answer("🔎 searching OpenFoodFacts…")
+    results = await off.search(name)
+    if not results:
+        await note.edit_text(render.off_choices_card([], name), parse_mode="HTML")
+        return
+    await db.put_pending(u["id"], "off_choices", {
+        "results": [{"name": r["name"], "brand": r["brand"],
+                     "barcode": r["barcode"]} for r in results],
+        "name": name,
+    })
+    await note.edit_text(
+        render.off_choices_card(results, name),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text=str(i + 1), callback_data=f"offpick:{i}")
+            for i in range(len(results))
+        ]]),
+    )
+
+
+@dp.callback_query(F.data.startswith("offpick:"))
+async def cb_off_pick(cq: CallbackQuery) -> None:
+    u = await db.get_or_create_user(cq.from_user.id)
+    idx = int(cq.data.split(":", 1)[1])
+    choices = await db.latest_pending(u["id"], "off_choices")
+    await cq.answer()
+    if not choices or idx >= len(choices["results"]):
+        await cq.message.answer("That list has expired. <code>/food</code> to start again.",
+                                parse_mode="HTML")
+        return
+    picked = choices["results"][idx]
+    p = await off.by_barcode(picked["barcode"])
+    if not p:
+        await cq.message.answer("OpenFoodFacts did not return that product.")
+        return
+    await _offer_off_product(cq.message, u, p, choices["name"])
+
+
+@dp.callback_query(F.data.startswith("offok:"))
+async def cb_off_save(cq: CallbackQuery) -> None:
+    u = await db.get_or_create_user(cq.from_user.id)
+    pending = await db.latest_pending(u["id"], "off_product")
+    await cq.answer()
+    if not pending:
+        await cq.message.answer("That product has expired. <code>/food</code> again.",
+                                parse_mode="HTML")
+        return
+    prod = pending["product"]
+    name = pending.get("name") or prod["name"]
+    panel = {int(k): float(v) for k, v in prod["panel"].items()}
+    fdc_id = await db.create_user_food(
+        u["id"], name, panel,
+        note=f"OpenFoodFacts {prod['barcode']} · {prod['brand']}".strip(" ·"),
+    )
+    await db.upsert_alias(u["id"], name, fdc_id, None)
+    await db.clear_awaits(u["id"], ("food_await", "off_product", "off_choices"))
+    await cq.message.answer(
+        f"🥫 <b>{render._esc(render._title(name))}</b> saved from OpenFoodFacts "
+        f"({len(panel)} nutrients).\n\n"
+        "<i>It outranks USDA's generic row when you log that name. Correct it "
+        "any time by defining it again — same name, same row.</i>",
+        parse_mode="HTML",
+    )
+
+
+@dp.callback_query(F.data.startswith("offname:"))
+async def cb_off_rename(cq: CallbackQuery) -> None:
+    u = await db.get_or_create_user(cq.from_user.id)
+    await db.put_pending(u["id"], "off_rename", {})
+    await cq.answer()
+    await cq.message.answer(
+        "What should it be called? <i>The name you will actually type when "
+        "logging it — short beats accurate.</i>", parse_mode="HTML")
+
+
+@consumes("off_rename")
+async def _consume_off_rename(msg: Message, u: Any, text: str, payload: dict) -> bool:
+    name = text.strip()
+    if not name or len(name) > 60:
+        return False
+    pending = await db.latest_pending(u["id"], "off_product")
+    if not pending:
+        return False
+    await db.put_pending(u["id"], "off_product", {**pending, "name": name})
+    await db.clear_pending(u["id"], "off_rename")
+    await msg.answer(
+        f"Renamed to <b>{render._esc(render._title(name))}</b>. "
+        "Tap <b>save it</b> above.", parse_mode="HTML")
+    return True
+
+
+@dp.callback_query(F.data.startswith("offno:"))
+async def cb_off_discard(cq: CallbackQuery) -> None:
+    u = await db.get_or_create_user(cq.from_user.id)
+    await db.clear_awaits(u["id"], ("off_product", "off_choices"))
+    await cq.answer()
+    await cq.message.edit_reply_markup(reply_markup=None)
+    await cq.message.answer("Nothing saved. Send the ingredients instead, or "
+                            "another barcode.")
 
 
 @dp.message(Command("stack"))
