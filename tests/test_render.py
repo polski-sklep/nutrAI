@@ -49,7 +49,7 @@ def test_unmeasured_nutrient_is_not_shown_as_a_deficiency():
 def test_partial_coverage_is_annotated_rather_than_hidden():
     coverage = {1008: 1.0, 1003: 1.0, 1005: 1.0, 1004: 1.0, 1178: 0.42, 1087: 1.0}
     out = day_card(DAY, PROGRESS, [], coverage=coverage)
-    assert "(only 42% of food has data)" in out
+    assert "(from 42% of food)" in out
     # Still listed — 42% covered and nothing found is real information.
     assert "▽ Vitamin B12" in out
 
@@ -57,7 +57,7 @@ def test_partial_coverage_is_annotated_rather_than_hidden():
 def test_full_coverage_adds_no_noise():
     coverage = {nid: 1.0 for nid in (1008, 1003, 1005, 1004, 1178, 1087)}
     out = day_card(DAY, PROGRESS, [], coverage=coverage)
-    assert "of food has data" not in out
+    assert "from" not in out
     assert "not measured" not in out
 
 
@@ -546,8 +546,8 @@ def test_no_coverage_note_where_absence_means_zero():
     # The table rows, not the "still to go" summary that also names them.
     caffeine_line = next(ln for ln in out.splitlines() if "Caffeine" in ln and "mg" in ln)
     calcium_line = next(ln for ln in out.splitlines() if "Calcium" in ln and "mg" in ln)
-    assert "of food has data" not in caffeine_line
-    assert "of food has data" in calcium_line
+    assert "from" not in caffeine_line
+    assert "from" in calcium_line
 
 
 def test_a_weighted_floor_moves_the_score_and_is_named():

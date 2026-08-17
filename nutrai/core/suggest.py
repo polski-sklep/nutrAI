@@ -20,6 +20,15 @@ from ..config import ENERGY_KCAL
 
 # A floor with less than this share of its target outstanding counts as met.
 NEARLY_MET = 0.10
+# A suggestion has to close at least this much of some gap to be worth making.
+#
+# Three drinks that each close 1% of potassium are not answers to "what should
+# I eat next" — they are the least-bad rows in a thin list, and printing them
+# with a tick beside them dresses noise as advice.
+WORTH_SUGGESTING = 0.05
+# Below this a ceiling breach is rounding, not a breach. "+0%" three times
+# under every suggestion is noise that trains you to skip the warning line.
+WORTH_WARNING = 0.01
 
 
 @dataclass(frozen=True)
@@ -54,7 +63,7 @@ def rank(
     it is arithmetic on the gaps, and the card shows the gaps it used so the
     ranking can be argued with.
     """
-    floors: dict[int, tuple[float, float]] = {}   # nid -> (remaining, target)
+    floors: dict[int, tuple[float, float, float]] = {}  # nid -> (remaining, target, weight)
     ceilings: dict[int, tuple[float, float]] = {}  # nid -> (headroom, ceiling)
     for r in progress:
         nid = r["nutrient_id"]
@@ -65,7 +74,8 @@ def rank(
             # A floor 97% met is done. Leaving it in lets a dish be ranked for
             # "closing Calcium 100%" when the hundred per cent was 8 mg.
             if target > 0 and remaining > NEARLY_MET * target:
-                floors[nid] = (remaining, target)
+                w = float(r["weight"]) if "weight" in r and r["weight"] is not None else 1.0
+                floors[nid] = (remaining, target, w)
         if r["max_amount"] is not None:
             ceiling = float(r["max_amount"])
             if ceiling > 0:
@@ -76,7 +86,7 @@ def rank(
         nuts = d["nutrients"]
         closes: list[tuple[int, float]] = []
         score = 0.0
-        for nid, (remaining, target) in floors.items():
+        for nid, (remaining, target, w) in floors.items():
             contributed = nuts.get(nid, 0.0)
             if contributed <= 0:
                 continue
@@ -90,19 +100,34 @@ def rank(
             # mattered. Multiplying by the shortfall share makes the last 2%
             # of a floor worth about a fiftieth of the first.
             shortfall_share = remaining / target
-            credit = (min(contributed, remaining) / target) * shortfall_share
+            # Weighted like the day score is, so protein at x2.5 outranks a
+            # micronutrient you happen to be equally short of.
+            credit = (min(contributed, remaining) / target) * shortfall_share * w
             score += credit
             closes.append((nid, min(contributed, remaining) / remaining))
 
         breaches: list[tuple[int, float]] = []
+        penalty = 0.0
         for nid, (headroom, ceiling) in ceilings.items():
             contributed = nuts.get(nid, 0.0)
             over = contributed - headroom
             if over > 0:
                 breaches.append((nid, over / ceiling))
-                score -= over / ceiling
+                penalty += over / ceiling
+        # A breach can cost a suggestion at most half its value, never more.
+        #
+        # Unbounded, the penalty was on a different scale from the credit and
+        # swamped it: with fat already at 97% of its ceiling everything
+        # containing fat breaches, so a pickle juice closing 7% of potassium
+        # outranked a shake closing 48% of a protein gap. A dish that shuts
+        # the gap that matters is worth suggesting even when it nudges a
+        # ceiling you have already crossed — the warning line says so, and
+        # that is what the warning line is for.
+        score -= min(penalty, score * 0.5)
 
-        if not closes:
+        closes = [(nid, share) for nid, share in closes if share >= WORTH_WARNING]
+        breaches = [(nid, share) for nid, share in breaches if share >= WORTH_WARNING]
+        if not closes or max(share for _n, share in closes) < WORTH_SUGGESTING:
             continue
         closes.sort(key=lambda c: -c[1])
         breaches.sort(key=lambda b: -b[1])

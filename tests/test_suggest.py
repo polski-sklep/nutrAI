@@ -11,9 +11,10 @@ from __future__ import annotations
 from nutrai.core import suggest
 
 
-def prog(nid, name, unit, amount, lo=None, hi=None):
+def prog(nid, name, unit, amount, lo=None, hi=None, state="ok", weight=1):
     return {"nutrient_id": nid, "nutrient_name": name, "unit": unit,
-            "amount": amount, "min_amount": lo, "max_amount": hi}
+            "amount": amount, "min_amount": lo, "max_amount": hi,
+            "state": state, "weight": weight}
 
 
 def dish(did, name, nutrients, times=3):
@@ -103,3 +104,49 @@ def test_a_nearly_met_floor_is_not_a_gap_at_all():
     # Still a gap at 15% outstanding.
     progress = [prog(1087, "Calcium, Ca", "MG", 850, lo=1000)]
     assert suggest.rank({1: dish(1, "Milk", {1087: 200})}, progress)
+
+
+def test_a_breach_cannot_outweigh_closing_the_gap_that_matters():
+    """With fat at 97% of its ceiling everything containing fat breaches, so an
+    unbounded penalty put a pickle juice closing 7% of potassium above a shake
+    closing 48% of a protein gap."""
+    progress = [
+        {**prog(1003, "Protein", "G", 116, lo=165, state="under"), "weight": 2.5},
+        {**prog(1092, "Potassium, K", "MG", 1892, lo=3400, state="under"), "weight": 1},
+        {**prog(1004, "Total lipid (fat)", "G", 76, hi=78), "weight": 1},
+    ]
+    snapshots = {
+        1: dish(1, "Pickle juice", {1008: 51, 1092: 105}),
+        2: dish(2, "Protein shake", {1008: 121, 1003: 24, 1092: 160, 1004: 3}),
+    }
+    ranked = suggest.rank(snapshots, progress)
+    assert ranked[0].name == "Protein shake", [(s.name, round(s.score, 4)) for s in ranked]
+    assert all(s.score >= 0 for s in ranked), "a penalty drove a score negative"
+
+
+def test_a_suggestion_that_closes_almost_nothing_is_not_offered():
+    """Three drinks each closing 1% of potassium are not an answer to 'what
+    should I eat next' — a tick beside them dresses noise as advice."""
+    progress = [prog(1092, "Potassium, K", "MG", 1892, lo=3400, state="under")]
+    trivial = {1: dish(1, "Lemon water", {1008: 6, 1092: 20})}   # ~1% of the gap
+    assert suggest.rank(trivial, progress) == []
+
+    real = {1: dish(1, "Big salad", {1008: 200, 1092: 800})}
+    assert suggest.rank(real, progress)
+
+
+def test_the_protein_gap_leads_because_it_is_weighted():
+    """Ordered by share of target alone, protein at 30% short sat below a
+    micronutrient at 90% short — while carrying two and a half times the
+    weight in the day's score."""
+    from nutrai.core.render import suggest_card
+
+    progress = [
+        {**prog(1003, "Protein", "G", 116, lo=165, state="under"), "weight": 2.5},
+        {**prog(1106, "Vitamin A, RAE", "UG", 489, lo=900, state="under"), "weight": 1},
+    ]
+    # The empty card names only the gap that matters, so that is the assertion:
+    # protein, despite vitamin A being a larger share of its own target.
+    out = suggest_card([], progress, 500)
+    assert "The gap that matters is Protein" in out, out
+    assert "Vitamin A" not in out

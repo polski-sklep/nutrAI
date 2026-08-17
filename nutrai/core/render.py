@@ -577,10 +577,14 @@ def _row(r: Any, covered: float | None = None) -> str:
     if r["nutrient_id"] in ABSENT_MEANS_ZERO:
         covered = None
     if covered is not None and covered < COVERAGE_FULL:
-        # "(60% measured)" was read as "you have eaten 60% of it". It means
-        # something quite different: 40% of what you ate sits in a USDA row
-        # that never had this nutrient assayed, so the figure is a floor.
-        line += f"  (only {covered:.0%} of food has data)"
+        # Neutral, and short enough not to wrap.
+        #
+        # "(60% measured)" read as "you have eaten 60% of it". "(only 93% of
+        # food has data)" fixed that and introduced the opposite problem:
+        # "only" is a complaint, and at 93% there is nothing to complain
+        # about — it made a good figure look like a warning. So state it, and
+        # let the number carry its own weight.
+        line += f"  (from {covered:.0%} of food)"
     return line
 
 
@@ -1556,18 +1560,6 @@ def suggest_card(suggestions: Sequence[Any], progress: Sequence[Any],
     names = {r["nutrient_id"]: _short(r["nutrient_name"]) for r in progress}
     units = {r["nutrient_id"]: r["unit"] for r in progress}
 
-    if not suggestions:
-        return (
-            "🍽 <b>Nothing to suggest yet</b>\n\n"
-            "<i>Suggestions come from dishes you have already eaten and "
-            "confirmed — there is no model here inventing meals. Log a few "
-            "and they become candidates.</i>"
-        )
-
-    # Name the gaps being ranked against, biggest first. Without this the
-    # ranking is an assertion: a suggestion that "closes Calcium 100%" reads
-    # as decisive until you know the calcium gap was 8 mg and the protein gap
-    # was 118 g.
     gaps = []
     for r in progress:
         if r["min_amount"] is None:
@@ -1575,10 +1567,55 @@ def suggest_card(suggestions: Sequence[Any], progress: Sequence[Any],
         target = float(r["min_amount"])
         short = target - float(r["amount"])
         if target > 0 and short > 0.10 * target:
-            gaps.append((short / target, r["nutrient_id"], short, r["unit"]))
+            # Weighted, so protein at x2.5 leads a list it was bottom of.
+            w = float(r["weight"]) if "weight" in r and r["weight"] is not None else 1.0
+            gaps.append(((short / target) * w, r["nutrient_id"], short, r["unit"]))
     gaps.sort(reverse=True)
 
+    if not suggestions:
+        # Saying so beats offering the least-bad rows in a thin list. Three
+        # drinks that each close 1% of potassium are not an answer to "what
+        # should I eat next", and a tick beside them dresses noise as advice.
+        lines = ["🍽 <b>Nothing here would close today's gaps</b>", ""]
+        if gaps:
+            biggest = gaps[0]
+            lines.append(
+                f"<i>The gap that matters is "
+                f"{_esc(names.get(biggest[1], str(biggest[1])))} — "
+                f"{fmt_amount(biggest[2], biggest[3])} to go — and nothing you "
+                "have logged before would make a real dent in it.</i>")
+        else:
+            lines.append("<i>Suggestions come from dishes you have already "
+                         "eaten and confirmed. Log a few and they become "
+                         "candidates.</i>")
+        if kcal_left is not None:
+            lines += ["", f"<i>You have {kcal_left:,.0f} kcal left to do it in.</i>"]
+        return "\n".join(lines)
+
+    # Name the gaps being ranked against, biggest first. Without this the
+    # ranking is an assertion: a suggestion that "closes Calcium 100%" reads
+    # as decisive until you know the calcium gap was 8 mg and the protein gap
+    # was 118 g.
     lines = ["🍽 <b>What would close today's gaps</b>", ""]
+
+    # When the gaps cannot fit in the energy that is left, say so once rather
+    # than repeating "(368 over what is left)" under every row. Protein is
+    # 4 kcal a gram whatever it comes in, so a 49 g gap needs at least 196
+    # kcal — if the budget is smaller than that, the day is arithmetically
+    # closed and no suggestion can change it.
+    from ..config import PROTEIN as _PROTEIN
+
+    protein_gap = next((short for _s, nid, short, _u in gaps if nid == _PROTEIN), 0.0)
+    if kcal_left is not None and protein_gap > 0:
+        floor_kcal = protein_gap * 4
+        if floor_kcal > kcal_left:
+            lines += [
+                f"<i>⚠️ {protein_gap:.0f} g of protein needs at least "
+                f"{floor_kcal:,.0f} kcal, and you have {max(kcal_left, 0):,.0f} "
+                "left. Both cannot happen today — the suggestions below close "
+                "the gaps and go over.</i>",
+                "",
+            ]
     if gaps:
         shown = ", ".join(
             f"{_esc(names.get(nid, str(nid)))} {fmt_amount(short, unit)}"
@@ -1603,10 +1640,11 @@ def suggest_card(suggestions: Sequence[Any], progress: Sequence[Any],
             lines.append(f"   ⚠️ pushes past {over}")
         lines.append("")
 
-    lines.append("<i>Ranked by arithmetic on today's remaining gaps, from your "
-                 "own logged dishes. Nothing here was invented by a model — "
-                 "the numbers are the snapshots taken when you last ate each "
-                 "one.</i>")
+    # The old footer explained the implementation — arithmetic, snapshots, no
+    # model — which is a fact about how this was built rather than anything
+    # the reader needs. One line about where the list comes from is enough;
+    # the rest is on the card already.
+    lines.append("<i>From things you have eaten before.</i>")
     return "\n".join(lines).rstrip()
 
 
