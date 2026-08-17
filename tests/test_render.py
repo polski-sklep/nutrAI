@@ -622,3 +622,39 @@ def test_a_shortfall_is_named_when_nothing_was_breached():
     out = morning_note(None, short, {r["nutrient_id"]: 1.0 for r in short})
     assert "came up short" in out and "Protein" in out
     assert "Good morning." in out      # no name, no dangling comma
+
+
+def _entry(name, protein, kcal=200):
+    import datetime as dt
+    return {"name": name, "protein": protein, "kcal": kcal, "slot": "lunch",
+            "logged_at": dt.datetime(2026, 8, 17, 12, 0, tzinfo=dt.timezone.utc)}
+
+
+def test_protein_spread_reports_distribution_not_a_cap():
+    """There is no absorption ceiling to model. Trommelen et al. (2023) found
+    100 g produced a greater and longer response than 25 g, so discounting
+    protein above a per-meal figure would understate what was eaten."""
+    from nutrai.core.render import protein_spread
+
+    out = protein_spread([_entry("eggs", 42), _entry("shake", 24), _entry("beef", 22)])
+    assert "88 g" in out and "3 servings" in out
+    assert "42 g · 24 g · 22 g" in out
+
+
+def test_a_coffee_is_not_a_protein_serving():
+    """3 g in a latte is not a fourth meal, and counting it as one makes an
+    uneven day look even."""
+    from nutrai.core.render import protein_spread
+
+    out = protein_spread([_entry("beef", 60), _entry("coffee", 3), _entry("tea", 1)])
+    assert out is None          # only one real serving
+
+
+def test_a_lopsided_day_is_named_and_an_even_one_is_not():
+    from nutrai.core.render import protein_spread
+
+    lopsided = protein_spread([_entry("steak", 90), _entry("toast", 10)])
+    assert "Most of it in one meal" in lopsided
+
+    even = protein_spread([_entry("a", 40), _entry("b", 35), _entry("c", 35)])
+    assert "Most of it in one meal" not in even

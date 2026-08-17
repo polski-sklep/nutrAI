@@ -219,12 +219,23 @@ async def start(msg: Message) -> None:
 @dp.message(Command("r", "repeat"))
 async def repeat_menu(msg: Message) -> None:
     u = await _user(msg)
-    dishes = await db.top_dishes(u["id"], 8, tz=u["tz"], hour=_local_now(u).hour)
+    hour = _local_now(u).hour
+    dishes = await db.top_dishes(u["id"], 8, tz=u["tz"], hour=hour)
+    components = await db.top_components(u["id"], 6, tz=u["tz"], hour=hour)
     if not dishes:
         await msg.answer("Nothing to repeat yet. Log something first.")
         return
-    await db.put_pending(u["id"], "repeat_menu", {"ids": [d["id"] for d in dishes]})
-    await msg.answer(render.repeat_menu(dishes), parse_mode="HTML")
+    await db.put_pending(u["id"], "repeat_menu", {
+        "ids": [d["id"] for d in dishes],
+        "components": [
+            {"fdc_id": c["fdc_id"], "label": c["label"],
+             "grams": float(c["stated_grams"] or c["median_grams"] or 0),
+             "stated": c["stated_grams"] is not None}
+            for c in components
+        ],
+    })
+    await msg.answer(render.repeat_menu(dishes, components=components),
+                     parse_mode="HTML")
 
 
 @dp.message(Command("today"))
@@ -2767,6 +2778,48 @@ async def _try_fix(msg: Message, u: Any, text: str) -> bool:
     return True
 
 
+async def _log_one_component(msg: Message, u: Any, comp: dict,
+                             cmd: dsl.RepeatCommand) -> bool:
+    """Log a single food at the amount you usually have of it.
+
+    The mass is `stated` only when it came from portion_history, which reads
+    weighed and stated masses alone — invariant 7. Otherwise it is a `prior`,
+    and sigma is computed from that, so a median of estimates never presents
+    itself as something you measured.
+    """
+    grams = float(comp.get("grams") or 0)
+    for op in cmd.ops:
+        if isinstance(op, dsl.Scale):
+            grams *= float(op.factor)
+        elif isinstance(op, dsl.TotalGrams):
+            grams = float(op.grams)
+    if grams <= 0:
+        return False
+
+    source = "stated" if comp.get("stated") else "prior"
+    label = comp["label"]
+    resolved = [ResolvedComponent(
+        label, int(comp["fdc_id"]), grams, 1.0,
+        estimate.sigma_for(grams, source), source)]
+    entry_id = await db.create_pending_entry(
+        u["id"], render._title(label), resolved,
+        source="repeat", slot=dsl.slot_for_hour(_local_now(u).hour),
+        confidence=None, model=None, parse={"one_component": True},
+        photo_file_id=None, dish_id=None, when=_when_from_ops(cmd.ops, u),
+        tz=u["tz"], rollover_hour=u["day_rollover_hour"],
+        grams_sources=[source],
+    )
+    profiles = await db.profiles_for([int(comp["fdc_id"])])
+    totals = total_nutrients(resolved, profiles)
+    await msg.answer(
+        render.confirm_card(render._title(label), resolved, totals,
+                            confidence=None, warnings=[]),
+        parse_mode="HTML",
+        reply_markup=kb_confirm(entry_id),
+    )
+    return True
+
+
 async def _try_repeat(msg: Message, u: Any, cmd: dsl.RepeatCommand) -> bool:
     """The zero-token path. Returns False if this was not a repeat after all."""
     dish = None
@@ -2776,6 +2829,10 @@ async def _try_repeat(msg: Message, u: Any, cmd: dsl.RepeatCommand) -> bool:
             return False
         idx = int(cmd.selector) - 1
         ids = menu.get("ids", [])
+        comps = menu.get("components", [])
+        if len(ids) <= idx < len(ids) + len(comps):
+            # A number past the dish list is one of the single foods below it.
+            return await _log_one_component(msg, u, comps[idx - len(ids)], cmd)
         if not (0 <= idx < len(ids)):
             return False
         p = await db.pool()

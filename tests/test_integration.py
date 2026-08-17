@@ -2611,3 +2611,67 @@ def test_a_supplement_that_has_not_started_cannot_be_logged(harness):
         await p.execute("DELETE FROM supplement WHERE user_id=$1", uid)
 
     run(scenario())
+
+
+def test_repeat_offers_single_foods_as_well_as_dishes(harness):
+    """A plate of six things becomes one dish you will never eat again in that
+    combination, while the parts you do repeat sit inside it unreachable."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await harness.feed("250 g minced beef, 164 g rice, a splash of olive oil")
+        card = harness.sent.last()
+        await harness.press(f"ok:{_confirm_id(card)}", card.message_id)
+
+        harness.sent.clear()
+        await harness.feed("/repeat")
+        menu = harness.sent.last()
+        assert "Or one thing" in menu.text, menu.text
+
+        pending = await db.latest_pending(uid, "repeat_menu")
+        n_dishes = len(pending["ids"])
+        assert pending["components"], "no single foods offered"
+
+        # The first number past the dish list logs one food on its own.
+        harness.llm.calls.clear()
+        harness.sent.clear()
+        await harness.feed(str(n_dishes + 1))
+        assert not harness.llm.calls, "a repeat cost a model call"
+        one = harness.sent.last()
+        assert [b for b in one.buttons if b.startswith("ok:")], one.buttons
+
+        entry_id = _confirm_id(one)
+        comps = await p.fetch(
+            "SELECT label, grams, grams_source FROM log_component WHERE entry_id=$1", entry_id)
+        assert len(comps) == 1, comps
+        # A median of estimates is a prior, never something you stated.
+        assert comps[0]["grams_source"] in ("stated", "prior")
+
+    run(scenario())
+
+
+def test_a_single_food_repeat_takes_a_modifier(harness):
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        await harness.feed("250 g minced beef, 164 g rice")
+        card = harness.sent.last()
+        await harness.press(f"ok:{_confirm_id(card)}", card.message_id)
+        await harness.feed("/repeat")
+        pending = await db.latest_pending(uid, "repeat_menu")
+        n = len(pending["ids"]) + 1
+        base = pending["components"][0]["grams"]
+
+        harness.sent.clear()
+        await harness.feed(f"{n} x2")
+        p = await db.pool()
+        grams = await p.fetchval(
+            """SELECT lc.grams FROM log_component lc
+                WHERE lc.entry_id = (SELECT max(id) FROM log_entry WHERE user_id=$1)""", uid)
+        assert float(grams) == base * 2
+
+    run(scenario())

@@ -515,6 +515,10 @@ def day_card(
     if table:
         lines.append("<pre>" + "\n".join(table) + "</pre>")
 
+    spread = protein_spread(entries)
+    if spread:
+        lines.append(spread)
+
     if settled and not show_all:
         # No pointer to /today from a card that *is* /today, and none from
         # /yesterday either — it is the same command one line up in the menu.
@@ -583,7 +587,8 @@ def _row(r: Any, covered: float | None = None) -> str:
 # ------------------------------------------------------------ repeat menu
 
 
-def repeat_menu(dishes: Sequence[Any], templates: Sequence[Any] = ()) -> str:
+def repeat_menu(dishes: Sequence[Any], templates: Sequence[Any] = (),
+                components: Sequence[Any] = ()) -> str:
     """Ordered by the hour, so breakfast is at the top at breakfast time.
 
     No counts beside the names: "x3" invited reading the number as how many
@@ -600,6 +605,17 @@ def repeat_menu(dishes: Sequence[Any], templates: Sequence[Any] = ()) -> str:
         lines.append("")
         for t in templates:
             lines.append(f"<code>{_esc(t['slug'])}</code> 📋 {_esc(_title(t['name']))}")
+
+    if components:
+        # A plate of six things becomes one dish you will never eat again in
+        # that combination, while the parts you do repeat sit in it
+        # unreachable. Numbering continues from the dishes, so one reply
+        # answers either list.
+        lines.append("")
+        lines.append("🥚 <b>Or one thing</b>")
+        for j, c in enumerate(components, start=len(dishes) + 1):
+            grams = float(c["stated_grams"] or c["median_grams"] or 0)
+            lines.append(f"<code>{j}</code> {_esc(_title(c['label']))} — {grams:.0f} g")
     lines += [
         "",
         "<i>Reply with the number to log it. Add a change if you need one:</i>",
@@ -1978,3 +1994,40 @@ def food_label_card(name: str, panel: dict, data: dict,
     lines.append("\n<i>Check these against the packet before saving. A wrong "
                  "digit here is wrong in every future serving of this food.</i>")
     return "\n".join(lines)
+
+
+# Below this, an entry is not a protein serving. A coffee with 3 g in it is
+# not a fourth meal and counting it as one makes an uneven day look even.
+PROTEIN_SERVING_MIN = 8.0
+
+
+def protein_spread(entries: Sequence[Any]) -> str | None:
+    """How today's protein is distributed, not just how much of it there is.
+
+    There is no absorption ceiling to model — a 100 g bolus is absorbed, and
+    Trommelen et al. (2023) found it produced a greater and longer anabolic
+    response than 25 g, so discounting protein above some per-meal figure
+    would understate what was actually eaten. That is the one direction of
+    error this system exists to avoid.
+
+    What the evidence does support is spread: three or four servings of 30-40 g
+    beat one of 120 g for total daily synthesis. So this reports the
+    distribution and leaves the total alone.
+    """
+    servings = sorted(
+        (float(e["protein"]) for e in entries if float(e["protein"] or 0) >= PROTEIN_SERVING_MIN),
+        reverse=True,
+    )
+    if len(servings) < 2:
+        return None
+    total = sum(float(e["protein"] or 0) for e in entries)
+    shown = " · ".join(f"{g:.0f} g" for g in servings[:5])
+    more = f" +{len(servings) - 5}" if len(servings) > 5 else ""
+    line = (f"🥩 <b>{total:.0f} g</b> across {len(servings)} servings — "
+            f"{shown}{more}")
+    # Named only when it is lopsided enough to act on. A gentle skew is
+    # normal and flagging it every day would train you to ignore the line.
+    if servings[0] > 0.5 * total and total > 40:
+        line += "\n<i>Most of it in one meal — spreading it across the day "
+        line += "does more for muscle than the same total in one sitting.</i>"
+    return line

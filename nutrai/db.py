@@ -1826,3 +1826,46 @@ async def morning_note_sent(user_id: int, day: dt.date) -> bool:
         user_id, day,
     )
     return result.endswith(" 1")
+
+
+async def top_components(user_id: int, limit: int = 6, *, tz: str = "UTC",
+                         hour: int | None = None,
+                         exclude_fdc: Sequence[int] = ()) -> list[asyncpg.Record]:
+    """Single foods you eat often, for repeating one thing rather than a plate.
+
+    A meal of six items becomes one dish you will never eat again in that
+    combination, while the parts you actually repeat — three eggs, 60 g of rye
+    bread — are stored and unreachable. This offers them.
+
+    The usual portion comes from `portion_history` where there is one, which
+    reads only weighed and stated masses: invariant 7. Where there is not, the
+    median of what has been logged is used and the mass is marked `prior`, so
+    an estimate never launders itself into a statement.
+    """
+    p = await pool()
+    return await p.fetch(
+        """WITH used AS (
+               SELECT lc.fdc_id,
+                      mode() WITHIN GROUP (ORDER BY lc.label) AS label,
+                      count(*) AS n,
+                      percentile_disc(0.5) WITHIN GROUP (ORDER BY lc.grams) AS median_grams,
+                      count(*) FILTER (
+                          WHERE $5::int IS NOT NULL AND LEAST(
+                              abs(EXTRACT(hour FROM le.logged_at AT TIME ZONE $4) - $5),
+                              24 - abs(EXTRACT(hour FROM le.logged_at AT TIME ZONE $4) - $5)
+                          ) <= 3) AS n_near
+                 FROM log_component lc
+                 JOIN log_entry le ON le.id = lc.entry_id
+                WHERE le.user_id = $1 AND le.status = 'confirmed'
+                  AND le.local_date > current_date - 28
+                  AND NOT (lc.fdc_id = ANY($3::int[]))
+             GROUP BY lc.fdc_id
+           )
+           SELECT u.fdc_id, u.label, u.n, u.n_near, u.median_grams,
+                  (SELECT percentile_disc(0.5) WITHIN GROUP (ORDER BY grams)
+                     FROM portion_history($1, u.fdc_id, 30)) AS stated_grams
+             FROM used u
+         ORDER BY (u.n_near > 0) DESC, u.n_near DESC, u.n DESC, u.fdc_id
+            LIMIT $2""",
+        user_id, limit, list(exclude_fdc) or [0], tz, hour,
+    )
