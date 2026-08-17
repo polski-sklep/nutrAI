@@ -20,7 +20,7 @@ from aiogram.types import (
 )
 
 from . import db, off
-from .config import CONFIDENCE_FLOOR, settings
+from .config import CARB, CONFIDENCE_FLOOR, ENERGY_KCAL, FAT, PROTEIN, settings
 from .core import dsl, estimate, fasting, insight, plan, render, suggest
 from .core import profile as profile_mod
 from .core.nutrition import ResolvedComponent, total_nutrients
@@ -1550,6 +1550,22 @@ async def _consume_food_recipe(msg: Message, u: Any, text: str, payload: dict) -
         return True
 
     per_100g = {nid: amount / yield_g * 100 for nid, amount in totals.items()}
+
+    # A food with macros and no energy is a wrong row, not a zero-calorie
+    # food. "butter" resolved to a Foundation entry carrying 81.5 g of fat and
+    # no energy figure at all, and the panel was stored saying zero — which
+    # then subtracts nothing from an energy ceiling for ever.
+    if not per_100g.get(ENERGY_KCAL) and any(
+        per_100g.get(n, 0) > 0 for n in (PROTEIN, CARB, FAT)
+    ):
+        await note.edit_text(
+            "❌ The rows those ingredients matched carry no energy figure, so "
+            "this would be stored as a food with fat and no calories.\n\n"
+            "<i>Name the ingredient differently — 'butter' rather than a "
+            "brand, say — or photograph the panel instead.</i>",
+            parse_mode="HTML",
+        )
+        return True
     fdc_id = await db.create_user_food(
         u["id"], name, per_100g,
         note=f"made from: {', '.join(f'{c.grams:g} g {c.label}' for c in res.components)}",

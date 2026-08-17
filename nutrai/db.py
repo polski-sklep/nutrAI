@@ -149,7 +149,10 @@ async def search_foods(query: str, limit: int = 5, data_types: Sequence[str] | N
         SELECT f.fdc_id, f.description, f.data_type, f.brand, f.precedence,
                similarity(f.description, $1) AS sim,
                ts_rank(to_tsvector('english', f.description),
-                       plainto_tsquery('english', $1)) AS rank
+                       plainto_tsquery('english', $1)) AS rank,
+               EXISTS (SELECT 1 FROM food_nutrient fn
+                        WHERE fn.fdc_id = f.fdc_id
+                          AND fn.nutrient_id IN (1008, 2048, 2047)) AS has_energy
           FROM food f
          WHERE (to_tsvector('english', f.description) @@ plainto_tsquery('english', $1)
                 OR f.description % $1)
@@ -159,7 +162,19 @@ async def search_foods(query: str, limit: int = 5, data_types: Sequence[str] | N
                {dt_filter}
       ORDER BY (similarity(f.description, $1) + ts_rank(
                    to_tsvector('english', f.description),
-                   plainto_tsquery('english', $1))) DESC, f.precedence ASC
+                   plainto_tsquery('english', $1))) DESC,
+               -- A row with no energy figure, ahead of precedence.
+               --
+               -- 276 of 411 Foundation rows carry no 1008 and no Atwater
+               -- variant to fill it from, and precedence ranks Foundation
+               -- first — so "butter" resolved to Butter, stick, unsalted at
+               -- 81.5 g of fat and zero calories, and a user food built from
+               -- it was stored with no energy at all. Relevance still leads;
+               -- this only decides between rows that matched equally well.
+               (EXISTS (SELECT 1 FROM food_nutrient fn
+                         WHERE fn.fdc_id = f.fdc_id
+                           AND fn.nutrient_id IN (1008, 2048, 2047))) DESC,
+               f.precedence ASC
          LIMIT $2"""
     args: list[Any] = [query, limit, user_id]
     if data_types:
