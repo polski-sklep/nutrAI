@@ -175,7 +175,8 @@ async def profiles_for(fdc_ids: Iterable[int]) -> dict[int, dict[int, float]]:
 # ------------------------------------------------------------------ dishes
 
 
-async def top_dishes(user_id: int, limit: int = 8) -> list[asyncpg.Record]:
+async def top_dishes(user_id: int, limit: int = 8, *, tz: str = "UTC",
+                     hour: int | None = None) -> list[asyncpg.Record]:
     p = await pool()
     # Only dishes actually eaten at least once.
     #
@@ -185,11 +186,34 @@ async def top_dishes(user_id: int, limit: int = 8) -> list[asyncpg.Record]:
     # a phantom whisky cocktail was sitting in this menu at ×0, one tap from
     # being logged again. "Repeat" means something you have eaten; a dish with
     # no confirmed entry has never been a meal.
+    #
+    # Ordered by the hour you are asking, not only by how often you eat it.
+    # At 07:00 the useful list is what you have before, and a flat
+    # frequency ranking buried the morning water at rank 11 of 11 behind
+    # every dinner. Dishes eaten near this time of day come first; frequency
+    # and recency break the tie, and everything else follows behind them.
     return await p.fetch(
-        """SELECT id, slug, name, default_slot, times_logged, score
-             FROM v_dish_rank WHERE user_id = $1 AND times_logged > 0
-         ORDER BY score DESC, last_logged_at DESC NULLS LAST LIMIT $2""",
-        user_id, limit,
+        """WITH near AS (
+               SELECT e.dish_id, count(*) AS n_near
+                 FROM log_entry e
+                WHERE e.user_id = $1 AND e.status = 'confirmed'
+                  AND e.dish_id IS NOT NULL AND $4::int IS NOT NULL
+                  AND LEAST(
+                        abs(EXTRACT(hour FROM e.logged_at AT TIME ZONE $3) - $4),
+                        24 - abs(EXTRACT(hour FROM e.logged_at AT TIME ZONE $3) - $4)
+                      ) <= 3
+             GROUP BY e.dish_id
+           )
+           SELECT r.id, r.slug, r.name, r.default_slot, r.times_logged, r.score,
+                  COALESCE(near.n_near, 0) AS n_near
+             FROM v_dish_rank r
+             LEFT JOIN near ON near.dish_id = r.id
+            WHERE r.user_id = $1 AND r.times_logged > 0
+         ORDER BY (COALESCE(near.n_near, 0) > 0) DESC,
+                  COALESCE(near.n_near, 0) DESC,
+                  r.score DESC, r.last_logged_at DESC NULLS LAST
+            LIMIT $2""",
+        user_id, limit, tz, hour,
     )
 
 
@@ -769,13 +793,22 @@ async def replace_components(entry_id: int, components: list[ResolvedComponent],
         )
 
 
-async def latest_pending(user_id: int, kind: str) -> dict | None:
+async def latest_pending(user_id: int, kind: str,
+                         within_minutes: int | None = None) -> dict | None:
+    """`within_minutes` narrows it to a recently-opened prompt.
+
+    pending_action expires after two hours, which is right for "confirm this
+    meal" and far too long for "the next photo is a supplement label" — a tap
+    in the afternoon captured a plate of dinner.
+    """
     p = await pool()
     row = await p.fetchrow(
         """SELECT payload FROM pending_action
             WHERE user_id = $1 AND kind = $2 AND expires_at > now()
+              AND ($3::int IS NULL
+                   OR created_at > now() - make_interval(mins => $3))
          ORDER BY created_at DESC LIMIT 1""",
-        user_id, kind,
+        user_id, kind, within_minutes,
     )
     return json.loads(row["payload"]) if row else None
 
@@ -1598,6 +1631,11 @@ async def create_user_food(
                 WHERE owner_user_id = $1 AND lower(description) = lower($2)""",
             user_id, name,
         )
+        # Stored capitalised. "pickle juice" in a list of proper names looks
+        # like a bug, and fixing it on the way out means every card has to
+        # remember to.
+        name = (name or "").strip()
+        name = name[:1].upper() + name[1:]
         fdc_id = existing or -(await con.fetchval("SELECT nextval('user_food_id_seq')"))
         await con.execute(
             """INSERT INTO food (fdc_id, data_type, description, category, owner_user_id)

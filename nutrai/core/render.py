@@ -392,6 +392,7 @@ def day_card(
     entries: Sequence[Any],
     *,
     show_all: bool = False,
+    show_weights: bool = True,
     pct_measured: float | None = None,
     energy_sigma: float = 0.0,
     coverage: dict[int, float] | None = None,
@@ -446,10 +447,16 @@ def day_card(
             settled += 1
         elif show_all or r["state"] != "ok":
             rest.append(r)
-        else:
+        elif r["min_amount"] is not None:
             # Counted, not listed. The section shows only what needs
             # attention, which is right — but with nothing said about the rest
             # a short list reads as missing data rather than as good news.
+            #
+            # Floors only. A ceiling you have not crossed is not a nutrient
+            # "where it should be" — on an empty day every ceiling is
+            # unbreached, which is how a card with nothing logged claimed six
+            # nutrients were fine. Same category error as counting ceilings
+            # toward the score.
             settled += 1
 
     if rest:
@@ -479,7 +486,7 @@ def day_card(
                 f"{float(e['kcal']):,.0f} kcal, {float(e['protein']):.0f} g P"
             )
 
-    score = score_line(progress, coverage)
+    score = score_line(progress, coverage, show_weights=show_weights)
     if score:
         lines.append(score)
         lines.append("")
@@ -487,21 +494,20 @@ def day_card(
         lines.append("<pre>" + "\n".join(table) + "</pre>")
 
     if settled and not show_all:
-        lines.append(
-            f"<i>✅ {settled} other nutrients are where they should be — "
-            "<code>/today all</code> to see them.</i>")
+        # No pointer to /today from a card that *is* /today, and none from
+        # /yesterday either — it is the same command one line up in the menu.
+        lines.append(f"<i>✅ {settled} other nutrients are where they should be.</i>")
 
     if pct_measured is not None:
         # The number that decides whether anything above it is worth reading.
         # Said plainly: "mass was weighed or stated" is precise and opaque, and
         # the reader has to work out that the rest of it was guesswork.
-        if pct_measured >= 80:
-            note = f"⚖️ <b>{pct_measured:.0f}%</b> of today's food was weighed or you told me the amount — the numbers above are solid."
-        elif pct_measured >= 50:
-            note = f"⚖️ <b>{pct_measured:.0f}%</b> of today's food was weighed or you told me the amount. The rest is my estimate."
-        else:
-            note = f"⚖️ only <b>{pct_measured:.0f}%</b> of today's food was weighed or stated, so most of the above is guesswork. Stating amounts will sharpen it."
-        lines.append(f"<i>{note}</i>")
+        # One clause. The long version explained the same fact three ways
+        # depending on the number, and the number already says it.
+        tail = "" if pct_measured >= 80 else \
+            " — the rest is my estimate" if pct_measured >= 50 else \
+            " — most of the rest is guesswork"
+        lines.append(f"<i>⚖️ <b>{pct_measured:.0f}%</b> weighed or stated{tail}.</i>")
 
     if unmeasured:
         lines.append("")
@@ -556,25 +562,40 @@ def _row(r: Any, covered: float | None = None) -> str:
 
 
 def repeat_menu(dishes: Sequence[Any], templates: Sequence[Any] = ()) -> str:
-    lines = ["<b>repeat</b> — reply with a number, or a number plus a change"]
+    """Ordered by the hour, so breakfast is at the top at breakfast time.
+
+    No counts beside the names: "x3" invited reading the number as how many
+    would be logged, when it was only how often the dish had ever been eaten.
+    One tap logs one serving; two coffees is two taps.
+    """
+    slot_icon = {"breakfast": "🌅", "lunch": "🥗", "dinner": "🍽",
+                 "snack": "🍪", "drink": "☕️"}
+    lines = ["🔁 <b>Repeat</b>", ""]
     for i, d in enumerate(dishes, 1):
-        slot = f" · {_esc(d['default_slot'])}" if d["default_slot"] else ""
-        lines.append(f"<code>{i}</code> {_esc(d['name'])}{slot}  ×{d['times_logged']}")
+        icon = slot_icon.get(d["default_slot"] or "", "•")
+        lines.append(f"<code>{i}</code> {icon} {_esc(_title(d['name']))}")
     if templates:
         lines.append("")
         for t in templates:
-            lines.append(f"<code>{_esc(t['slug'])}</code> {_esc(t['name'])}")
-    # The footer used to demonstrate every operator prefixed with a literal 3,
-    # which reads as a reference to item 3 in the list above rather than as a
-    # placeholder. Say the number once, then list what can follow it.
+            lines.append(f"<code>{_esc(t['slug'])}</code> 📋 {_esc(_title(t['name']))}")
     lines += [
         "",
-        "<i>Reply with the number alone to log it unchanged, or follow it with:</i>",
-        "<code>x1.5</code> scale · <code>250</code> set total · <code>-onion</code> drop",
-        "<code>+50 rice</code> add · <code>rice 200</code> set one",
-        "<code>@14:00</code> time · <code>@yesterday</code> day · <code>#lunch</code> slot",
+        "<i>Reply with the number to log it. Add a change if you need one:</i>",
+        "<code>4 x1.5</code> · <code>4 250</code> total g · "
+        "<code>4 -onion</code> · <code>4 @14:00</code>",
     ]
     return "\n".join(lines)
+
+
+def _title(name: str) -> str:
+    """First letter up, the rest left alone.
+
+    str.title() would turn "Alpro coconut milk" into "Alpro Coconut Milk" and
+    "wheat-rye bread" into "Wheat-Rye Bread". Only the first character was ever
+    the problem — "pickle juice" sitting in a list of proper names.
+    """
+    name = (name or "").strip()
+    return name[:1].upper() + name[1:] if name else name
 
 
 # --------------------------------------------------------- notifications
@@ -887,7 +908,8 @@ def day_score(
     )
 
 
-def score_line(progress: Sequence[Any], coverage: dict[int, float] | None = None) -> str:
+def score_line(progress: Sequence[Any], coverage: dict[int, float] | None = None,
+               *, show_weights: bool = True) -> str:
     """One bar for the day, counting the thing worth counting.
 
     Deliberately not a single number in isolation. A score that hides which
@@ -914,9 +936,10 @@ def score_line(progress: Sequence[Any], coverage: dict[int, float] | None = None
             detail += f" · {sc.partial} part-way"
         if sc._untouched:
             detail += f" · {len(sc._untouched)} not started"
-        if sc.weighted_by:
+        if sc.weighted_by and show_weights:
             # A headline that quietly means something different from
-            # yesterday's is worse than no headline.
+            # yesterday's is worse than no headline — but it only needs saying
+            # where you can act on it, not on every retrospective card.
             detail += " · weighted: " + ", ".join(sc.weighted_by)
         out.append(f"<i>{_esc(detail)}</i>")
         if short:

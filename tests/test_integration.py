@@ -309,7 +309,7 @@ def test_text_message_to_confirmed_entry_in_today(harness):
         await harness.feed("/today")
         day = harness.sent.find("kcal")
         assert day, harness.sent.texts()
-        assert "mince and rice" in day.text
+        assert "Mince and rice" in day.text
         assert "was weighed or you told me the amount" in day.text
 
         # Energy actually landed, and is in the right ballpark for
@@ -340,8 +340,13 @@ def test_repeat_is_zero_token(harness):
 
         await harness.feed("/r")
         menu = harness.sent.last()
-        assert "repeat" in menu.text.lower()
-        assert "mince and rice" in menu.text
+        assert "Repeat" in menu.text
+        # Names are shown with a capital: "pickle juice" sitting in a list of
+        # proper names looked like a bug.
+        assert "Mince and rice" in menu.text
+        # And no "x3" beside them — it read as how many would be logged when
+        # it was only how often the dish had ever been eaten.
+        assert "×" not in menu.text
 
         harness.sent.clear()
         await harness.feed("1")

@@ -565,3 +565,19 @@ def test_a_weighted_floor_moves_the_score_and_is_named():
     assert plain.covered > heavy.covered      # the miss now costs more
     assert heavy.weighted_by == ("Protein ×2.5",)
     assert "weighted: Protein ×2.5" in score_line(prog(2.5), {1003: 1.0, 1089: 1.0})
+
+
+def test_an_unbreached_ceiling_is_not_a_nutrient_that_is_fine():
+    """With nothing logged, every ceiling is unbreached — and the card said
+    "6 other nutrients are where they should be" on an empty day. Same
+    category error as counting ceilings toward the score."""
+    empty = [
+        row(1008, "Energy", "KCAL", 0, hi=2286),
+        row(1005, "Carbohydrate, by difference", "G", 0, hi=312),
+        row(1004, "Total lipid (fat)", "G", 0, hi=78),
+        row(1093, "Sodium, Na", "MG", 0, hi=2300),
+        row(1253, "Cholesterol", "MG", 0, hi=300),
+        row(1003, "Protein", "G", 0, lo=165, state="under"),
+    ]
+    out = day_card(DAY, empty, [], coverage={r["nutrient_id"]: 1.0 for r in empty})
+    assert "where they should be" not in out, out

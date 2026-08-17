@@ -199,7 +199,7 @@ async def start(msg: Message) -> None:
 @dp.message(Command("r", "repeat"))
 async def repeat_menu(msg: Message) -> None:
     u = await _user(msg)
-    dishes = await db.top_dishes(u["id"], 8)
+    dishes = await db.top_dishes(u["id"], 8, tz=u["tz"], hour=_local_now(u).hour)
     if not dishes:
         await msg.answer("Nothing to repeat yet. Log something first.")
         return
@@ -216,10 +216,11 @@ async def today(msg: Message) -> None:
 @dp.message(Command("yesterday"))
 async def yesterday(msg: Message) -> None:
     u = await _user(msg)
-    await _send_day(msg, u, _today(u) - dt.timedelta(days=1))
+    await _send_day(msg, u, _today(u) - dt.timedelta(days=1), show_weights=False)
 
 
-async def _send_day(msg: Message, u: Any, day: dt.date, show_all: bool = False) -> None:
+async def _send_day(msg: Message, u: Any, day: dt.date, show_all: bool = False,
+                    show_weights: bool = True) -> None:
     prog = await db.day_progress(u["id"], day, core_only=not show_all)
     entries = await db.day_entries(u["id"], day)
     conf = await db.day_mass_confidence(u["id"], day)
@@ -227,7 +228,7 @@ async def _send_day(msg: Message, u: Any, day: dt.date, show_all: bool = False) 
     coverage = await db.day_coverage(u["id"], day)
     await msg.answer(
         render.day_card(
-            day, prog, entries, show_all=show_all,
+            day, prog, entries, show_all=show_all, show_weights=show_weights,
             pct_measured=float(conf["pct_measured"]) if conf and conf["pct_measured"] is not None else None,
             energy_sigma=sigma,
             coverage=coverage,
@@ -2093,8 +2094,11 @@ async def _handle_photos(msgs: list[Message]) -> None:
     bot: Bot = msg.bot
     caption = next((m.caption for m in msgs if m.caption), None)
 
-    # A photo sent after `/supp add` is a label, not a meal.
-    if await db.latest_pending(u["id"], "supp_label"):
+    # A photo sent *just* after "add a supplement" is a label. One sent hours
+    # later is dinner: the prompt was still open because only a command clears
+    # it, so a stale tap from the afternoon captured a plate of stir fry and
+    # announced "reading the label…" over it.
+    if await db.latest_pending(u["id"], "supp_label", within_minutes=15):
         await _handle_supplement_label(msg, u)
         return
 
@@ -2655,10 +2659,11 @@ async def _present(
     slug = _slugify(parsed.dish_name)
     # The clock decides the meal, not the model — see dsl.slot_for_hour.
     slot = dsl.slot_for_hour(_local_now(u).hour, parsed.slot)
-    dish_id = await db.upsert_dish(u["id"], slug, parsed.dish_name, slot, res.components)
+    dish_name = render._title(parsed.dish_name)
+    dish_id = await db.upsert_dish(u["id"], slug, dish_name, slot, res.components)
 
     entry_id = await db.create_pending_entry(
-        u["id"], parsed.dish_name, res.components, source=source, slot=slot,
+        u["id"], dish_name, res.components, source=source, slot=slot,
         confidence=parsed.confidence, model=parsed.model,
         parse={**(parsed.raw or {}), "_weak": [w[0] for w in res.weak_matches]},
         photo_file_id=photo_file_id, dish_id=dish_id, tz=u["tz"],

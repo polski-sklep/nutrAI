@@ -21,6 +21,16 @@ log = logging.getLogger("nutrai.notify")
 # early enough that there is still a meal left to fix it with.
 UNDER_RULES_FROM_HOUR = 16
 
+# Nothing is sent between these local hours.
+#
+# The day does not end at midnight here — day_rollover_hour is 04:00, so a
+# ceiling crossed at dinner stays crossed and the sweep kept re-announcing it
+# at 23:30, 01:30 and 03:30. Every one of those was true and none was useful:
+# a notification you can act on is one that arrives while you can still decide
+# what to eat.
+QUIET_FROM_HOUR = 22
+QUIET_UNTIL_HOUR = 7
+
 
 async def evaluate_user(user_id: int, day: dt.date, *, now: dt.datetime | None = None) -> list[str]:
     """Evaluate every enabled threshold rule for one user against one day.
@@ -35,6 +45,9 @@ async def evaluate_user(user_id: int, day: dt.date, *, now: dt.datetime | None =
     local_hour = (now or dt.datetime.now(dt.timezone.utc)).astimezone(
         zoneinfo.ZoneInfo(user["tz"] if user else "UTC")
     ).hour
+
+    if local_hour >= QUIET_FROM_HOUR or local_hour < QUIET_UNTIL_HOUR:
+        return []
 
     rules = await p.fetch(
         """SELECT r.*, n.name AS nutrient_name, n.unit
