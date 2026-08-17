@@ -286,10 +286,26 @@ def parse_ops(toks: list[str]) -> tuple[list[Op], list[str]]:
                 i += 2
             continue
 
-        # bare quantity: first one is the whole-dish target weight
+        # bare quantity
         if m := RE_QTY.match(tok):
+            grams = _f(m.group(1))
+            # "40g chicken breast" is forty grams of chicken breast, not an
+            # instruction to shrink the whole plate to forty grams. It was the
+            # second: a 633 kcal dinner became 91 kcal, every component scaled
+            # by 1/15, and the leftover words went to the model as a new
+            # ingredient. A number followed by words names the thing it
+            # measures — the mirror of "rice 200", which already worked.
+            words = []
+            j = i + 1
+            while j < len(toks) and not _is_op_token(toks[j]) and not RE_QTY.match(toks[j]):
+                words.append(toks[j].lower())
+                j += 1
+            if words:
+                ops.append(SetComponent(" ".join(words), grams))
+                i = j
+                continue
             if not seen_bare_number:
-                ops.append(TotalGrams(_f(m.group(1))))
+                ops.append(TotalGrams(grams))
                 seen_bare_number = True
             else:
                 unparsed.append(tok)

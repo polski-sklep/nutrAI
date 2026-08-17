@@ -2754,7 +2754,21 @@ async def _try_fix(msg: Message, u: Any, text: str) -> bool:
                       float(c["yield_factor"]), c["grams_source"])
         for c in comps
     ]
+    before_g = sum(c.grams for c in current)
     new_comps, to_add = dsl.apply(current, ops)
+    after_g = sum(c.grams for c in new_comps)
+
+    # A correction that changes the plate several times over is almost always
+    # a misread instruction rather than a meal that shrank. "40g chicken
+    # breast" once meant "set the whole plate to 40 g" and turned a 633 kcal
+    # dinner into 91 — every component scaled by a fifteenth, and the card
+    # showed the new masses without ever saying they had all moved.
+    mass_warning = None
+    if before_g > 0 and after_g > 0 and not (before_g / 3 <= after_g <= before_g * 3):
+        mass_warning = (
+            f"this changes the whole plate from {before_g:,.0f} g to "
+            f"{after_g:,.0f} g — check it is what you meant"
+        )
 
     # An added component still has to be resolved to a USDA row. Aliases first,
     # so a food you have logged before costs nothing to add back.
@@ -2799,6 +2813,8 @@ async def _try_fix(msg: Message, u: Any, text: str) -> bool:
     profs = await db.profiles_for([c.fdc_id for c in resolved])
     totals = total_nutrients(resolved, profs)
     warnings = [f"could not read: {' '.join(unparsed)}"] if unparsed else []
+    if mass_warning:
+        warnings.insert(0, mass_warning)
     await msg.answer(
         render.confirm_card(
             entry["name"], new_comps, totals, confidence=None, warnings=warnings

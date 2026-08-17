@@ -131,3 +131,31 @@ def test_apply_never_mutates_input():
     original = comps()
     dsl.apply(original, [dsl.Scale(10.0)])
     assert [c.grams for c in original] == [200.0, 60.0, 150.0]
+
+
+def test_a_number_before_words_names_what_it_measures():
+    """"40g chicken breast" meant forty grams of chicken breast and was read
+    as "shrink the whole plate to forty grams": a 633 kcal dinner became 91,
+    every component scaled by a fifteenth, and the leftover words went to the
+    model as a new ingredient."""
+    from nutrai.core.dsl import SetComponent, TotalGrams, parse_ops
+
+    ops, rest = parse_ops("40g chicken breast".split())
+    assert ops == [SetComponent("chicken breast", 40.0)]
+    assert rest == []
+
+    ops, _ = parse_ops("40g chicken breast 40g pork chop".split())
+    assert ops == [SetComponent("chicken breast", 40.0),
+                   SetComponent("pork chop", 40.0)]
+
+    # A bare number with nothing after it still sets the plate total.
+    assert parse_ops(["250"])[0] == [TotalGrams(250.0)]
+    assert parse_ops("250 x1.5".split())[0][0] == TotalGrams(250.0)
+
+
+def test_the_existing_forms_are_unchanged():
+    from nutrai.core.dsl import AddComponent, DropComponent, SetComponent, parse_ops
+
+    assert parse_ops("rice 200".split())[0] == [SetComponent("rice", 200.0)]
+    assert parse_ops("+50 rice".split())[0] == [AddComponent("rice", 50.0)]
+    assert parse_ops(["-onion"])[0] == [DropComponent("onion")]
