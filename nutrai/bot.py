@@ -96,6 +96,8 @@ async def cb_define_food(cq: CallbackQuery) -> None:
         f"🥫 Making a food called <b>{render._esc(name)}</b>.\n\n"
         "<b>What goes into it?</b> Reply with ingredients and amounts:\n"
         "<code>1000 ml water, 30 g salt, 100 ml white vinegar</code>\n\n"
+        "<i>Baked? End with what it made — then a slice needs no weighing:</i>\n"
+        "<code>… makes 850 g, 16 slices</code>\n\n"
         "<i>Resolved against USDA and added up — nothing estimated. Once saved "
         "it outranks the generic row every time you log that name.</i>",
         parse_mode="HTML",
@@ -1644,6 +1646,8 @@ async def food_cmd(msg: Message) -> None:
             f"🥫 <b>{render._esc(name)}</b> — what goes into it?\n\n"
             "Reply with the ingredients and amounts, as you would a meal:\n"
             "<code>1000 ml water, 30 g salt, 100 ml white vinegar</code>\n\n"
+        "<i>Baked? End with what it made — then a slice needs no weighing:</i>\n"
+        "<code>… makes 850 g, 16 slices</code>\n\n"
             "<i>I will resolve each one against USDA, add them up, and store "
             "the result per 100 g. Nothing is estimated — if an ingredient "
             "has no row, I will say so rather than guess around it.</i>",
@@ -1685,6 +1689,8 @@ async def _consume_food_name(msg: Message, u: Any, text: str, payload: dict) -> 
         f"🥫 Making a food called <b>{render._esc(name)}</b>.\n\n"
         "<b>What goes into it?</b> Reply with ingredients and amounts:\n"
         "<code>1000 ml water, 30 g salt, 100 ml white vinegar</code>\n\n"
+        "<i>Baked? End with what it made — then a slice needs no weighing:</i>\n"
+        "<code>… makes 850 g, 16 slices</code>\n\n"
         "<i>Or <b>photograph the nutrition panel</b>, or send its "
         "<b>barcode</b>. Ingredients are resolved against USDA and added "
         "up — nothing estimated; an ingredient with no row is left out and "
@@ -1730,6 +1736,53 @@ async def cb_food_as_meal(cq: CallbackQuery) -> None:
                    photo_file_id=None, edit=note)
 
 
+# "makes 850 g, 16 slices" — the two facts a recipe needs and an ingredient
+# list cannot carry.
+#
+# Baking drives off water. A blondie tray is ~1,100 g of butter, sugar, flour
+# and eggs going in and ~850 g coming out, so a panel computed against the raw
+# sum is understated by a quarter — every slice logged from it under-counts by
+# the same amount, silently and for ever. The fix is not a shrinkage constant
+# (it varies with the bake) but the number you already have: what the tin
+# weighed when it came out.
+#
+# The piece count is the other half. Having weighed the tray once, every slice
+# after that is arithmetic, and there is no reason to estimate it by eye.
+_MAKES = re.compile(
+    r"\bmakes?\b(?:[^.\n]|\.(?=\d))*", re.I)
+_MAKES_MASS = re.compile(
+    r"(\d+(?:[.,]\d+)?)\s*(kg|g|grams?)\b", re.I)
+_MAKES_PIECES = re.compile(
+    r"(\d+)\s*(slices?|pieces?|servings?|portions?|squares?|bars?|"
+    r"muffins?|cookies?|cupcakes?|rolls?|buns?)\b", re.I)
+
+
+def _read_makes(text: str) -> tuple[str, float | None, int | None, str]:
+    """Split a "makes ..." clause off an ingredient list.
+
+    Returned as (ingredients without the clause, finished grams, pieces, unit).
+    The clause has to come out: left in, "makes 16 slices" reaches the meal
+    parser as an ingredient and sixteen slices of something get added to the
+    recipe.
+    """
+    m = _MAKES.search(text)
+    if not m:
+        return text, None, None, "serving"
+    clause = m.group(0)
+    grams = pieces = None
+    unit = "serving"
+    if g := _MAKES_MASS.search(clause):
+        grams = float(g.group(1).replace(",", "."))
+        if g.group(2).lower() == "kg":
+            grams *= 1000
+    if pc := _MAKES_PIECES.search(clause):
+        pieces = int(pc.group(1))
+        unit = pc.group(2).lower().rstrip("s")
+    if grams is None and pieces is None:
+        return text, None, None, unit
+    return (text[:m.start()] + text[m.end():]).strip(" ,\n"), grams, pieces, unit
+
+
 @consumes("food_await")
 async def _consume_food_recipe(msg: Message, u: Any, text: str, payload: dict) -> bool:
     """Turn a list of ingredients into one food row, by arithmetic only."""
@@ -1748,6 +1801,8 @@ async def _consume_food_recipe(msg: Message, u: Any, text: str, payload: dict) -
         await _offer_off_product(msg, u, p, name)
         return True
 
+    text, made_g, pieces, portion_unit = _read_makes(text)
+
     note = await msg.answer("🥫 working it out…")
     try:
         parsed = await llm.parse_text(text, user_id=u["id"])
@@ -1763,11 +1818,16 @@ async def _consume_food_recipe(msg: Message, u: Any, text: str, payload: dict) -
 
     profiles = await db.profiles_for({c.fdc_id for c in res.components})
     totals = total_nutrients(res.components, profiles)
-    yield_g = sum(c.grams for c in res.components)
-    if yield_g <= 0:
+    raw_g = sum(c.grams for c in res.components)
+    if raw_g <= 0:
         await note.edit_text("That came to no mass at all, so I cannot store it.")
         return True
 
+    # Divide by what came out of the oven where that is known, and by what went
+    # in where it is not. Cooking loss is real and one-directional, so the raw
+    # sum always understates a baked panel; the card says which divisor was
+    # used rather than leaving that to be inferred from the calorie figure.
+    yield_g = made_g if made_g and made_g > 0 else raw_g
     per_100g = {nid: amount / yield_g * 100 for nid, amount in totals.items()}
 
     # A food with macros and no energy is a wrong row, not a zero-calorie
@@ -1792,6 +1852,9 @@ async def _consume_food_recipe(msg: Message, u: Any, text: str, payload: dict) -
     # The name becomes an alias too, so the next time you type it the resolver
     # takes the free path rather than searching for it again.
     await db.upsert_alias(u["id"], name, fdc_id, None)
+    if pieces and pieces > 0:
+        await db.declare_portion(fdc_id, yield_g / pieces, portion_unit,
+                                 yield_grams=made_g)
     await db.clear_pending(u["id"], "food_await")
 
     parts = [f"{c.grams:g} g {c.label}" for c in res.components]
@@ -1799,7 +1862,9 @@ async def _consume_food_recipe(msg: Message, u: Any, text: str, payload: dict) -
         parts.append("(not found, and therefore not counted: "
                      + ", ".join(res.unresolved) + ")")
     await note.edit_text(
-        render.user_food_made_card(name, per_100g, parts, yield_g),
+        render.user_food_made_card(name, per_100g, parts, yield_g,
+                                   raw_g=raw_g, pieces=pieces,
+                                   portion_unit=portion_unit),
         parse_mode="HTML",
     )
     return True

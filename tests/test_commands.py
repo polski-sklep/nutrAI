@@ -271,3 +271,70 @@ def test_an_unrecognised_failure_still_names_itself():
         pass
 
     assert "WeirdError" in _failure_reason(WeirdError("no idea"))
+
+
+def test_read_makes_splits_the_clause_out():
+    """Left in the text, "makes 16 slices" reaches the meal parser.
+
+    Sixteen slices of something then get resolved and added to the recipe,
+    which is both wrong and invisible — the panel comes out plausible.
+    """
+    from nutrai.bot import _read_makes
+
+    body, grams, pieces, unit = _read_makes(
+        "340 g butter, 400 g brown sugar, 3 eggs. Makes a 850 g tray of 16 slices")
+    assert "makes" not in body.lower() and "slices" not in body.lower()
+    assert "340 g butter" in body
+    assert (grams, pieces, unit) == (850.0, 16, "slice")
+
+
+def test_read_makes_survives_a_decimal():
+    """"1.2 kg" contains the character that ends the clause."""
+    from nutrai.bot import _read_makes
+
+    _body, grams, pieces, unit = _read_makes("500 g flour, makes 1.2 kg, 12 muffins")
+    assert (grams, pieces, unit) == (1200.0, 12, "muffin")
+
+
+def test_read_makes_leaves_an_ordinary_recipe_alone():
+    from nutrai.bot import _read_makes
+
+    text = "1000 ml water, 30 g salt, 100 ml white vinegar"
+    assert _read_makes(text) == (text, None, None, "serving")
+
+
+def test_cooking_loss_is_stated_not_implied():
+    """A panel divided by raw mass understates a baked food uniformly.
+
+    Every figure stays internally consistent while being too low, so nothing
+    downstream can detect it. The card has to say which divisor it used.
+    """
+    from nutrai.core.render import user_food_made_card
+
+    per_100g = {1008: 420.0, 1003: 5.0}
+    baked = user_food_made_card("Blondie", per_100g, ["340 g butter"], 850.0,
+                                raw_g=1115.0, pieces=16, portion_unit="slice")
+    assert "1,115 g in, 850 g out" in baked and "265 g lost in cooking" in baked
+    assert "1 slice = 53 g" in baked
+
+    # No finished weight given: say what was assumed, and how to fix it.
+    guessed = user_food_made_card("Blondie", per_100g, ["340 g butter"], 1115.0,
+                                  raw_g=1115.0)
+    assert "raw ingredient mass" in guessed
+
+
+def test_every_recipe_prompt_mentions_the_makes_clause():
+    """A syntax nobody is told about is a syntax nobody types.
+
+    This is the "card asks, nothing listens" failure inverted: the handler
+    listens perfectly and the card never mentions it, so the feature exists
+    and is unreachable in exactly the same way.
+    """
+    import inspect
+
+    from nutrai import bot
+
+    src = inspect.getsource(bot)
+    prompts = src.count("What goes into it?")
+    assert prompts >= 2
+    assert src.count("makes 850 g, 16 slices") >= prompts

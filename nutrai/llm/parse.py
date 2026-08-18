@@ -20,7 +20,7 @@ from ..config import (
     MODEL_PHOTO_ESCALATE,
     MODEL_TEXT,
 )
-from ..core.estimate import MassEstimate, choose_mass
+from ..core.estimate import MassEstimate, choose_mass, sigma_for
 from ..core.nutrition import ResolvedComponent, energy_cross_check, total_nutrients
 from .client import ToolResult, cached, call_tool
 from .schemas import (
@@ -177,10 +177,27 @@ async def _mass_for(user_id: int, fdc_id: int, it: dict[str, Any]) -> MassEstima
     grams = float(it.get("grams", 0) or 0)
     low = float(it["grams_low"]) if it.get("grams_low") else None
     high = float(it["grams_high"]) if it.get("grams_high") else None
-    history: list[float] = []
     if source not in ("scale", "stated", "package"):
+        # A declared portion beats both the model's eyes and your own history.
+        #
+        # "One slice of blondie" is an estimate to a parser and arithmetic to
+        # anyone who weighed the tray and counted the cuts: 850 g over 16 is
+        # 53 g, exactly, for ever. It only applies when a count was actually
+        # given — "some blondie" is not two slices — and the count multiplies,
+        # so three slices is 159 g rather than three guesses.
+        count = it.get("count")
+        if count:
+            portion = await db.portion_for(fdc_id)
+            if portion:
+                grams_exact = float(count) * float(portion["gram_weight"])
+                return MassEstimate(
+                    grams_exact, sigma_for(grams_exact, "package"), "package",
+                    note=f"{count:g} × your stated {portion['unit']} "
+                         f"of {float(portion['gram_weight']):.0f} g",
+                )
         history = await db.portion_history(user_id, fdc_id)
-    return choose_mass(grams, source, low=low, high=high, history=history)
+        return choose_mass(grams, source, low=low, high=high, history=history)
+    return choose_mass(grams, source, low=low, high=high, history=[])
 
 
 async def _candidates(it: dict[str, Any], label: str, user_id: int | None = None,

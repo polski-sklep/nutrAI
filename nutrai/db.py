@@ -1743,6 +1743,35 @@ async def supplement_contribution(user_id: int, day: dt.date, nutrient_id: int) 
     return [{"name": r["name"], "amount": float(r["amount"])} for r in rows]
 
 
+async def declare_portion(fdc_id: int, gram_weight: float, unit: str,
+                          yield_grams: float | None = None) -> None:
+    """Record that one <unit> of this food weighs <gram_weight>.
+
+    Only ever called with a division: you stated what the batch weighed and
+    into how many pieces it was cut, and this is the quotient. It is not an
+    estimate and must never be handed one — that is the same line §1 draws,
+    and it is why `choose_mass` may treat the result as `package`.
+    """
+    p = await pool()
+    async with p.acquire() as con, con.transaction():
+        await con.execute("DELETE FROM food_portion WHERE fdc_id = $1 AND id < 0", fdc_id)
+        await con.execute(
+            """INSERT INTO food_portion (id, fdc_id, amount, unit, gram_weight)
+               VALUES (-nextval('user_portion_id_seq'), $1, 1, $2, $3)""",
+            fdc_id, unit, gram_weight,
+        )
+        if yield_grams:
+            await con.execute("UPDATE food SET yield_grams = $2 WHERE fdc_id = $1",
+                              fdc_id, yield_grams)
+
+
+async def portion_for(fdc_id: int) -> asyncpg.Record | None:
+    """The declared portion for a food, if it has one."""
+    p = await pool()
+    return await p.fetchrow(
+        "SELECT unit, gram_weight FROM food_portion WHERE fdc_id = $1 AND id < 0", fdc_id)
+
+
 async def create_user_food(
     user_id: int, name: str, per_100g: dict[int, float],
     *, category: str | None = None, note: str | None = None,

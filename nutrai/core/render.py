@@ -1986,14 +1986,26 @@ def user_food_list_card(foods: Sequence[Any]) -> str:
 
 
 def user_food_made_card(name: str, per_100g: dict, parts: Sequence[str],
-                        yield_g: float) -> str:
+                        yield_g: float, *, raw_g: float | None = None,
+                        pieces: int | None = None,
+                        portion_unit: str = "serving") -> str:
     from ..config import CARB, ENERGY_KCAL, FAT, FIBER, PROTEIN, SODIUM
 
     lines = [f"🥫 <b>{_esc(name)}</b> saved", ""]
     lines.append("<i>Made from:</i>")
     for pline in parts:
         lines.append(f"   • {_esc(pline)}")
-    lines += ["", f"<i>Yielding {yield_g:,.0f} g, so per 100 g:</i>"]
+    # Which mass the panel was divided by, said out loud. Baking drives off
+    # water, so a panel computed against the raw sum understates a baked food
+    # by whatever the tin lost, and nothing downstream can detect that from the
+    # numbers alone — every figure stays internally consistent while being
+    # uniformly too low.
+    if raw_g and yield_g < raw_g * 0.995:
+        lines += ["", f"<i>{raw_g:,.0f} g in, {yield_g:,.0f} g out — "
+                      f"{raw_g - yield_g:,.0f} g lost in cooking. Per 100 g of "
+                      f"the finished thing:</i>"]
+    else:
+        lines += ["", f"<i>Yielding {yield_g:,.0f} g, so per 100 g:</i>"]
     lines.append(
         "<pre>"
         f"{'Energy':<10}{per_100g.get(ENERGY_KCAL, 0):>8,.0f} kcal\n"
@@ -2004,8 +2016,22 @@ def user_food_made_card(name: str, per_100g: dict, parts: Sequence[str],
         f"{'Sodium':<10}{per_100g.get(SODIUM, 0):>8.0f} mg"
         "</pre>"
     )
+    if pieces:
+        lines.append(
+            f"\n🔪 <b>1 {_esc(portion_unit)} = {yield_g / pieces:,.0f} g</b> "
+            f"({pieces} per batch). Say <i>one {_esc(portion_unit)} of "
+            f"{_esc(name.lower())}</i> and that is the mass it uses — no "
+            f"weighing, and no guessing either.")
+    elif raw_g is not None and not (raw_g and yield_g < raw_g * 0.995):
+        # Only worth raising where it was not already answered. A recipe that
+        # stated its finished weight has nothing to warn about.
+        lines.append(
+            "\n<i>If this is baked or reduced, add <code>makes 850 g, 16 "
+            "slices</code> next time — the panel is currently divided by the "
+            "raw ingredient mass, which understates anything that loses water "
+            "in the oven.</i>")
     lines.append(
-        f"<i>Every figure is a SQL join against the rows those ingredients "
+        f"\n<i>Every figure is a SQL join against the rows those ingredients "
         f"matched — nothing here was estimated. Log it by name and it will be "
         f"used instead of USDA's nearest guess.</i>"
     )
