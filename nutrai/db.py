@@ -1234,7 +1234,7 @@ async def last_weight(user_id: int) -> list[asyncpg.Record]:
 
 PROFILE_FIELDS = ("display_name", "sex", "birth_date", "height_cm",
                   "activity_factor", "goal", "goal_weight_kg", "deficit_kcal", "tz",
-                  "wake_hour", "fast_break_kcal")
+                  "wake_hour", "fast_break_cp_g")
 
 
 async def mark_targets_derived(user_id: int, weight_kg: float | None, day: dt.date) -> None:  # noqa: D401

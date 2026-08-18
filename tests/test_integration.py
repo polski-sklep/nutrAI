@@ -2803,24 +2803,29 @@ def test_a_black_coffee_does_not_break_a_fast(harness):
 
         p = await db.pool()
         now = dt.datetime.now(dt.timezone.utc)
-        for hours_ago, name, kcal in ((10, "Dinner", 600), (2, "Black coffee", 4)):
+        # (hours ago, name, carbs g, protein g). Energy is deliberately not
+        # the variable: a spoon of butter is 120 kcal and breaks nothing.
+        for hours_ago, name, carbs, protein in (
+            (10, "Dinner", 60.0, 40.0),
+            (2, "Black coffee", 0.1, 0.1),
+        ):
             eid = await p.fetchval(
                 """INSERT INTO log_entry (user_id, logged_at, local_date, name,
                      source, status) VALUES ($1,$2,$3,$4,'text','confirmed')
                    RETURNING id""",
                 uid, now - dt.timedelta(hours=hours_ago), dt.date.today(), name)
-            await p.execute(
-                "INSERT INTO log_nutrient (entry_id, nutrient_id, amount) VALUES ($1,1008,$2)",
-                eid, kcal)
+            await p.executemany(
+                "INSERT INTO log_nutrient (entry_id, nutrient_id, amount) VALUES ($1,$2,$3)",
+                [(eid, 1005, carbs), (eid, 1003, protein)])
 
         hours = float(await db.current_fast_hours(uid))
         assert hours > 9, f"the coffee reset the clock: {hours:.1f}h"
 
         # Raise the bar and the coffee still does not count; lower it and it does.
-        await p.execute("UPDATE app_user SET fast_break_kcal = 1 WHERE id=$1", uid)
+        await p.execute("UPDATE app_user SET fast_break_cp_g = 0.1 WHERE id=$1", uid)
         assert float(await db.current_fast_hours(uid)) < 3
 
-        await p.execute("UPDATE app_user SET fast_break_kcal = 25 WHERE id=$1", uid)
+        await p.execute("UPDATE app_user SET fast_break_cp_g = 5 WHERE id=$1", uid)
         await p.execute("DELETE FROM log_entry WHERE user_id=$1 AND name IN ('Dinner','Black coffee')", uid)
 
     run(scenario())
@@ -2890,5 +2895,39 @@ def test_a_substring_does_not_tick_a_supplement_off(harness):
         assert await db.supplements_named_in(uid, day, ["zinc"]) != []
 
         await p.execute("DELETE FROM supplement WHERE user_id=$1", uid)
+
+    run(scenario())
+
+
+def test_fat_does_not_break_a_fast_but_honey_does(harness):
+    """Energy cannot tell honey from olive oil. A 33 kcal ginger tea is nine
+    grams of sugar and ends a fast; a 120 kcal spoon of butter is essentially
+    no insulin response at all."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        now = dt.datetime.now(dt.timezone.utc)
+
+        async def entry(hours_ago, name, carbs, protein, kcal):
+            eid = await p.fetchval(
+                """INSERT INTO log_entry (user_id, logged_at, local_date, name,
+                     source, status) VALUES ($1,$2,$3,$4,'text','confirmed')
+                   RETURNING id""",
+                uid, now - dt.timedelta(hours=hours_ago), dt.date.today(), name)
+            await p.executemany(
+                "INSERT INTO log_nutrient (entry_id, nutrient_id, amount) VALUES ($1,$2,$3)",
+                [(eid, 1005, carbs), (eid, 1003, protein), (eid, 1008, kcal)])
+
+        await entry(12, "Dinner", 60, 40, 700)
+        await entry(4, "Butter in coffee", 0.1, 0.1, 120)   # more energy, no load
+        assert float(await db.current_fast_hours(uid)) > 11, "fat broke the fast"
+
+        await entry(2, "Ginger tea with honey", 8.9, 0.3, 33)  # less energy, real load
+        assert float(await db.current_fast_hours(uid)) < 3, "honey did not break it"
+
+        await p.execute("DELETE FROM log_entry WHERE user_id=$1 AND source='text'", uid)
 
     run(scenario())
