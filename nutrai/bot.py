@@ -1830,6 +1830,35 @@ async def _consume_food_recipe(msg: Message, u: Any, text: str, payload: dict) -
     yield_g = made_g if made_g and made_g > 0 else raw_g
     per_100g = {nid: amount / yield_g * 100 for nid, amount in totals.items()}
 
+    # 100 g of anything cannot contain more than 100 g of macronutrients.
+    #
+    # A stated finished weight is the one number here that nothing else checks,
+    # and understating it inflates every figure in exact proportion — the panel
+    # stays internally consistent all the way to absurdity. 1,587 g of blondie
+    # ingredients declared as an 850 g tray produced 105.6 g of carbohydrate,
+    # 46.8 g of fat and 8.1 g of protein per 100 g: 160 g of food inside 100 g
+    # of food, saved without complaint, and wrong by a factor of 1.7 on every
+    # slice logged from it thereafter.
+    #
+    # This is arithmetic rather than a plausibility heuristic, so it can refuse
+    # outright. The floor it reports is a real lower bound: the batch cannot
+    # weigh less than the mass of the macronutrients known to be in it.
+    macro_g = sum(per_100g.get(n, 0) for n in (PROTEIN, CARB, FAT))
+    if macro_g > 100:
+        floor = yield_g * macro_g / 100
+        await note.edit_text(
+            f"❌ That comes to <b>{macro_g:.0f} g of protein, carbs and fat in "
+            f"every 100 g</b>, which is more food than the food weighs.\n\n"
+            f"The ingredients total {raw_g:,.0f} g and you said the batch makes "
+            f"{yield_g:,.0f} g. Cooking loses water, but it cannot lose this "
+            f"much — the batch cannot weigh less than <b>{floor:,.0f} g</b>, and "
+            f"a tray bake usually keeps around 90% of what went in.\n\n"
+            f"<i>Weigh the tin, or drop the weight and send just "
+            f"<code>makes 16 slices</code>. Nothing was saved.</i>",
+            parse_mode="HTML",
+        )
+        return True
+
     # A food with macros and no energy is a wrong row, not a zero-calorie
     # food. "butter" resolved to a Foundation entry carrying 81.5 g of fat and
     # no energy figure at all, and the panel was stored saying zero — which
@@ -2751,7 +2780,11 @@ async def _handle_photos(msgs: list[Message]) -> None:
         await _parse_failed(note, exc)
         return
 
-    await _present(msg, u, parsed, source="photo", photo_file_id=images[0][3], edit=note)
+    try:
+        await _present(msg, u, parsed, source="photo",
+                       photo_file_id=images[0][3], edit=note)
+    except Exception as exc:
+        await _parse_failed(note, exc)
 
 
 async def _parse_failed(note: Message, exc: Exception) -> None:
@@ -2829,10 +2862,9 @@ async def on_text(msg: Message) -> None:
     note = await msg.answer("🍽 digesting…")
     try:
         parsed = await llm.parse_text(text, user_id=u["id"])
+        await _present(msg, u, parsed, source="text", photo_file_id=None, edit=note)
     except Exception as exc:
         await _parse_failed(note, exc)
-        return
-    await _present(msg, u, parsed, source="text", photo_file_id=None, edit=note)
 
 
 

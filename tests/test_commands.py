@@ -338,3 +338,24 @@ def test_every_recipe_prompt_mentions_the_makes_clause():
     prompts = src.count("What goes into it?")
     assert prompts >= 2
     assert src.count("makes 850 g, 16 slices") >= prompts
+
+
+def test_impossible_panel_is_refused():
+    """100 g of food cannot hold 160 g of macronutrients.
+
+    A stated finished weight is the one input nothing else checks, and
+    understating it inflates every figure in exact proportion — the panel stays
+    internally consistent all the way to absurdity. 1,587 g of blondie
+    ingredients declared as an 850 g tray gave 105.6 g carbs, 46.8 g fat and
+    8.1 g protein per 100 g, saved without complaint.
+    """
+    import inspect
+
+    from nutrai import bot
+
+    src = inspect.getsource(bot._consume_food_recipe)
+    assert "macro_g > 100" in src
+    # It must abort, not warn and carry on: a saved panel poisons every future
+    # slice, and the person who typed the weight is the only one who can fix it.
+    body = src[src.index("macro_g > 100"):]
+    assert "return True" in body[:body.index("create_user_food")]

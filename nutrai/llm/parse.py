@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import io
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -35,6 +36,8 @@ from .schemas import (
     SUPPLEMENT_SYSTEM,
     SUPPLEMENT_TOOL,
 )
+
+log = logging.getLogger("nutrai")
 
 
 # ------------------------------------------------------------------- images
@@ -322,6 +325,14 @@ async def resolve_items(user_id: int, items: list[dict[str, Any]],
             notes.append(f"{label}: {m.grams:.0f} g from {m.note}")
 
     for it in items:
+        # The tool schema says every item is an object, and the model returned
+        # a bare string anyway — "0.33 slice of blondie" produced one, and the
+        # AttributeError took down the whole handler, leaving "digesting…" on
+        # screen. A malformed item costs one line of a parse; it must never
+        # cost the parse.
+        if not isinstance(it, dict):
+            log.warning("dropping malformed item from parse: %r", it)
+            continue
         label = str(it.get("label", "")).strip()
         if not label or float(it.get("grams", 0) or 0) <= 0:
             continue
