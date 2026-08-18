@@ -326,8 +326,30 @@ async def fast_now(msg: Message) -> None:
         return
     phase, gloss = fasting.phase_label(h)
     lines = [
-        f"<b>{int(h)}h {int((h % 1) * 60):02d}m</b> since your last logged intake",
+        f"⏳ <b>{int(h)}h {int((h % 1) * 60):02d}m</b> fasted",
         f"phase: {escape(phase)} — {escape(gloss)}",
+    ]
+
+    # What ended the last one, and which rule ended it. "12.8 hours" says
+    # where you are; it does not say that a ginger tea did it, which is the
+    # part you can do something about tomorrow.
+    broke = await db.fast_broken_by(u["id"])
+    if broke:
+        import zoneinfo
+
+        when = broke["logged_at"].astimezone(zoneinfo.ZoneInfo(u["tz"]))
+        why = {
+            "energy": f"{float(broke['kcal']):,.0f} kcal",
+            "carbohydrate": f"{float(broke['carb_g']):.1f} g carbs",
+            "protein": f"{float(broke['protein_g']):.1f} g protein",
+        }[broke["broken_by"]]
+        lines += [
+            "",
+            f"🍽 Broken at <b>{when:%H:%M}</b> by "
+            f"<b>{render._esc(render._title(broke['name']))}</b> — {why}.",
+        ]
+
+    lines += [
         "",
         "<i>A population-average timeline, not a measurement of you. Nothing here"
         " observes your respiratory quotient or your ketones, and a fasting"
@@ -655,7 +677,9 @@ PROFILE_VALIDATORS: dict[str, Any] = {
     "deficit_kcal": lambda v: _num(v, -1500, 1500),
     "tz": lambda v: v.strip() if zoneinfo.ZoneInfo(v.strip()) else None,
     "wake_hour": lambda v: int(_num(v, 0, 23)) if _num(v, 0, 23) is not None else None,
-    "fast_break_cp_g": lambda v: _num(v, 0, 100),
+    "fast_break_kcal": lambda v: _num(v, 0, 500),
+    "fast_break_carb_g": lambda v: _num(v, 0, 100),
+    "fast_break_protein_g": lambda v: _num(v, 0, 100),
     "display_name": lambda v: v.strip()[:80] or None,
 }
 

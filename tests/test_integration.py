@@ -2822,10 +2822,10 @@ def test_a_black_coffee_does_not_break_a_fast(harness):
         assert hours > 9, f"the coffee reset the clock: {hours:.1f}h"
 
         # Raise the bar and the coffee still does not count; lower it and it does.
-        await p.execute("UPDATE app_user SET fast_break_cp_g = 0.1 WHERE id=$1", uid)
+        await p.execute("UPDATE app_user SET fast_break_kcal=1, fast_break_carb_g=0.05, fast_break_protein_g=0.05 WHERE id=$1", uid)
         assert float(await db.current_fast_hours(uid)) < 3
 
-        await p.execute("UPDATE app_user SET fast_break_cp_g = 5 WHERE id=$1", uid)
+        await p.execute("UPDATE app_user SET fast_break_kcal=50, fast_break_carb_g=5, fast_break_protein_g=2 WHERE id=$1", uid)
         await p.execute("DELETE FROM log_entry WHERE user_id=$1 AND name IN ('Dinner','Black coffee')", uid)
 
     run(scenario())
@@ -2899,10 +2899,11 @@ def test_a_substring_does_not_tick_a_supplement_off(harness):
     run(scenario())
 
 
-def test_fat_does_not_break_a_fast_but_honey_does(harness):
-    """Energy cannot tell honey from olive oil. A 33 kcal ginger tea is nine
-    grams of sugar and ends a fast; a 120 kcal spoon of butter is essentially
-    no insulin response at all."""
+def test_each_of_the_three_rules_breaks_a_fast_on_its_own(harness):
+    """No single quantity expresses it. Energy alone cannot tell honey from
+    olive oil; carbohydrate alone lets a 24 g whey shake through at 3 g of
+    carbs; and a spoon of butter provokes little insulin but is not a fast by
+    any ordinary use of the word."""
 
     async def scenario():
         uid = await _reset()
@@ -2911,7 +2912,7 @@ def test_fat_does_not_break_a_fast_but_honey_does(harness):
         p = await db.pool()
         now = dt.datetime.now(dt.timezone.utc)
 
-        async def entry(hours_ago, name, carbs, protein, kcal):
+        async def entry(hours_ago, name, kcal, carbs, protein):
             eid = await p.fetchval(
                 """INSERT INTO log_entry (user_id, logged_at, local_date, name,
                      source, status) VALUES ($1,$2,$3,$4,'text','confirmed')
@@ -2919,14 +2920,27 @@ def test_fat_does_not_break_a_fast_but_honey_does(harness):
                 uid, now - dt.timedelta(hours=hours_ago), dt.date.today(), name)
             await p.executemany(
                 "INSERT INTO log_nutrient (entry_id, nutrient_id, amount) VALUES ($1,$2,$3)",
-                [(eid, 1005, carbs), (eid, 1003, protein), (eid, 1008, kcal)])
+                [(eid, 1008, kcal), (eid, 1005, carbs), (eid, 1003, protein)])
 
-        await entry(12, "Dinner", 60, 40, 700)
-        await entry(4, "Butter in coffee", 0.1, 0.1, 120)   # more energy, no load
-        assert float(await db.current_fast_hours(uid)) > 11, "fat broke the fast"
+        await entry(12, "Dinner", 700, 60, 40)
 
-        await entry(2, "Ginger tea with honey", 8.9, 0.3, 33)  # less energy, real load
-        assert float(await db.current_fast_hours(uid)) < 3, "honey did not break it"
+        # Under all three: a brine at 5 kcal, 0.9 g carbs, 0.2 g protein.
+        await entry(8, "Pickle juice", 5, 0.9, 0.2)
+        assert float(await db.current_fast_hours(uid)) > 11, "a brine broke the fast"
+
+        # Carbohydrate alone: 33 kcal of ginger tea, but nine grams of honey.
+        await entry(6, "Ginger tea with honey", 33, 8.9, 0.3)
+        broke = await db.fast_broken_by(uid)
+        assert broke["broken_by"] == "carbohydrate", dict(broke)
+
+        # Protein alone: under 50 kcal and barely any carbohydrate.
+        await entry(4, "Bone broth", 40, 0.5, 9.0)
+        assert (await db.fast_broken_by(uid))["broken_by"] == "protein"
+
+        # Energy alone: fat, which moves neither of the other two.
+        await entry(2, "Butter in coffee", 120, 0.1, 0.1)
+        assert (await db.fast_broken_by(uid))["broken_by"] == "energy"
+        assert float(await db.current_fast_hours(uid)) < 3
 
         await p.execute("DELETE FROM log_entry WHERE user_id=$1 AND source='text'", uid)
 

@@ -1234,7 +1234,8 @@ async def last_weight(user_id: int) -> list[asyncpg.Record]:
 
 PROFILE_FIELDS = ("display_name", "sex", "birth_date", "height_cm",
                   "activity_factor", "goal", "goal_weight_kg", "deficit_kcal", "tz",
-                  "wake_hour", "fast_break_cp_g")
+                  "wake_hour", "fast_break_kcal", "fast_break_carb_g",
+                  "fast_break_protein_g")
 
 
 async def mark_targets_derived(user_id: int, weight_kg: float | None, day: dt.date) -> None:  # noqa: D401
@@ -1938,3 +1939,18 @@ async def supplements_named_in(user_id: int, day: dt.date,
         user_id, day,
     )
     return [r["id"] for r in rows if r["name"].strip().lower() in wanted]
+
+
+async def fast_broken_by(user_id: int) -> asyncpg.Record | None:
+    """The entry that ended the current fast, and which rule ended it.
+
+    "12.8 hours" tells you where you are. It does not tell you that a ginger
+    tea did it, which is the part you can act on tomorrow.
+    """
+    p = await pool()
+    return await p.fetchrow(
+        """SELECT name, logged_at, kcal, carb_g, protein_g, broken_by
+             FROM v_fast_breaking WHERE user_id = $1
+         ORDER BY logged_at DESC LIMIT 1""",
+        user_id,
+    )
