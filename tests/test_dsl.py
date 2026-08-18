@@ -159,3 +159,33 @@ def test_the_existing_forms_are_unchanged():
     assert parse_ops("rice 200".split())[0] == [SetComponent("rice", 200.0)]
     assert parse_ops("+50 rice".split())[0] == [AddComponent("rice", 50.0)]
     assert parse_ops(["-onion"])[0] == [DropComponent("onion")]
+
+
+def test_spaced_scale_is_a_scale_not_a_component():
+    """`1 x 3` meant three coffees and set a component called "x" to 3 g.
+
+    The card advertises `x1.5`, so a space is the obvious typo, and the token
+    fell through every rule to the "rice 200" form. That invented a component,
+    resolved the single letter "x" against USDA — which always finds
+    something — and put three grams of it into an espresso. The number on the
+    card was wrong by a plausible amount, which is the only kind of wrong that
+    matters here.
+    """
+    for text, factor in (("1 x 3", 3.0), ("1 * 3", 3.0), ("1 × 2", 2.0),
+                         ("1 x 1.5", 1.5), ("1 x3", 3.0)):
+        cmd = dsl.parse(text)
+        assert cmd is not None and cmd.ops == [dsl.Scale(factor)], text
+        assert not cmd.unparsed, text
+
+
+def test_one_letter_label_is_never_a_food():
+    """The general form of the same bug: nothing edible has a one-letter name.
+
+    Left unparsed the user is told it could not be read. Treated as a label it
+    becomes a database search, and a database search always succeeds.
+    """
+    for text in ("1 x", "1 q 40", "1 40g z"):
+        cmd = dsl.parse(text)
+        assert cmd is not None
+        assert not [o for o in cmd.ops if isinstance(o, dsl.SetComponent)], text
+        assert cmd.unparsed, text

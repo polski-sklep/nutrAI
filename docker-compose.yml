@@ -69,6 +69,10 @@ services:
     restart: unless-stopped
     environment:
       ADMINER_DEFAULT_SERVER: db
+      # There is no working env var for the driver on adminer 5.5.1 —
+      # ADMINER_DEFAULT_DRIVER is read by nothing, and the login form defaults
+      # to MySQL, which fails with "Connection refused" and reads as a wrong
+      # password. Pin it in the URL instead: http://127.0.0.1:8082/?pgsql=db
       ADMINER_DESIGN: dracula
     depends_on:
       db:

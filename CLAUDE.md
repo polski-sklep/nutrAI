@@ -99,10 +99,16 @@ docker compose exec -T db psql -U nutrai -d nutrai -f - < sql/004_coverage.sql
 
 ```bash
 docker compose exec db psql -U nutrai -d nutrai     # \dt, \d log_entry, \q
-docker compose --profile tools up -d adminer        # then http://127.0.0.1:8082
+docker compose --profile tools up -d adminer        # then the URL below
 ```
 
-Adminer is behind the `tools` profile so an ordinary `docker compose up` does
+Open Adminer at **`http://127.0.0.1:8082/?pgsql=db&username=nutrai&db=nutrai`**,
+not at the bare host and port. The driver has to be in the URL: adminer 5.5.1
+ignores `ADMINER_DEFAULT_DRIVER`, so the login form defaults to MySQL and the
+attempt fails with "Connection refused" — which looks exactly like a wrong
+password and is not one.
+
+It is behind the `tools` profile so an ordinary `docker compose up` does
 not start it, and bound to loopback like everything else here: the database
 holds a food diary, and a browser client for it has no business listening on a
 laptop's wifi interface. Log in with server `db`, user and database `nutrai`,

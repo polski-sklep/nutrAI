@@ -15,7 +15,7 @@ Grammar
                 <slug>            a dish or meal-template slug ("b", "stirfry")
 
     op          250 | 250g        total grams for the whole dish (proportional)
-                x1.5 | *1.5       scale factor
+                x1.5 | *1.5       scale factor (a space is fine: x 1.5)
                 half | double     scale 0.5 / 2.0
                 -onion | no onion drop a component
                 +50 rice | +rice  add a component (grams optional)
@@ -197,6 +197,17 @@ def parse_ops(toks: list[str]) -> tuple[list[Op], list[str]]:
             i += 1
             continue
 
+        # "x 3" with a space. The card documents `x1.5`, so a space is the
+        # natural typo, and without this rule it fell all the way through to
+        # the "rice 200" form: `1 x 3` set a component named "x" to 3 g, which
+        # then resolved against USDA and put three grams of something into a
+        # coffee. Silent, plausible, and wrong — the failure mode this grammar
+        # exists to avoid. A lone x/*/× is never a food.
+        if low in ("x", "*", "×") and i + 1 < len(toks) and (m := RE_QTY.match(toks[i + 1])):
+            ops.append(Scale(_f(m.group(1))))
+            i += 2
+            continue
+
         if low in WORD_SCALE:
             ops.append(Scale(WORD_SCALE[low]))
             i += 1
@@ -300,7 +311,7 @@ def parse_ops(toks: list[str]) -> tuple[list[Op], list[str]]:
             while j < len(toks) and not _is_op_token(toks[j]) and not RE_QTY.match(toks[j]):
                 words.append(toks[j].lower())
                 j += 1
-            if words:
+            if words and len(" ".join(words)) >= 2:
                 ops.append(SetComponent(" ".join(words), grams))
                 i = j
                 continue
@@ -314,6 +325,13 @@ def parse_ops(toks: list[str]) -> tuple[list[Op], list[str]]:
 
         # "rice 200"
         if i + 1 < len(toks) and (m := RE_QTY.match(toks[i + 1])):
+            if len(low) < 2:
+                # Nothing edible has a one-letter name. Left unparsed, the user
+                # is told it could not be read; treated as a label it becomes a
+                # database search that always finds *something*.
+                unparsed.append(tok)
+                i += 1
+                continue
             ops.append(SetComponent(low, _f(m.group(1))))
             i += 2
             continue
