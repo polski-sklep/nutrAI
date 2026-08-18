@@ -539,6 +539,42 @@ async def day_entries(user_id: int, day: dt.date) -> list[asyncpg.Record]:
     )
 
 
+async def history_entries(user_id: int, since: dt.date, until: dt.date) -> list[asyncpg.Record]:
+    """Every confirmed entry across a span of days, newest first.
+
+    Deliberately not `day_entries` in a loop: the whole point is to see the
+    diary as one continuous thing, and a query per day makes the cost grow
+    with the window for no reason.
+    """
+    p = await pool()
+    return await p.fetch(
+        """SELECT e.id, e.local_date, e.logged_at, e.slot, e.name, e.source,
+                  COALESCE(k.amount, 0) AS kcal, COALESCE(pr.amount, 0) AS protein
+             FROM log_entry e
+             LEFT JOIN log_nutrient k  ON k.entry_id = e.id AND k.nutrient_id = 1008
+             LEFT JOIN log_nutrient pr ON pr.entry_id = e.id AND pr.nutrient_id = 1003
+            WHERE e.user_id = $1 AND e.status = 'confirmed'
+              AND e.local_date BETWEEN $2 AND $3
+         ORDER BY e.local_date DESC, e.logged_at DESC""",
+        user_id, since, until,
+    )
+
+
+async def history_span(user_id: int) -> asyncpg.Record | None:
+    """First and last logged day, and how many entries in total.
+
+    So the card can say what it is not showing. A list capped at fourteen days
+    that does not mention the other three months reads as the whole diary.
+    """
+    p = await pool()
+    return await p.fetchrow(
+        """SELECT min(local_date) AS first_day, max(local_date) AS last_day,
+                  count(*) AS entries, count(DISTINCT local_date) AS days
+             FROM log_entry WHERE user_id = $1 AND status = 'confirmed'""",
+        user_id,
+    )
+
+
 async def day_mass_confidence(user_id: int, day: dt.date) -> asyncpg.Record | None:
     p = await pool()
     return await p.fetchrow(

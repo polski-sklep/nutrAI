@@ -175,6 +175,7 @@ COMMANDS: list[tuple[str, str]] = [
     ("/today", "Where you stand today"),
     ("/next", "What would close today's gaps"),
     ("/yesterday", "Where you stood yesterday"),
+    ("/history", "Everything you have logged"),
     ("/why", "Where a nutrient came from today"),
     ("/undo", "Unlog your last entry"),
     # The other things you record daily.
@@ -268,6 +269,42 @@ async def _send_day(msg: Message, u: Any, day: dt.date, show_all: bool = False) 
         ),
         parse_mode="HTML",
     )
+
+
+@dp.message(Command("history", "log", "diary"))
+async def history(msg: Message) -> None:
+    """Everything logged, newest first. `/history 30`, or `/history 2026-08-14`.
+
+    /today and /week both answer "how am I doing". This answers "what did I
+    actually eat", which is a different question and had no command at all —
+    the only way to read the diary was to open Adminer.
+    """
+    u = await _user(msg)
+    arg = (msg.text or "").split(maxsplit=1)
+    arg = arg[1].strip() if len(arg) > 1 else ""
+
+    # A date shows that one day in full, using the same card /today uses.
+    # Anything else is a window in days.
+    if arg:
+        try:
+            return await _send_day(msg, u, dt.date.fromisoformat(arg), show_all=True)
+        except ValueError:
+            pass
+    try:
+        days = max(1, min(365, int(arg))) if arg else 14
+    except ValueError:
+        await msg.answer(
+            "<code>/history</code> the last fortnight · "
+            "<code>/history 60</code> a longer window · "
+            "<code>/history 2026-08-14</code> one day in full",
+            parse_mode="HTML")
+        return
+
+    today = _today(u)
+    rows = await db.history_entries(u["id"], today - dt.timedelta(days=days - 1), today)
+    span = await db.history_span(u["id"])
+    await msg.answer(render.history_card(rows, span, days, tz=u["tz"]),
+                     parse_mode="HTML")
 
 
 @dp.message(Command("week"))

@@ -712,3 +712,62 @@ def test_the_icon_comes_from_the_food_not_the_hour():
     # rather than confidently wrong.
     assert dish_icon("Something I ate", "snack") == "🍪"
     assert dish_icon("", None) == "•"
+
+
+def _macro_rows():
+    return [
+        dict(nutrient_id=1008, nutrient_name="Energy", unit="kcal",
+             amount=794, min_amount=None, max_amount=2286, state="ok", amount_supplement=0),
+        dict(nutrient_id=1003, nutrient_name="Protein", unit="g",
+             amount=18, min_amount=165, max_amount=None, state="under", amount_supplement=0),
+    ]
+
+
+def test_ceilings_and_floors_are_grouped_not_suffixed():
+    """"794 of 2,286 kcal ceiling" and "18 of 165 g target" are the same shape.
+
+    The only thing separating "you have 1,492 kcal in hand" from "you need 147
+    g more" was one word at the end of the line, after the number, where the
+    eye arrives last. Five such rows read as one list of five things going the
+    same way. A heading cannot be skimmed past, and it lets the row drop the
+    word.
+    """
+    out = logged_card("Cake", {}, _macro_rows())
+    assert "Stay under" in out and "Reach" in out
+    assert "kcal ceiling" not in out and "g target" not in out
+    # Energy under its own heading, protein under the other, in that order.
+    assert out.index("Stay under") < out.index("Energy") < out.index("Reach")
+    assert out.index("Reach") < out.index("Protein")
+
+
+def test_a_ceiling_reports_headroom_and_then_the_breach():
+    """"0 left" is true and useless. How far over is the number you act on."""
+    rows = _macro_rows()
+    assert "1,492 kcal left" in logged_card("Cake", {}, rows)
+    rows[0]["amount"] = 2500
+    out = logged_card("Cake", {}, rows)
+    assert "214 kcal over" in out and "left" not in out.split("Reach")[0]
+
+
+def test_history_card_says_what_it_is_not_showing():
+    """A capped list that does not mention the cap reads as the whole diary.
+
+    Then a week you logged but cannot see looks like a week you did not eat,
+    which is the one thing a diary must never imply.
+    """
+    from nutrai.core.render import history_card
+
+    rows = [dict(id=1, local_date=dt.date(2026, 8, 18),
+                 logged_at=dt.datetime(2026, 8, 18, 8, 39, tzinfo=dt.timezone.utc),
+                 slot="breakfast", name="espresso", source="text",
+                 kcal=98, protein=5)]
+    span = {"first_day": dt.date(2026, 8, 1), "last_day": dt.date(2026, 8, 18),
+            "entries": 47, "days": 14}
+    out = history_card(rows, span, 14, tz="Europe/Warsaw")
+    assert "1 of 47 entries" in out
+    # Local time, not UTC. logged_at is stored in UTC and 08:39 there is 10:39
+    # in Warsaw; a diary in the wrong timezone is a diary of someone else's day.
+    assert "10:39" in out
+
+    span["entries"] = 1
+    assert "That is everything" in history_card(rows, span, 14, tz="Europe/Warsaw")

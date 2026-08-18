@@ -232,6 +232,18 @@ def logged_card(
 
     # --- where the day stands
     lines.append("📊 <b>Today so far</b>")
+    # Grouped by direction rather than distinguished by a trailing word.
+    #
+    # Every row used to end in "target" or "ceiling", which is the whole
+    # difference between "you need 147 g more of this" and "you have 1,492 kcal
+    # left before you should stop" — carried by one word at the end of the
+    # line, after the number, in the position the eye reaches last. Five rows
+    # of identical shape read as one list of five things going the same way.
+    #
+    # A heading cannot be skimmed past in the same way, and it lets each row
+    # drop the word and get shorter. Ceilings lead so energy stays the first
+    # number on the card.
+    ceilings, floors, plain = [], [], []
     for nid in (ENERGY_KCAL, PROTEIN, FIBER, CARB, FAT):
         r = by_id.get(nid)
         if not r:
@@ -239,21 +251,36 @@ def logged_card(
         amount = float(r["amount"])
         target = r["min_amount"] if r["min_amount"] is not None else r["max_amount"]
         if target is None:
-            lines.append(f"   • {_emoji(nid)} {_esc(_short(r['nutrient_name']))} — "
+            plain.append(f"   • {_emoji(nid)} {_esc(_short(r['nutrient_name']))} — "
                          f"{fmt_amount(amount, r['unit'])}")
             continue
         target = float(target)
         pct = amount / target * 100 if target else 0
-        cap = "ceiling" if r["min_amount"] is None else "target"
+        is_ceiling = r["min_amount"] is None
         # A crossed ceiling loses its own emoji. 🧈 beside "125%" reads as a
         # fact about butter; ⚠️ reads as the thing you need to know.
-        over = r["min_amount"] is None and pct > 100
-        mark = "⚠️" if over else _emoji(nid)
-        lines.append(
-            f"   • {mark} {_esc(_short(r['nutrient_name']))} — "
-            f"{fmt_amount(amount, r['unit'])} of {fmt_amount(target, r['unit'])} "
-            f"{cap} <b>({pct:.0f}%)</b>"
-        )
+        mark = "⚠️" if is_ceiling and pct > 100 else _emoji(nid)
+        row = (f"   • {mark} {_esc(_short(r['nutrient_name']))} — "
+               f"{fmt_amount(amount, r['unit']).rsplit(' ', 1)[0]} of "
+               f"{fmt_amount(target, r['unit'])} "
+               f"<b>({pct:.0f}%)</b>")
+        if is_ceiling:
+            # What is left, not what is spent: a ceiling is only useful as the
+            # room you have before it. Past it, "0 left" understates — say by
+            # how much, because that is the number you would act on.
+            row += (f" · {fmt_amount(amount - target, r['unit'])} over"
+                    if amount > target
+                    else f" · {fmt_amount(target - amount, r['unit'])} left")
+            ceilings.append(row)
+        else:
+            floors.append(row)
+    if ceilings:
+        lines.append("  ⬇️ <b>Stay under</b>")
+        lines += ceilings
+    if floors:
+        lines.append("  ⬆️ <b>Reach</b>")
+        lines += floors
+    lines += plain
 
     # --- what this meal actually brought
     # Ranked by share of the day's floor, not by absolute amount: 7 g of fibre
@@ -650,6 +677,63 @@ def dish_icon(name: str, slot: str | None = None) -> str:
         if any(w in low for w in words):
             return icon
     return SLOT_FALLBACK.get(slot or "", "•")
+
+
+def history_card(rows: Sequence[Any], span: Any, days: int,
+                 tz: str = "UTC") -> str:
+    """The diary itself, newest first, grouped by day.
+
+    Everything else in the bot answers "where am I now": /today, /week, the
+    logged card. Nothing answered "what have I actually eaten", which is the
+    question you ask when you want to check the record rather than be scored
+    against it. It was only reachable by opening Adminer and reading
+    `log_entry`, which is not a feature, it is the absence of one.
+
+    Totals only. Per-component detail is `/why`'s job and would make this
+    unreadable at a fortnight's length.
+    """
+    import zoneinfo
+
+    zone = zoneinfo.ZoneInfo(tz)
+    if not rows:
+        if span and span["entries"]:
+            return (f"Nothing logged in the last {days} days. "
+                    f"Your diary runs {span['first_day']:%-d %b} to "
+                    f"{span['last_day']:%-d %b} — <code>/history 90</code> to reach back.")
+        return "Nothing logged yet."
+
+    lines = [f"📔 <b>Your diary</b> — last {days} days", ""]
+    by_day: dict[Any, list[Any]] = {}
+    for r in rows:
+        by_day.setdefault(r["local_date"], []).append(r)
+
+    for day, entries in by_day.items():
+        kcal = sum(float(e["kcal"] or 0) for e in entries)
+        protein = sum(float(e["protein"] or 0) for e in entries)
+        lines.append(f"<b>{day:%a %-d %b}</b> — {kcal:,.0f} kcal · {protein:.0f} g protein")
+        for e in entries:
+            when = e["logged_at"].astimezone(zone).strftime("%H:%M")
+            icon = dish_icon(e["name"] or "", e["slot"])
+            lines.append(f"   {when} {icon} {_esc(_title(e['name'] or 'unnamed'))}"
+                         f" — {float(e['kcal'] or 0):,.0f} kcal")
+        lines.append("")
+
+    # What is not on screen, said plainly. A capped list that does not mention
+    # the cap reads as the whole diary, and then a missing week looks like a
+    # week you did not eat.
+    if span and span["entries"]:
+        shown = len(rows)
+        if int(span["entries"]) > shown:
+            lines.append(
+                f"<i>{shown} of {span['entries']} entries, over {span['days']} logged "
+                f"days from {span['first_day']:%-d %b %Y}. "
+                f"<code>/history 60</code> for more, "
+                f"<code>/history 2026-08-14</code> for one day in full.</i>"
+            )
+        else:
+            lines.append("<i>That is everything. <code>/history 2026-08-14</code> "
+                         "for one day in full.</i>")
+    return "\n".join(lines)
 
 
 def repeat_menu(dishes: Sequence[Any], templates: Sequence[Any] = (),
