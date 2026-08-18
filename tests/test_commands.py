@@ -376,3 +376,45 @@ def test_a_total_miss_offers_to_define_the_food():
     src = inspect.getsource(bot._present)
     miss = src[src.index("No match in the food database"):]
     assert "_define_button" in miss[:miss.index("return")]
+
+
+def test_count_is_read_off_the_message_not_guessed():
+    """The model was asked to set `count` and on the first real use did not.
+
+    "0.33 slice of blondie" came back as a 30 g estimate noting "standard slice
+    assumed ~90g" — a guess at a quantity the database knew exactly (88 g).
+    Asking the model more firmly makes that likelier, not certain, and the
+    point of a declared portion is that it removes the guess.
+    """
+    from nutrai.llm.parse import count_from_text
+
+    assert count_from_text("0.33 slice of blondie", "slice") == 0.33
+    assert count_from_text("two slices of blondie", "slice") == 2.0
+    assert count_from_text("a slice of blondie", "slice") == 1.0
+    # "half a slice" must not match the "a slice" further along the string —
+    # that turns a half into a whole, silently and in the wrong direction.
+    assert count_from_text("half a slice of blondie", "slice") == 0.5
+    # Likewise "1/2 slice" must not match the 2.
+    assert count_from_text("1/2 slice", "slice") == 0.5
+    assert count_from_text("blondie", "slice") is None
+    assert count_from_text("400 slices", "slice") is None
+
+
+def test_a_panel_must_agree_with_its_own_macros():
+    """One energy-less row out of eight is worse than all eight being so.
+
+    The all-or-nothing test caught only the latter. 340 g of butter matched
+    "Butter, stick, unsalted" — 81.5 g of fat, no energy figure — and the
+    blondie stored 337 kcal per 100 g against macros implying 524. Nothing
+    about that panel looks wrong; it is simply a third low, for ever.
+    """
+    from nutrai.core.nutrition import energy_cross_check
+
+    saved = {1008: 336.5625, 1003: 4.8762, 1004: 28.2412, 1005: 63.7733, 1079: 2.1438}
+    check = energy_cross_check(saved)
+    assert not check.ok and check.delta_pct > 50
+
+    import inspect
+
+    from nutrai import bot
+    assert "energy_cross_check" in inspect.getsource(bot._consume_food_recipe)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import io
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -174,7 +175,48 @@ class Resolution:
     weak_matches: list[tuple[str, float]] = field(default_factory=list)
 
 
-async def _mass_for(user_id: int, fdc_id: int, it: dict[str, Any]) -> MassEstimate:
+# "0.33 slice", "half a slice", "two slices" — read locally, not inferred.
+#
+# The schema asks the model to set `count` when a number of units is given, and
+# on the first real use it did not: "0.33 slice of blondie" came back as a 30 g
+# estimate with the note "standard slice assumed ~90g", which is a guess at a
+# quantity the database already knew exactly (88 g). Asking the model more
+# firmly would make that likelier, not certain, and the whole point of a
+# declared portion is that it removes the guess. So the count is also read off
+# the message directly, with the food's own unit word as the anchor.
+_WORD_COUNTS = {"a": 1.0, "an": 1.0, "one": 1.0, "half": 0.5, "quarter": 0.25,
+                "two": 2.0, "three": 3.0, "four": 4.0, "couple": 2.0}
+
+
+def count_from_text(text: str | None, unit: str) -> float | None:
+    """How many <unit> the message asks for, if it says so plainly."""
+    if not text or not unit:
+        return None
+    pattern = (r"(\d+\s*/\s*\d+|\d+(?:[.,]\d+)?|" + "|".join(_WORD_COUNTS) + r")\s+"
+               r"(?:of\s+)?(?:a\s+)?" + re.escape(unit) + r"s?\b")
+    m = re.search(pattern, text, re.I)
+    if not m:
+        return None
+    tok = m.group(1).lower()
+    if tok in _WORD_COUNTS:
+        return _WORD_COUNTS[tok]
+    if "/" in tok:
+        num, _, den = tok.partition("/")
+        try:
+            n = float(num) / float(den)
+        except (ValueError, ZeroDivisionError):
+            return None
+        return n if 0 < n <= 100 else None
+    try:
+        n = float(tok.replace(",", "."))
+    except ValueError:
+        return None
+    # A "portion" of 400 slices is a misread, not an order.
+    return n if 0 < n <= 100 else None
+
+
+async def _mass_for(user_id: int, fdc_id: int, it: dict[str, Any],
+                    text: str | None = None) -> MassEstimate:
     """Weighed beats stated beats your own history beats the model's eyes."""
     source = str(it.get("grams_source", "estimate"))
     grams = float(it.get("grams", 0) or 0)
@@ -188,10 +230,10 @@ async def _mass_for(user_id: int, fdc_id: int, it: dict[str, Any]) -> MassEstima
         # 53 g, exactly, for ever. It only applies when a count was actually
         # given — "some blondie" is not two slices — and the count multiplies,
         # so three slices is 159 g rather than three guesses.
-        count = it.get("count")
-        if count:
-            portion = await db.portion_for(fdc_id)
-            if portion:
+        portion = await db.portion_for(fdc_id)
+        if portion:
+            count = it.get("count") or count_from_text(text, str(portion["unit"]))
+            if count:
                 grams_exact = float(count) * float(portion["gram_weight"])
                 return MassEstimate(
                     grams_exact, sigma_for(grams_exact, "package"), "package",
@@ -293,7 +335,8 @@ def inverts_meaning(query: str, description: str) -> bool:
 
 
 async def resolve_items(user_id: int, items: list[dict[str, Any]],
-                        dish_name: str | None = None) -> Resolution:
+                        dish_name: str | None = None,
+                        text: str | None = None) -> Resolution:
     """Ingredient names to USDA rows.
 
     Three tiers, cheapest first:
@@ -314,7 +357,7 @@ async def resolve_items(user_id: int, items: list[dict[str, Any]],
     cost = 0.0
 
     async def _accept(label: str, fdc_id: int, it: dict[str, Any], yf: float = 1.0) -> None:
-        m = await _mass_for(user_id, fdc_id, it)
+        m = await _mass_for(user_id, fdc_id, it, text)
         count = it.get("count")
         comps.append(ResolvedComponent(
             label, fdc_id, m.grams, yf, m.sigma, m.source,

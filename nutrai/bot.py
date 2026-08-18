@@ -24,7 +24,11 @@ from . import db, off
 from .config import CARB, CONFIDENCE_FLOOR, ENERGY_KCAL, FAT, PROTEIN, settings
 from .core import dsl, estimate, fasting, insight, plan, render, suggest
 from .core import profile as profile_mod
-from .core.nutrition import ResolvedComponent, total_nutrients
+from .core.nutrition import (
+    ResolvedComponent,
+    energy_cross_check,
+    total_nutrients,
+)
 from .jobs import report as report_job
 from .llm import parse as llm
 
@@ -1732,7 +1736,7 @@ async def cb_food_as_meal(cq: CallbackQuery) -> None:
     except Exception as exc:
         await _parse_failed(note, exc)
         return
-    await _present(cq.message, u, parsed, source="text",
+    await _present(cq.message, u, parsed, source="text", text=name,
                    photo_file_id=None, edit=note)
 
 
@@ -1863,14 +1867,28 @@ async def _consume_food_recipe(msg: Message, u: Any, text: str, payload: dict) -
     # food. "butter" resolved to a Foundation entry carrying 81.5 g of fat and
     # no energy figure at all, and the panel was stored saying zero — which
     # then subtracts nothing from an energy ceiling for ever.
-    if not per_100g.get(ENERGY_KCAL) and any(
-        per_100g.get(n, 0) > 0 for n in (PROTEIN, CARB, FAT)
-    ):
+    #
+    # The all-or-nothing test only caught it when *every* ingredient was
+    # energy-less. One out of eight is the commoner and worse case: the blondie
+    # stored 336 kcal per 100 g against macros implying 528, because 340 g of
+    # butter contributed 277 g of fat and zero calories while the other seven
+    # rows carried theirs. Nothing about the saved panel looks wrong — it is
+    # simply, quietly, a third low, and every slice logged from it inherits
+    # that. Atwater is the check, and it is the same one every confirm card
+    # already runs against a meal.
+    check = energy_cross_check(per_100g)
+    if not per_100g.get(ENERGY_KCAL) or not check.ok:
         await note.edit_text(
-            "❌ The rows those ingredients matched carry no energy figure, so "
-            "this would be stored as a food with fat and no calories.\n\n"
-            "<i>Name the ingredient differently — 'butter' rather than a "
-            "brand, say — or photograph the panel instead.</i>",
+            "❌ This panel does not add up.\n\n"
+            f"Its macros imply <b>{check.kcal_atwater:,.0f} kcal per 100 g</b> "
+            f"and the rows those ingredients matched give "
+            f"<b>{check.kcal_db:,.0f}</b>. Some USDA rows carry fat and protein "
+            "but no energy figure — <i>Butter, stick, unsalted</i> is one — and "
+            "an ingredient that matched one of those contributes its mass to "
+            "the total and nothing to the calories.\n\n"
+            "<i>Name that ingredient differently and send the list again: "
+            "'butter' rather than 'unsalted butter', say, or a brand you can "
+            "photograph the panel of. Nothing was saved.</i>",
             parse_mode="HTML",
         )
         return True
@@ -2862,7 +2880,8 @@ async def on_text(msg: Message) -> None:
     note = await msg.answer("🍽 digesting…")
     try:
         parsed = await llm.parse_text(text, user_id=u["id"])
-        await _present(msg, u, parsed, source="text", photo_file_id=None, edit=note)
+        await _present(msg, u, parsed, source="text", photo_file_id=None,
+                       edit=note, text=text)
     except Exception as exc:
         await _parse_failed(note, exc)
 
@@ -3399,8 +3418,9 @@ async def _matched_names(components: Sequence[Any]) -> dict[int, str]:
 async def _present(
     msg: Message, u: Any, parsed: llm.ParsedMeal, *, source: str,
     photo_file_id: str | None, edit: Message | None = None,
+    text: str | None = None,
 ) -> None:
-    res = await llm.resolve_items(u["id"], parsed.items, parsed.dish_name)
+    res = await llm.resolve_items(u["id"], parsed.items, parsed.dish_name, text=text)
     if not res.components:
         # Keep the parse even though nothing resolved.
         #
