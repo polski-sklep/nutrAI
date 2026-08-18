@@ -3433,12 +3433,13 @@ async def _present(
             f"No match in the food database for: <b>{escape(missed)}</b>\n\n"
             "Nothing was logged. Try naming the ingredients plainly — "
             "<code>2 cheese rolls, 1 pickle, half an avocado, 4 slices salami</code> — "
-            "or state the masses and I will trust those over the photo."
+            "or define it yourself if the database simply has no row for it."
         )
+        kb = InlineKeyboardMarkup(inline_keyboard=[_define_button([(missed, 0.0)])])
         if edit:
-            await edit.edit_text(text, parse_mode="HTML")
+            await edit.edit_text(text, parse_mode="HTML", reply_markup=kb)
         else:
-            await msg.answer(text, parse_mode="HTML")
+            await msg.answer(text, parse_mode="HTML", reply_markup=kb)
         return
 
     verdict = await llm.validate(res.components, parsed)

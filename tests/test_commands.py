@@ -359,3 +359,20 @@ def test_impossible_panel_is_refused():
     # slice, and the person who typed the weight is the only one who can fix it.
     body = src[src.index("macro_g > 100"):]
     assert "return True" in body[:body.index("create_user_food")]
+
+
+def test_a_total_miss_offers_to_define_the_food():
+    """The weak-match path offered the button and the no-match path did not.
+
+    A near-miss is ambiguous — the right row may be on the list, ranked badly.
+    A complete miss is the strongest evidence USDA has no row at all, which is
+    the exact case /food exists for, so offering the button on the weaker
+    signal and withholding it on the stronger one had it backwards.
+    """
+    import inspect
+
+    from nutrai import bot
+
+    src = inspect.getsource(bot._present)
+    miss = src[src.index("No match in the food database"):]
+    assert "_define_button" in miss[:miss.index("return")]

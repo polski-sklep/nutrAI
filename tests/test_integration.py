@@ -676,7 +676,11 @@ def test_an_unresolvable_meal_still_keeps_the_parse(harness):
         assert "No match" in reply, reply
         # The failing label is named, so there is something to act on.
         assert "zzqqx" in reply
-        assert not harness.sent.last().buttons, "nothing to confirm — nothing resolved"
+        buttons = harness.sent.last().buttons
+        assert not [b for b in buttons if b.startswith("confirm:")], \
+            "nothing to confirm — nothing resolved"
+        assert any(b.startswith("deffood:") for b in buttons), \
+            "a total miss is exactly when /food is worth offering"
 
         from nutrai import db
 
