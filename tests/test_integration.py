@@ -202,6 +202,15 @@ async def _reset(user_telegram_id: int = CHAT_ID) -> int:
         await con.execute("DELETE FROM pending_action WHERE user_id = $1", uid)
         await con.execute("DELETE FROM notification_log WHERE user_id = $1", uid)
         await con.execute("DELETE FROM llm_call WHERE user_id = $1", uid)
+        # Superseded targets, which nothing else drops. Every recalculation
+        # and every /target test closes ~22 rows and inserts ~22 more, so the
+        # test user had accumulated 11,330 of them — more rows than the real
+        # user has log entries, and enough to distort any look at the database
+        # by table size. The live rows stay: tests that assert versioning
+        # create their own history inside the test.
+        await con.execute(
+            "DELETE FROM target WHERE user_id = $1 AND effective_to IS NOT NULL", uid)
+        await con.execute("DELETE FROM observation WHERE user_id = $1", uid)
         return uid
     finally:
         await con.close()

@@ -95,6 +95,31 @@ file (like `004_coverage.sql`) has to be applied by hand to an existing volume:
 docker compose exec -T db psql -U nutrai -d nutrai -f - < sql/004_coverage.sql
 ```
 
+## Looking at the data
+
+```bash
+docker compose exec db psql -U nutrai -d nutrai     # \dt, \d log_entry, \q
+docker compose --profile tools up -d adminer        # then http://127.0.0.1:8082
+```
+
+Adminer is behind the `tools` profile so an ordinary `docker compose up` does
+not start it, and bound to loopback like everything else here: the database
+holds a food diary, and a browser client for it has no business listening on a
+laptop's wifi interface. Log in with server `db`, user and database `nutrai`,
+password from `.env`. `docker compose stop adminer` when done.
+
+The tables worth knowing: `log_entry` / `log_component` / `log_nutrient` are
+the diary, and `log_nutrient` is the immutable snapshot everything reads.
+`food` holds USDA plus your own rows at negative ids. `target` is versioned —
+`effective_to IS NULL` is the live one. `food_nutrient` is a million rows of
+USDA reference and is never written to outside the loader.
+
+The test suite writes against this same database — there is no seam short of
+one for the HTTP endpoint or the SQL views — and `tests/conftest.py` sweeps up
+after itself. It did not for months, and `target` reached 11,330 superseded
+rows for a user that does not exist, which is not a bug in anything and makes
+every honest look at the database misleading.
+
 ## Backups
 
 ```bash

@@ -54,6 +54,28 @@ services:
     ports:
       - "${NUTRAI_HTTP_PUBLISH:-127.0.0.1}:${NUTRAI_HTTP_PORT:-8081}:8081"
 
+  # A read-only-ish web client for looking at the data, off by default.
+  #
+  #     docker compose --profile tools up -d adminer
+  #
+  # Started only under the `tools` profile so it is absent from an ordinary
+  # `docker compose up` and cannot quietly become a permanent open port. Bound
+  # to loopback for the same reason everything else here is: the database holds
+  # a food diary, and a browser client for it is not something to leave
+  # listening on a laptop's wifi interface.
+  adminer:
+    image: adminer:5
+    profiles: [tools]
+    restart: unless-stopped
+    environment:
+      ADMINER_DEFAULT_SERVER: db
+      ADMINER_DESIGN: dracula
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8082:8080"
+
 networks:
   default:
   nutrai-net:
