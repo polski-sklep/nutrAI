@@ -595,6 +595,63 @@ def _row(r: Any, covered: float | None = None) -> str:
 # ------------------------------------------------------------ repeat menu
 
 
+# What a dish is, not when it is eaten.
+#
+# The slot was doing this job and could not: a cereal, a hummus and a bun were
+# all 🥗 because all three were eaten at lunch, and every drink was a coffee
+# cup. The slot is a time of day and the icon is about the food, so they were
+# never the same question.
+#
+# Ordered, and the first match wins, so "coffee" beats "milk" in "coffee with
+# milk" and "protein shake" beats "milk" in itself. Longer, more specific
+# phrases therefore go first.
+DISH_ICONS: list[tuple[tuple[str, ...], str]] = [
+    (("espresso", "coffee", "latte", "cappuccino", "americano", "flat white"), "☕"),
+    (("green tea", "herbal tea", "ginger tea", "tea"), "🍵"),
+    (("protein shake", "smoothie", "shake"), "🥤"),
+    (("beer", "lager", "ale"), "🍺"),
+    (("wine", "prosecco", "champagne"), "🍷"),
+    (("whisky", "gin", "vodka", "rum", "cocktail"), "🥃"),
+    (("pickle", "gherkin"), "🥒"),
+    (("juice",), "🧃"),
+    (("water",), "💧"),
+    (("milk", "kefir"), "🥛"),
+    (("cereal", "porridge", "oats", "granola", "muesli"), "🥣"),
+    (("yogurt", "yoghurt", "pudding", "skyr"), "🍮"),
+    (("egg", "omelette", "frittata"), "🍳"),
+    (("cake", "pastry", "croissant", "brownie", "biscuit", "cookie"), "🍰"),
+    (("chocolate",), "🍫"),
+    (("marshmallow", "sweets", "candy", "haribo"), "🍬"),
+    (("bun", "bread", "toast", "sandwich", "roll", "bagel"), "🍞"),
+    (("hummus", "dip", "guacamole"), "🫓"),
+    (("salad", "greens"), "🥗"),
+    (("soup", "broth", "stew"), "🍲"),
+    (("noodle", "pasta", "spaghetti", "ramen", "stir fry"), "🍜"),
+    (("rice", "risotto"), "🍚"),
+    (("potato", "chips", "fries"), "🥔"),
+    (("chicken", "turkey", "poultry"), "🍗"),
+    (("steak", "beef", "pork", "lamb", "mince", "salami", "bacon"), "🥩"),
+    (("fish", "salmon", "tuna", "cod", "prawn", "shrimp"), "🐟"),
+    (("cheese", "halloumi", "feta"), "🧀"),
+    (("nuts", "almond", "peanut", "seeds", "chia"), "🥜"),
+    (("banana", "apple", "berries", "fruit", "orange"), "🍎"),
+    (("avocado",), "🥑"),
+]
+
+# Only when the name says nothing. A time of day is a poor guess at a food and
+# a visibly generic one is better than a confidently wrong one.
+SLOT_FALLBACK = {"breakfast": "🌅", "lunch": "🍽", "dinner": "🍽",
+                 "snack": "🍪", "drink": "🥤"}
+
+
+def dish_icon(name: str, slot: str | None = None) -> str:
+    low = (name or "").lower()
+    for words, icon in DISH_ICONS:
+        if any(w in low for w in words):
+            return icon
+    return SLOT_FALLBACK.get(slot or "", "•")
+
+
 def repeat_menu(dishes: Sequence[Any], templates: Sequence[Any] = (),
                 components: Sequence[Any] = ()) -> str:
     """Ordered by the hour, so breakfast is at the top at breakfast time.
@@ -603,14 +660,10 @@ def repeat_menu(dishes: Sequence[Any], templates: Sequence[Any] = (),
     would be logged, when it was only how often the dish had ever been eaten.
     One tap logs one serving; two coffees is two taps.
     """
-    # 🥤 rather than ☕️: the slot is "drink", and a pickle juice with a coffee
-    # cup beside it reads as a mislabelled row rather than as a category.
-    slot_icon = {"breakfast": "🌅", "lunch": "🥗", "dinner": "🍽",
-                 "snack": "🍪", "drink": "🥤"}
     lines = ["🔁 <b>Repeat</b>", ""]
     for i, d in enumerate(dishes, 1):
-        icon = slot_icon.get(d["default_slot"] or "", "•")
-        lines.append(f"<code>{i}</code> {icon} {_esc(_title(d['name']))}")
+        lines.append(f"<code>{i}</code> {dish_icon(d['name'], d['default_slot'])} "
+                     f"{_esc(_title(d['name']))}")
     if templates:
         lines.append("")
         for t in templates:
@@ -625,7 +678,8 @@ def repeat_menu(dishes: Sequence[Any], templates: Sequence[Any] = (),
         lines.append("🥚 <b>Or one thing</b>")
         for j, c in enumerate(components, start=len(dishes) + 1):
             grams = float(c["stated_grams"] or c["median_grams"] or 0)
-            lines.append(f"<code>{j}</code> {_esc(_title(c['label']))} — {grams:.0f} g")
+            lines.append(f"<code>{j}</code> {dish_icon(c['label'])} "
+                         f"{_esc(_title(c['label']))} — {grams:.0f} g")
     lines += [
         "",
         "<i>Reply with the number to log it. Add a change if you need one:</i>",

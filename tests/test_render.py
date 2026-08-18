@@ -688,3 +688,27 @@ def test_the_morning_note_leads_with_coverage():
     out = morning_note("jacob", prog, {r["nutrient_id"]: 1.0 for r in prog})
     assert out.index("covered") < out.index("went over"), out
     assert "floors fully met" in out
+
+
+def test_the_icon_comes_from_the_food_not_the_hour():
+    """The slot was doing this job and could not: a cereal, a hummus and a bun
+    were all 🥗 because all three were eaten at lunch, and every drink was a
+    coffee cup."""
+    from nutrai.core.render import dish_icon
+
+    assert dish_icon("Espresso with milk and sugar", "drink") == "☕"
+    assert dish_icon("Ginger tea with honey and lemon", "dinner") == "🍵"
+    assert dish_icon("Protein shake", "drink") == "🥤"
+    assert dish_icon("Lemon lime water", "breakfast") == "💧"
+    assert dish_icon("Nesquik cereal", "lunch") == "🥣"
+    assert dish_icon("Blueberry bun (half)", "lunch") == "🍞"
+
+    # Ordering matters: "pickle juice" is a brine, not a juice box, and
+    # "coffee with milk" is a coffee.
+    assert dish_icon("Pickle juice", "drink") == "🥒"
+    assert dish_icon("Coffee with milk", "drink") == "☕"
+
+    # And a name that says nothing falls back to the hour, visibly generic
+    # rather than confidently wrong.
+    assert dish_icon("Something I ate", "snack") == "🍪"
+    assert dish_icon("", None) == "•"

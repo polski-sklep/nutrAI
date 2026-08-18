@@ -2992,3 +2992,38 @@ def test_the_dish_name_is_searched_on_a_one_ingredient_meal(harness):
         await p.execute("DELETE FROM food WHERE owner_user_id=$1", uid)
 
     run(scenario())
+
+
+def test_a_distinctive_supplement_name_is_recognised_in_free_text(harness):
+    """"Vitamin D3 + K2" appearing in a sentence is unambiguous; "Zinc" is not,
+    and "zinc-rich beef stew" involves no tablet. So free text is searched only
+    for multi-word names."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await p.execute("DELETE FROM supplement WHERE user_id=$1", uid)
+        await p.execute("DELETE FROM supplement_log WHERE user_id=$1", uid)
+        await db.upsert_supplement(uid, "Vitamin D3 + K2", [(1114, 25.0)],
+                                   serving_desc="1 drop")
+        await db.upsert_supplement(uid, "Zinc", [(1095, 22.0)], serving_desc="1 tablet")
+        day = db.local_date_for(dt.datetime.now(dt.timezone.utc), "Europe/Warsaw", 4)
+
+        # Multi-word: recognised in the sentence.
+        found = await db.supplements_named_in(
+            uid, day, [], free_text="pickle juice with vitamin d3 + k2 supplement")
+        assert len(found) == 1, found
+
+        # Single word: never from free text, however it appears.
+        assert await db.supplements_named_in(
+            uid, day, [], free_text="zinc-rich beef stew") == []
+        assert await db.supplements_named_in(
+            uid, day, [], free_text="took my zinc") == []
+        # Only as an ingredient the parser isolated.
+        assert await db.supplements_named_in(uid, day, ["zinc"]) != []
+
+        await p.execute("DELETE FROM supplement WHERE user_id=$1", uid)
+
+    run(scenario())

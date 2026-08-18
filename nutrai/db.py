@@ -1909,7 +1909,8 @@ async def rating_notes(user_id: int, days: int = 28) -> list[asyncpg.Record]:
 
 
 async def supplements_named_in(user_id: int, day: dt.date,
-                               labels: Sequence[str]) -> list[int]:
+                               labels: Sequence[str],
+                               free_text: str | None = None) -> list[int]:
     """Supplements whose name is exactly one of the meal's own ingredients.
 
     Exact, against component labels only, and never against the dish name.
@@ -1927,7 +1928,8 @@ async def supplements_named_in(user_id: int, day: dt.date,
     logged today.
     """
     wanted = {label.strip().lower() for label in labels if label and label.strip()}
-    if not wanted:
+    text = (free_text or "").lower()
+    if not wanted and not text:
         return []
     p = await pool()
     rows = await p.fetch(
@@ -1938,7 +1940,20 @@ async def supplements_named_in(user_id: int, day: dt.date,
                                WHERE l.supplement_id = s.id AND l.local_date = $2)""",
         user_id, day,
     )
-    return [r["id"] for r in rows if r["name"].strip().lower() in wanted]
+    out = []
+    for r in rows:
+        name = r["name"].strip().lower()
+        if name in wanted:
+            out.append(r["id"])
+            continue
+        # A distinctive name may also be recognised in what you typed.
+        # "Vitamin D3 + K2" appearing in a sentence is unambiguous; "Zinc" is
+        # not, and "zinc-rich beef stew" involves no tablet. So free text is
+        # only searched for multi-word names — a single word is too easily an
+        # ingredient, an adjective or a brand.
+        if text and " " in name and name in text:
+            out.append(r["id"])
+    return out
 
 
 async def fast_broken_by(user_id: int) -> asyncpg.Record | None:

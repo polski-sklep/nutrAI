@@ -1829,11 +1829,15 @@ async def _consume_time(msg: Message, u: Any, text: str, payload: dict) -> bool:
         entry_id, when.astimezone(dt.timezone.utc), u["tz"], u["day_rollover_hour"])
     await db.clear_pending(u["id"], "time_await")
     same_day = day == _today(u)
+    # The buttons come with it. "Confirm it above" means scrolling past the
+    # prompt and the reply to reach a card you have already read, and the
+    # whole point of correcting the time here was to avoid leaving this
+    # message.
     await msg.answer(
         f"🕐 Moved to <b>{when:%H:%M}</b>"
-        + ("" if same_day else f" on <b>{day:%a %-d %b}</b>")
-        + ".\n\n<i>Confirm it above when you are ready.</i>",
+        + ("" if same_day else f" on <b>{day:%a %-d %b}</b>") + ".",
         parse_mode="HTML",
+        reply_markup=kb_confirm(entry_id),
     )
     return True
 
@@ -3414,7 +3418,8 @@ async def cb_ok(cq: CallbackQuery) -> None:
     # evidence; a word inside a dish name is weak — "zinc-rich beef stew"
     # contains "zinc" and involves no tablet.
     auto = await db.supplements_named_in(
-        u["id"], _today(u), [c["label"] for c in _comps])
+        u["id"], _today(u), [c["label"] for c in _comps],
+        free_text=entry["name"])
     if auto:
         await db.log_supplements(u["id"], _today(u), auto, via="from_meal")
 
