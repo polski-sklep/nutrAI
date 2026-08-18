@@ -245,8 +245,12 @@ def logged_card(
         target = float(target)
         pct = amount / target * 100 if target else 0
         cap = "ceiling" if r["min_amount"] is None else "target"
+        # A crossed ceiling loses its own emoji. 🧈 beside "125%" reads as a
+        # fact about butter; ⚠️ reads as the thing you need to know.
+        over = r["min_amount"] is None and pct > 100
+        mark = "⚠️" if over else _emoji(nid)
         lines.append(
-            f"   • {_emoji(nid)} {_esc(_short(r['nutrient_name']))} — "
+            f"   • {mark} {_esc(_short(r['nutrient_name']))} — "
             f"{fmt_amount(amount, r['unit'])} of {fmt_amount(target, r['unit'])} "
             f"{cap} <b>({pct:.0f}%)</b>"
         )
@@ -599,8 +603,10 @@ def repeat_menu(dishes: Sequence[Any], templates: Sequence[Any] = (),
     would be logged, when it was only how often the dish had ever been eaten.
     One tap logs one serving; two coffees is two taps.
     """
+    # 🥤 rather than ☕️: the slot is "drink", and a pickle juice with a coffee
+    # cup beside it reads as a mislabelled row rather than as a category.
     slot_icon = {"breakfast": "🌅", "lunch": "🥗", "dinner": "🍽",
-                 "snack": "🍪", "drink": "☕️"}
+                 "snack": "🍪", "drink": "🥤"}
     lines = ["🔁 <b>Repeat</b>", ""]
     for i, d in enumerate(dishes, 1):
         icon = slot_icon.get(d["default_slot"] or "", "•")
@@ -913,9 +919,9 @@ def day_score(
         if hi is not None and float(hi) > 0:
             share = amount / float(hi)
             if share > 1:
-                breached.append(f"{_short(r['nutrient_name'])} {share * 100:.0f}%")
+                breached.append((share, f"{_short(r['nutrient_name'])} {share * 100:.0f}%"))
             elif share >= CEILING_NEAR:
-                nearing.append(f"{_short(r['nutrient_name'])} {share * 100:.0f}%")
+                nearing.append((share, f"{_short(r['nutrient_name'])} {share * 100:.0f}%"))
 
         if lo is None:
             continue
@@ -940,6 +946,11 @@ def day_score(
             # Below a twentieth of the target it has not been started.
             if float(lo) <= 0 or amount / float(lo) < BARELY_STARTED:
                 untouched.append(_short(r["nutrient_name"]))
+
+    # Worst first. Unsorted, these came out in nutrient-id order, so the
+    # morning note named carbs at 103% on a day with cholesterol at 208%.
+    breached = [label for _share, label in sorted(breached, reverse=True)]
+    nearing = [label for _share, label in sorted(nearing, reverse=True)]
 
     return DayScore(
         reached=reached, assessable=assessable, short=short, breached=breached,
@@ -971,7 +982,9 @@ def score_line(progress: Sequence[Any], coverage: dict[int, float] | None = None
         # what you want to know before deciding what to eat next.
         covered = sc.covered * 100
         face = "🟢" if covered >= 80 else "🟡" if covered >= 50 else "🔴"
-        out.append(f"{face} <b>{covered:.0f}% of today's minimums covered</b>  {bar(covered)}")
+        # "today's" on a card headed "Mon 17 Aug" is wrong every time you
+        # open /yesterday, which is once a day.
+        out.append(f"{face} <b>{covered:.0f}% of minimums covered</b>  {bar(covered)}")
         detail = f"{reached} of {assessable} fully met"
         if sc.partial:
             detail += f" · {sc.partial} part-way"
@@ -1918,7 +1931,14 @@ def morning_note(name: str | None, yesterday: Sequence[Any],
     else:
         lines.append("Yesterday hit every floor without crossing a ceiling. "
                      "Hard to improve on.")
-    lines.append(f"<i>{sc.covered:.0%} of your minimums covered.</i>")
+    # The coverage figure leads rather than trails: "89% covered" is the
+    # summary of a day, and the single excess is the footnote to it. The other
+    # way round reads as a scolding with a statistic attached.
+    lines.insert(1, f"<b>{sc.covered:.0%} of your minimums covered</b> yesterday.")
+    if sc.assessable:
+        # Shown even at zero: "0 of 13 fully met" is the most informative
+        # version of that line, not the one worth hiding.
+        lines.append(f"<i>{sc.reached} of {sc.assessable} floors fully met.</i>")
     return "\n".join(lines)
 
 

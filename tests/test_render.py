@@ -658,3 +658,27 @@ def test_a_lopsided_day_is_named_and_an_even_one_is_not():
 
     even = protein_spread([_entry("a", 40), _entry("b", 35), _entry("c", 35)])
     assert "Most of it in one meal" not in even
+
+
+def test_the_worst_breach_is_named_first():
+    """Unsorted, these came out in nutrient-id order — so the morning note
+    named carbs at 103% on a day with cholesterol at 208%."""
+    from nutrai.core.render import day_score
+
+    prog = [
+        row(1005, "Carbohydrate, by difference", "G", 321, hi=312, state="over"),
+        row(1253, "Cholesterol", "MG", 623, hi=300, state="over"),
+        row(1093, "Sodium, Na", "MG", 3703, hi=2300, state="over"),
+    ]
+    sc = day_score(prog, {r["nutrient_id"]: 1.0 for r in prog})
+    assert sc.breached[0].startswith("Cholesterol"), sc.breached
+
+
+def test_the_morning_note_leads_with_coverage():
+    from nutrai.core.render import morning_note
+
+    prog = [row(1003, "Protein", "G", 148, lo=165, state="under"),
+            row(1253, "Cholesterol", "MG", 623, hi=300, state="over")]
+    out = morning_note("jacob", prog, {r["nutrient_id"]: 1.0 for r in prog})
+    assert out.index("covered") < out.index("went over"), out
+    assert "floors fully met" in out
