@@ -3481,13 +3481,24 @@ async def _present(
     )
 
     warnings = list(verdict.warnings)
-    if parsed.confidence < CONFIDENCE_FLOOR:
+    all_hard = bool(res.grams_sources) and all(
+        src in ("scale", "stated", "package") for src in res.grams_sources
+    )
+    # A model's confidence is about the parse it made, and a declared portion
+    # replaces the part it was unsure of.
+    #
+    # "0.33 slice of blondie" scored 50% because the model had guessed a 75 g
+    # slice and said so — then the mass came from your own stated 88 g instead,
+    # and the card showed the exact figure beside "low overall confidence —
+    # check the foods matched". The food was a row you defined yourself,
+    # matched by exact alias. Nothing on that card was uncertain, and a warning
+    # that fires when nothing is wrong is worse than no warning: it is training
+    # to dismiss the ones that mean something.
+    own_food = all(c.fdc_id < 0 for c in res.components)
+    if parsed.confidence < CONFIDENCE_FLOOR and not (all_hard and own_food):
         # "Check the masses" is the wrong instruction when you supplied every
         # mass yourself. What is left to doubt in that case is whether the right
         # USDA rows were picked.
-        all_hard = res.grams_sources and all(
-            src in ("scale", "stated", "package") for src in res.grams_sources
-        )
         what = "check the foods matched" if all_hard else "check the masses"
         warnings.insert(0, f"low overall confidence ({parsed.confidence:.0%}) — {what}")
     for note in res.prior_notes or []:
@@ -3498,7 +3509,13 @@ async def _present(
     # a plate must not be readable as the meal's total.
     text = render.confirm_card(
         parsed.dish_name, res.components, totals,
-        confidence=parsed.confidence, warnings=warnings, notes=parsed.notes,
+        confidence=None if (all_hard and own_food) else parsed.confidence,
+        warnings=warnings,
+        # The model's notes explain the parse. Where a declared portion
+        # replaced its mass, the note explaining how it guessed that mass
+        # describes reasoning that was thrown away, and printing it beside the
+        # figure that replaced it reads as a disagreement with itself.
+        notes=None if all_hard and res.prior_notes else parsed.notes,
         cost_usd=parsed.cost_usd + res.cost_usd, unresolved=res.unresolved,
         matched=await _matched_names(res.components),
         weak=res.weak_matches,

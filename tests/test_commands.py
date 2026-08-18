@@ -418,3 +418,23 @@ def test_a_panel_must_agree_with_its_own_macros():
 
     from nutrai import bot
     assert "energy_cross_check" in inspect.getsource(bot._consume_food_recipe)
+
+
+def test_no_low_confidence_warning_for_your_own_food_at_a_stated_mass():
+    """A warning that fires when nothing is wrong trains you to ignore them.
+
+    "0.33 slice of blondie" scored 50% because the model had guessed a 75 g
+    slice and said so — then the mass came from the stated 88 g portion
+    instead, and the card printed the exact figure beside "low overall
+    confidence — check the foods matched". The food was a row defined by the
+    user and matched by exact alias. Nothing on that card was uncertain.
+    """
+    import inspect
+
+    from nutrai import bot
+
+    src = inspect.getsource(bot._present)
+    guard = src[src.index("parsed.confidence < CONFIDENCE_FLOOR"):]
+    assert "not (all_hard and own_food)" in guard[:120]
+    # And the model's stale explanation of a mass it did not supply goes too.
+    assert "notes=None if all_hard and res.prior_notes else parsed.notes" in src
