@@ -3066,4 +3066,47 @@ def test_energyless_rows_are_not_candidates(database_url):
         names = [r["description"] for r in await db.search_foods("butter", limit=8)]
         assert any("Butter" in n for n in names), names
 
-    asyncio.run(check())
+    run(check())
+
+
+@pytest.mark.integration
+def test_an_alias_cannot_resurrect_an_unusable_row(database_url):
+    """Excluding a row from search while an alias still points at it fixes
+    nothing.
+
+    An alias is tier 1 of resolution — free, and it bypasses search entirely.
+    "butter" had one, with five hits, pointing at `Butter, stick, unsalted`,
+    so the identical wrong panel came back after search had been fixed and
+    the bot restarted. An alias is a cache of a past resolution, and a past
+    resolution can be wrong.
+    """
+    from nutrai import db
+
+    async def check() -> None:
+        p = await db.pool()
+        bad = await p.fetchval(
+            """SELECT fdc_id FROM food f
+                WHERE NOT EXISTS (SELECT 1 FROM food_nutrient fn
+                                   WHERE fn.fdc_id = f.fdc_id
+                                     AND fn.nutrient_id IN (1008, 2048, 2047))
+                  AND EXISTS (SELECT 1 FROM food_nutrient fn
+                               WHERE fn.fdc_id = f.fdc_id
+                                 AND fn.nutrient_id IN (1003, 1004, 1005)
+                                 AND fn.amount > 0)
+                LIMIT 1""")
+        assert bad, "no energy-less row in the database to test against"
+
+        uid = await p.fetchval(
+            "SELECT id FROM app_user WHERE telegram_id = $1", CHAT_ID)
+        await p.execute(
+            """INSERT INTO food_alias (user_id, alias, fdc_id, hits)
+               VALUES ($1, 'zzunusable', $2, 9)
+               ON CONFLICT (user_id, alias) DO UPDATE SET fdc_id = EXCLUDED.fdc_id""",
+            uid, bad)
+        try:
+            assert await db.resolve_alias(uid, "zzunusable") is None
+        finally:
+            await p.execute(
+                "DELETE FROM food_alias WHERE user_id = $1 AND alias = 'zzunusable'", uid)
+
+    run(check())

@@ -75,16 +75,38 @@ def local_date_for(when: dt.datetime, tz: str, rollover_hour: int) -> dt.date:
 # ------------------------------------------------------------- food lookup
 
 
+# A row carrying macronutrients and no energy figure. `total_nutrients` skips
+# a missing nutrient rather than zeroing it (invariant 6), so such a row
+# contributes its mass and nothing to the calories, and can only ever
+# understate. Defined once because it has to hold on every path into the food
+# table — excluding it from search while an alias still pointed straight at it
+# is exactly the gap that let "butter" keep resolving to 81.5 g of fat and no
+# calories after search had been fixed.
+UNUSABLE_ROW = """(
+    NOT EXISTS (SELECT 1 FROM food_nutrient fn
+                 WHERE fn.fdc_id = {t}.fdc_id
+                   AND fn.nutrient_id IN (1008, 2048, 2047))
+    AND EXISTS (SELECT 1 FROM food_nutrient fn
+                 WHERE fn.fdc_id = {t}.fdc_id
+                   AND fn.nutrient_id IN (1003, 1004, 1005)
+                   AND fn.amount > 0)
+)"""
+
+
 async def resolve_alias(user_id: int, name: str) -> asyncpg.Record | None:
     """Exact-then-fuzzy alias hit. This is the path that makes the system get
     cheaper over time: every confirmed novel food writes an alias, and every
     later mention of it resolves here for zero tokens."""
     p = await pool()
     return await p.fetchrow(
-        """SELECT a.*, f.description
+        f"""SELECT a.*, f.description
              FROM food_alias a JOIN food f ON f.fdc_id = a.fdc_id
             WHERE a.user_id = $1
               AND (a.alias = lower($2) OR similarity(a.alias, lower($2)) > $3)
+              -- An alias is a cache of a past resolution, and a past
+              -- resolution can be wrong. Skipping it here sends the name back
+              -- through search, which now cannot return one of these at all.
+              AND NOT {UNUSABLE_ROW.format(t="a")}
          ORDER BY (a.alias = lower($2)) DESC, similarity(a.alias, lower($2)) DESC, a.hits DESC
             LIMIT 1""",
         user_id, name.strip(), AUTO_MATCH_SIMILARITY,
@@ -176,15 +198,7 @@ async def search_foods(query: str, limit: int = 5, data_types: Sequence[str] | N
                -- 48 rows of 13,636, every one of them Foundation. SR Legacy
                -- and FNDDS carry the same foods with energy, so nothing
                -- becomes unfindable — `butter` still returns eight rows.
-               AND NOT (
-                   NOT EXISTS (SELECT 1 FROM food_nutrient fn
-                                WHERE fn.fdc_id = f.fdc_id
-                                  AND fn.nutrient_id IN (1008, 2048, 2047))
-                   AND EXISTS (SELECT 1 FROM food_nutrient fn
-                                WHERE fn.fdc_id = f.fdc_id
-                                  AND fn.nutrient_id IN (1003, 1004, 1005)
-                                  AND fn.amount > 0)
-               )
+               AND NOT {UNUSABLE_ROW.format(t="f")}
                {dt_filter}
       ORDER BY (similarity(f.description, $1) + ts_rank(
                    to_tsvector('english', f.description),
