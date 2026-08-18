@@ -1206,6 +1206,7 @@ PROFILE_ROWS: list[tuple[str, str, str]] = [
     ("deficit_kcal",    "Daily deficit",  "kcal"),
     ("tz",              "Timezone",       "e.g. Europe/Warsaw"),
     ("wake_hour",       "Usually up at",  "7, or blank to learn it"),
+    ("fast_break_kcal",  "Breaks a fast",  "kcal — under this does not count"),
 ]
 
 
@@ -1233,6 +1234,8 @@ def profile_card(data: dict[str, Any], today: dt.date | None = None) -> str:
             shown = f"{float(v):g} kg"
         elif field == "deficit_kcal":
             shown = f"{float(v):g} kcal"
+        elif field == "fast_break_kcal":
+            shown = f"over {float(v):g} kcal"
         elif field == "wake_hour":
             shown = f"{int(v):02d}:00 — note arrives {int(v)-1:02d}:30"
         elif field == "goal":

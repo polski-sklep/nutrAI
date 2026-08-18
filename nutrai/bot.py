@@ -655,6 +655,7 @@ PROFILE_VALIDATORS: dict[str, Any] = {
     "deficit_kcal": lambda v: _num(v, -1500, 1500),
     "tz": lambda v: v.strip() if zoneinfo.ZoneInfo(v.strip()) else None,
     "wake_hour": lambda v: int(_num(v, 0, 23)) if _num(v, 0, 23) is not None else None,
+    "fast_break_kcal": lambda v: _num(v, 0, 500),
     "display_name": lambda v: v.strip()[:80] or None,
 }
 

@@ -2787,3 +2787,38 @@ def test_a_rating_can_carry_a_note(harness):
         assert any(n["note"] == note for n in notes)
 
     run(scenario())
+
+
+def test_a_black_coffee_does_not_break_a_fast(harness):
+    """Every confirmed entry used to reset the clock, whatever was in it — and
+    hours_fasted is stamped onto every rating at the moment it is made, so a
+    6 kcal lemon water was corrupting the fasting correlations rather than
+    merely mis-stating a card."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        now = dt.datetime.now(dt.timezone.utc)
+        for hours_ago, name, kcal in ((10, "Dinner", 600), (2, "Black coffee", 4)):
+            eid = await p.fetchval(
+                """INSERT INTO log_entry (user_id, logged_at, local_date, name,
+                     source, status) VALUES ($1,$2,$3,$4,'text','confirmed')
+                   RETURNING id""",
+                uid, now - dt.timedelta(hours=hours_ago), dt.date.today(), name)
+            await p.execute(
+                "INSERT INTO log_nutrient (entry_id, nutrient_id, amount) VALUES ($1,1008,$2)",
+                eid, kcal)
+
+        hours = float(await db.current_fast_hours(uid))
+        assert hours > 9, f"the coffee reset the clock: {hours:.1f}h"
+
+        # Raise the bar and the coffee still does not count; lower it and it does.
+        await p.execute("UPDATE app_user SET fast_break_kcal = 1 WHERE id=$1", uid)
+        assert float(await db.current_fast_hours(uid)) < 3
+
+        await p.execute("UPDATE app_user SET fast_break_kcal = 25 WHERE id=$1", uid)
+        await p.execute("DELETE FROM log_entry WHERE user_id=$1 AND name IN ('Dinner','Black coffee')", uid)
+
+    run(scenario())
