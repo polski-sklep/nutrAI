@@ -202,3 +202,33 @@ def test_no_card_teaches_a_syntax_without_opening_a_prompt():
     assert not offenders, (
         f"cards instructing with a subcommand instead of asking: {offenders}"
     )
+
+
+def test_csv_does_not_print_decimal_noise():
+    """asyncpg returns numeric as Decimal, and str(Decimal) prints all of it.
+
+    A meal's energy is stored as the sum of per-100 g arithmetic and comes back
+    as 11.879999999999999005240169935859739780426025390625 — correct, and
+    unusable in a spreadsheet column. Six places is past anything anyone
+    measured and short enough to read.
+    """
+    import datetime as dt
+    import decimal
+
+    from nutrai.bot import _csv
+
+    class R(dict):
+        def keys(self): return list(super().keys())
+        def values(self): return list(super().values())
+
+    rows = [R(kcal=decimal.Decimal("11.879999999999999005240169935859739780426025390625"),
+              grams=decimal.Decimal("300"),
+              day=dt.date(2026, 8, 16), missing=None)]
+    out = _csv(rows).decode().splitlines()
+    assert out[0] == "kcal,grams,day,missing"
+    assert out[1] == "11.88,300,2026-08-16,"
+
+
+def test_export_is_empty_for_no_rows():
+    from nutrai.bot import _csv
+    assert _csv([]) == b""

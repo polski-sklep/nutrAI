@@ -13,6 +13,7 @@ from typing import Any
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
+    BufferedInputFile,
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -176,6 +177,7 @@ COMMANDS: list[tuple[str, str]] = [
     ("/next", "What would close today's gaps"),
     ("/yesterday", "Where you stood yesterday"),
     ("/history", "Everything you have logged"),
+    ("/export", "Your whole diary as a spreadsheet"),
     ("/why", "Where a nutrient came from today"),
     ("/undo", "Unlog your last entry"),
     # The other things you record daily.
@@ -305,6 +307,64 @@ async def history(msg: Message) -> None:
     span = await db.history_span(u["id"])
     await msg.answer(render.history_card(rows, span, days, tz=u["tz"]),
                      parse_mode="HTML")
+
+
+def _csv(rows: Sequence[Any]) -> bytes:
+    """Records to CSV bytes, with the numbers readable.
+
+    asyncpg returns `numeric` as Decimal, and str(Decimal) prints the full
+    stored precision — a meal's energy comes out as
+    11.879999999999999005240169935859739780426025390625, which is correct and
+    unusable. Rounded to six places: past that it is float noise from the
+    per-100 g arithmetic, not a figure anyone measured.
+
+    Timestamps are written as ISO strings so a spreadsheet does not reinterpret
+    them, and the date column stays separate from the timestamp for the same
+    reason — `local_date` is the day the food belongs to, which is not always
+    the UTC date in `logged_at`.
+    """
+    import csv, io, decimal
+
+    if not rows:
+        return b""
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(rows[0].keys())
+    for r in rows:
+        w.writerow([
+            format(v.quantize(decimal.Decimal("0.000001")).normalize(), "f")
+            if isinstance(v, decimal.Decimal)
+            else v.isoformat() if isinstance(v, (dt.datetime, dt.date))
+            else "" if v is None else v
+            for v in r.values()
+        ])
+    return buf.getvalue().encode()
+
+
+@dp.message(Command("export"))
+async def export(msg: Message) -> None:
+    """The whole diary as two CSVs, in the chat.
+
+    Adminer can export a table, but a table is not the diary: the meals are in
+    one, the ingredients in another and the numbers in a third, and what you
+    actually want is them joined. This sends that join, so the export needs no
+    SQL and no second tool.
+    """
+    u = await _user(msg)
+    meals = _csv(await db.export_rows(u["id"]))
+    days = _csv(await db.export_day_rows(u["id"]))
+    if not meals:
+        await msg.answer("Nothing logged yet.")
+        return
+    stamp = _today(u).isoformat()
+    await msg.answer_document(
+        BufferedInputFile(meals, filename=f"nutrai-meals-{stamp}.csv"),
+        caption="Every confirmed meal, one row per ingredient — with the USDA "
+                "row it matched and whether the mass was weighed or guessed.")
+    await msg.answer_document(
+        BufferedInputFile(days, filename=f"nutrai-days-{stamp}.csv"),
+        caption="Daily totals per nutrient, food and supplement kept apart, "
+                "with the target that applied on the day.")
 
 
 @dp.message(Command("week"))

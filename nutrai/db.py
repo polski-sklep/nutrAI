@@ -575,6 +575,63 @@ async def history_span(user_id: int) -> asyncpg.Record | None:
     )
 
 
+async def export_rows(user_id: int) -> list[asyncpg.Record]:
+    """The whole diary, one row per ingredient, flat enough for a spreadsheet.
+
+    One row per component rather than per meal: a meal has no single fdc_id
+    and no single mass, and flattening it into one row means inventing both.
+    The meal is still identifiable — entry_id and name repeat down the rows,
+    which is what a pivot table wants anyway.
+
+    Energy and protein are the meal's, so they repeat too. That is the honest
+    shape: the snapshot is stored per meal, and dividing it across components
+    would be a calculation this has no basis for.
+    """
+    p = await pool()
+    return await p.fetch(
+        """SELECT e.local_date, e.logged_at, e.slot, e.id AS entry_id, e.name AS meal,
+                  e.source, e.confidence,
+                  c.position, c.label AS ingredient, c.grams, c.grams_source,
+                  c.fdc_id, f.description AS usda_match, f.data_type,
+                  k.amount AS meal_kcal, pr.amount AS meal_protein_g
+             FROM log_entry e
+             JOIN log_component c ON c.entry_id = e.id
+             JOIN food f ON f.fdc_id = c.fdc_id
+             LEFT JOIN log_nutrient k  ON k.entry_id = e.id AND k.nutrient_id = 1008
+             LEFT JOIN log_nutrient pr ON pr.entry_id = e.id AND pr.nutrient_id = 1003
+            WHERE e.user_id = $1 AND e.status = 'confirmed'
+         ORDER BY e.logged_at, c.position""",
+        user_id,
+    )
+
+
+async def export_day_rows(user_id: int) -> list[asyncpg.Record]:
+    """One row per day per nutrient: the totals, with the supplement split kept.
+
+    Blending food and supplement into one figure loses the distinction that
+    /improve depends on, and a column that exists in the database and not in
+    the export is a column the export quietly lies about.
+    """
+    p = await pool()
+    return await p.fetch(
+        """SELECT d.local_date, d.nutrient_id, d.nutrient_name, d.unit,
+                  d.amount AS total, COALESCE(sp.amount, 0) AS from_supplement,
+                  d.amount - COALESCE(sp.amount, 0) AS from_food,
+                  t.min_amount, t.max_amount
+             FROM v_day_nutrient d
+             LEFT JOIN v_day_supplement_nutrient sp
+                    ON sp.user_id = d.user_id AND sp.local_date = d.local_date
+                   AND sp.nutrient_id = d.nutrient_id
+             LEFT JOIN target t
+                    ON t.user_id = d.user_id AND t.nutrient_id = d.nutrient_id
+                   AND t.effective_from <= d.local_date
+                   AND (t.effective_to IS NULL OR t.effective_to > d.local_date)
+            WHERE d.user_id = $1
+         ORDER BY d.local_date, d.nutrient_id""",
+        user_id,
+    )
+
+
 async def day_mass_confidence(user_id: int, day: dt.date) -> asyncpg.Record | None:
     p = await pool()
     return await p.fetchrow(
