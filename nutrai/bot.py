@@ -494,16 +494,30 @@ async def cb_rate_value(cq: CallbackQuery) -> None:
     u = await db.get_or_create_user(cq.from_user.id)
     await db.clear_pending(u["id"], "rate_await")
     await cq.answer("recorded")
+    obs_id, text = await _rating_text(u, kind, float(value))
     await cq.message.edit_text(
-        await _rating_text(u, kind, float(value)), parse_mode="HTML"
+        text, parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+            text="📝 why?", callback_data=f"ratenote:{obs_id}")]]),
     )
 
 
-async def _record_rating(msg: Message, u: Any, kind: str, value: float) -> None:
-    await msg.answer(await _rating_text(u, kind, value), parse_mode="HTML")
+async def _record_rating(msg: Message, u: Any, kind: str, value: float,
+                         note: str | None = None) -> None:
+    obs_id, text = await _rating_text(u, kind, value, note)
+    # A note is worth more than the number it annotates and is the part a
+    # correlation cannot recover: a 4 from a late coffee, a 4 from a noisy
+    # street and a 4 from illness are three observations the permutation test
+    # sees as one. So it is offered every time rather than waited for.
+    kb = None
+    if not note:
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+            text="📝 why?", callback_data=f"ratenote:{obs_id}")]])
+    await msg.answer(text, parse_mode="HTML", reply_markup=kb)
 
 
-async def _rating_text(u: Any, kind: str, value: float) -> str:
+async def _rating_text(u: Any, kind: str, value: float,
+                       note: str | None = None) -> tuple[int, str]:
     """Log it and say what it bought.
 
     The old reply was "focus 9 at 4.8h fasted · 19 more before this can be
@@ -512,8 +526,9 @@ async def _rating_text(u: Any, kind: str, value: float) -> str:
     far short.
     """
     h = await db.current_fast_hours(u["id"])
-    await db.log_observation(
-        u["id"], kind, value, tz=u["tz"], rollover_hour=u["day_rollover_hour"]
+    obs_id = await db.log_observation(
+        u["id"], kind, value, tz=u["tz"], rollover_hour=u["day_rollover_hour"],
+        note=note,
     )
     obs = await db.observations(u["id"], kind)
     n = len(obs)
@@ -525,10 +540,48 @@ async def _rating_text(u: Any, kind: str, value: float) -> str:
     else:
         done = "▓" * n + "░" * (insight.MIN_PAIRS - n)
         lines.append(f"<code>{done}</code> {n}/{insight.MIN_PAIRS} before this can be analysed")
+    if note:
+        lines.append(f"<i>“{_esc_note(note)}”</i>")
     if n >= 3:
         recent = ", ".join(f"{float(o['value']):g}" for o in obs[-5:])
         lines.append(f"<i>last few: {recent}</i>")
-    return "\n".join(lines)
+    return obs_id, "\n".join(lines)
+
+
+def _esc_note(text: str) -> str:
+    from html import escape as _e
+
+    return _e(text[:200], quote=False)
+
+
+@dp.callback_query(F.data.startswith("ratenote:"))
+async def cb_rating_note(cq: CallbackQuery) -> None:
+    u = await db.get_or_create_user(cq.from_user.id)
+    obs_id = int(cq.data.split(":", 1)[1])
+    await db.put_pending(u["id"], "rating_note", {"obs_id": obs_id})
+    await cq.answer()
+    await cq.message.answer(
+        "📝 <b>What was going on?</b>\n\n"
+        "<i>A sentence is plenty — 'woke at 3 and could not get back down', "
+        "'trained fasted', 'streaming cold'. It is the part a correlation "
+        "cannot recover from the number.</i>",
+        parse_mode="HTML",
+    )
+
+
+@consumes("rating_note")
+async def _consume_rating_note(msg: Message, u: Any, text: str, payload: dict) -> bool:
+    note = text.strip()
+    if not note or len(note) > 500:
+        return False
+    ok = await db.set_observation_note(u["id"], int(payload["obs_id"]), note)
+    await db.clear_pending(u["id"], "rating_note")
+    if not ok:
+        await msg.answer("That rating is no longer there.")
+        return True
+    await msg.answer("📝 Noted. It travels with that rating from here on.",
+                     parse_mode="HTML")
+    return True
 
 
 def _num(v: str, lo: float, hi: float) -> float | None:
@@ -1376,16 +1429,45 @@ async def why_cmd(msg: Message) -> None:
     if len(parts) < 2:
         # Asks and then listens. Printing instructions and dropping the reply
         # into the meal parser is the bug this registry exists to prevent.
+        # Buttons for what is actually out of line today, because that is what
+        # you are opening /why to ask about nine times in ten. Typing still
+        # works for the tenth.
+        day = _today(u)
+        prog = await db.day_progress(u["id"], day)
+        worst = sorted(
+            ((float(r["amount"]) / float(r["max_amount"]), r) for r in prog
+             if r["max_amount"] and float(r["max_amount"]) > 0
+             and float(r["amount"]) / float(r["max_amount"]) > 1),
+            key=lambda x: -x[0],
+        )[:3]
+        rows = [[InlineKeyboardButton(
+            text=f"{render._short(r['nutrient_name'])} {share:.0%}",
+            callback_data=f"whyn:{r['nutrient_id']}")] for share, r in worst]
         await _ask(msg, u, "why_await",
-                   "Which nutrient? Reply with a name — <code>cholesterol</code>, "
-                   "<code>fat</code>, <code>sugar</code>. Several at once is "
-                   "fine: <code>fat and sodium</code>.")
+                   ("Which nutrient?" if rows else
+                    "Which nutrient? Nothing is over a ceiling today.")
+                   + " Reply with a name — <code>cholesterol</code>, "
+                     "<code>fat</code>. Several at once is fine: "
+                     "<code>fat and sodium</code>.",
+                   reply_markup=InlineKeyboardMarkup(inline_keyboard=rows) if rows else None)
         return
+
     for term in _nutrient_terms(parts[1]) or [parts[1].strip()]:
         if not await _explain_nutrient(msg, u, term):
             await msg.answer(
                 f"No nutrient matches {render._esc(term)}. <code>/target</code> "
                 "lists the names as they are stored.", parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("whyn:"))
+async def cb_why_nutrient(cq: CallbackQuery) -> None:
+    u = await db.get_or_create_user(cq.from_user.id)
+    nid = int(cq.data.split(":", 1)[1])
+    p = await db.pool()
+    name = await p.fetchval("SELECT name FROM nutrient WHERE id = $1", nid)
+    await cq.answer()
+    await db.clear_pending(u["id"], "why_await")
+    await _explain_nutrient(cq.message, u, name or str(nid))
 
 
 async def _explain_nutrient(msg: Message, u: Any, term: str) -> bool:

@@ -143,6 +143,18 @@ async def evidence_pack(user_id: int, day: dt.date) -> str:
         lines.append("correlations are computed elsewhere and are NOT in this pack; "
                      "do not assert a relationship between these and intake")
 
+    notes = await db.rating_notes(user_id, 28)
+    if notes:
+        # The only free text in the pack, and the only part of an observation a
+        # correlation cannot recover. A 4 caused by a late coffee and a 4
+        # caused by a noisy street are the same number and different events.
+        lines += ["", "## What the user said about those ratings",
+                  "date | kind | value | note"]
+        lines += [f"{r['local_date']} | {r['kind']} | {float(r['value']):g} | {r['note']}"
+                  for r in notes[:25]]
+        lines.append("these are the user's own words. Quote them where they "
+                     "explain a finding; do not treat one remark as a pattern")
+
     return "\n".join(lines)
 
 

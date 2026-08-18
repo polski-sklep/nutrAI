@@ -1869,3 +1869,29 @@ async def top_components(user_id: int, limit: int = 6, *, tz: str = "UTC",
             LIMIT $2""",
         user_id, limit, list(exclude_fdc) or [0], tz, hour,
     )
+
+
+async def set_observation_note(user_id: int, obs_id: int, note: str) -> bool:
+    """Attach the why to a rating already recorded."""
+    p = await pool()
+    result = await p.execute(
+        "UPDATE observation SET note = $3 WHERE id = $1 AND user_id = $2",
+        obs_id, user_id, note[:500],
+    )
+    return result.endswith(" 1")
+
+
+async def rating_notes(user_id: int, days: int = 28) -> list[asyncpg.Record]:
+    """Ratings that carry a note, for the weekly review.
+
+    The note is the only part of an observation a correlation cannot recover.
+    Passing it to the review is the whole reason for collecting it.
+    """
+    p = await pool()
+    return await p.fetch(
+        """SELECT local_date, kind, value, note FROM observation
+            WHERE user_id = $1 AND note IS NOT NULL AND note <> ''
+              AND local_date > current_date - $2::int
+         ORDER BY local_date DESC, kind""",
+        user_id, days,
+    )

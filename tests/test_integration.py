@@ -2722,3 +2722,68 @@ def test_a_meal_naming_one_nutrient_is_still_a_meal(harness):
         assert harness.llm.calls, "a meal was swallowed by the why prompt"
 
     run(scenario())
+
+
+def test_why_offers_the_worst_ceilings_as_buttons(harness):
+    """Nine times in ten you open /why to ask about something that is over,
+    and typing the name is the slow way to say so."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await p.execute(
+            """UPDATE target SET max_amount = 1 WHERE user_id=$1
+                AND nutrient_id=1093 AND effective_to IS NULL""", uid)
+        await harness.feed("250 g minced beef, 164 g rice")
+        card = harness.sent.last()
+        await harness.press(f"ok:{_confirm_id(card)}", card.message_id)
+
+        harness.sent.clear()
+        await harness.feed("/why")
+        ask = harness.sent.last()
+        btns = [b for b in ask.buttons if b.startswith("whyn:")]
+        assert btns, ask.buttons
+
+        harness.llm.calls.clear()
+        harness.sent.clear()
+        await harness.press(btns[0], ask.message_id)
+        assert not harness.llm.calls
+        assert "Sodium" in harness.sent.last().text, harness.sent.texts()
+
+    run(scenario())
+
+
+def test_a_rating_can_carry_a_note(harness):
+    """"sleep 4" is a number. A 4 from a late coffee, a 4 from a noisy street
+    and a 4 from illness are three observations the permutation test sees as
+    one — the note is the part it cannot recover."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        harness.sent.clear()
+        await harness.feed("/rate sleep 4")
+        card = harness.sent.last()
+        btn = next(b for b in card.buttons if b.startswith("ratenote:"))
+
+        await harness.press(btn, card.message_id)
+        assert "What was going on" in harness.sent.last().text
+
+        harness.llm.calls.clear()
+        await harness.feed("woke at 3 and could not get back down")
+        assert not harness.llm.calls, "the note went to the meal parser"
+
+        note = await p.fetchval(
+            """SELECT note FROM observation WHERE user_id=$1 AND kind='sleep'
+             ORDER BY id DESC LIMIT 1""", uid)
+        assert note == "woke at 3 and could not get back down"
+
+        # And it reaches the weekly review.
+        notes = await db.rating_notes(uid)
+        assert any(n["note"] == note for n in notes)
+
+    run(scenario())
