@@ -3040,3 +3040,30 @@ def test_a_distinctive_supplement_name_is_recognised_in_free_text(harness):
         await p.execute("DELETE FROM supplement WHERE user_id=$1", uid)
 
     run(scenario())
+
+
+@pytest.mark.integration
+def test_energyless_rows_are_not_candidates(database_url):
+    """A row with macros and no energy is unusable, not merely lower quality.
+
+    Demoting it only broke ties, and relevance leads: "unsalted butter" scores
+    0.73 against `Butter, stick, unsalted` and 0.67 against `Butter, salted`,
+    so the energy-less row won on merit and the tie-break was never consulted.
+    It can only ever understate — total_nutrients skips a missing nutrient
+    rather than zeroing it — so there is no query it is the right answer to.
+    """
+    from nutrai import db
+
+    async def check() -> None:
+        for query in ("unsalted butter", "butter", "butter, stick, unsalted"):
+            rows = await db.search_foods(query, limit=8, user_id=None)
+            assert rows, query
+            assert all(r["has_energy"] for r in rows), (
+                query, [r["description"] for r in rows if not r["has_energy"]])
+
+        # And the food is still findable — the 48 excluded rows are all
+        # Foundation, and SR Legacy and FNDDS carry the same foods with energy.
+        names = [r["description"] for r in await db.search_foods("butter", limit=8)]
+        assert any("Butter" in n for n in names), names
+
+    asyncio.run(check())

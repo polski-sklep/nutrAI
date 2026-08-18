@@ -159,6 +159,32 @@ async def search_foods(query: str, limit: int = 5, data_types: Sequence[str] | N
                -- Somebody else's private food must never be a candidate for
                -- your meal, and your own must always be one.
                AND (f.owner_user_id IS NULL OR f.owner_user_id = $3)
+               -- A row with macronutrients and no energy figure is not a
+               -- lower-quality candidate, it is an unusable one, and ranking
+               -- was the wrong instrument for it.
+               --
+               -- Demoting it only broke ties, and relevance leads: "unsalted
+               -- butter" scores 0.73 against `Butter, stick, unsalted` and
+               -- 0.67 against `Butter, salted`, so the energy-less row won on
+               -- merit and no tie-break was ever consulted. It contributes
+               -- 81.5 g of fat per 100 g and nothing at all to the calories —
+               -- total_nutrients skips a missing nutrient rather than zeroing
+               -- it (invariant 6), which is right, and means a row like this
+               -- can only ever understate. There is no query for which it is
+               -- the correct answer.
+               --
+               -- 48 rows of 13,636, every one of them Foundation. SR Legacy
+               -- and FNDDS carry the same foods with energy, so nothing
+               -- becomes unfindable — `butter` still returns eight rows.
+               AND NOT (
+                   NOT EXISTS (SELECT 1 FROM food_nutrient fn
+                                WHERE fn.fdc_id = f.fdc_id
+                                  AND fn.nutrient_id IN (1008, 2048, 2047))
+                   AND EXISTS (SELECT 1 FROM food_nutrient fn
+                                WHERE fn.fdc_id = f.fdc_id
+                                  AND fn.nutrient_id IN (1003, 1004, 1005)
+                                  AND fn.amount > 0)
+               )
                {dt_filter}
       ORDER BY (similarity(f.description, $1) + ts_rank(
                    to_tsvector('english', f.description),
