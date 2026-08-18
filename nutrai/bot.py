@@ -2699,11 +2699,50 @@ async def _parse_failed(note: Message, exc: Exception) -> None:
     presented as a three-minute hang.
     """
     log.exception("parse failed")
-    await note.edit_text(
-        f"That did not go through — {escape(type(exc).__name__)}. "
-        "Nothing was logged. The detail is in the bot logs; try again in a moment.",
-        parse_mode="HTML",
-    )
+    await note.edit_text(_failure_reason(exc), parse_mode="HTML")
+
+
+# What the class name does not tell you, and what to do instead.
+#
+# Every failure read "BadRequestError … try again in a moment", which named the
+# HTTP class rather than the cause and then gave advice that was wrong in the
+# one case it mattered: an exhausted credit balance is a 400, and retrying it
+# never works. So the message has to distinguish a wait from a fix, and say
+# which of the two it is.
+#
+# Matched on the message text rather than the status code because the code is
+# shared — 400 covers both "you are out of credit" and "that image is
+# malformed" — and only the body separates them. Substrings, not exact
+# matches: the wording changes, the noun does not.
+_FAILURES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("credit balance", "billing"),
+     "The Anthropic API is out of credit, so nothing can be parsed until it is "
+     "topped up. Retrying will not help."),
+    (("invalid x-api-key", "authentication_error", "invalid api key"),
+     "The Anthropic API key is being rejected. It needs replacing in "
+     "<code>.env</code>; retrying will not help."),
+    (("rate_limit", "429"),
+     "Rate-limited by the API. This one does clear on its own — try again in a "
+     "minute."),
+    (("overloaded", "529", "503"),
+     "The API is overloaded. Try again in a minute."),
+    (("timeout", "timed out", "connection"),
+     "Could not reach the API. Check the connection and try again."),
+)
+
+
+def _failure_reason(exc: Exception) -> str:
+    """A sentence naming the cause, and whether waiting is the right response."""
+    blob = f"{type(exc).__name__} {exc}".lower()
+    for needles, sentence in _FAILURES:
+        if any(n in blob for n in needles):
+            # /repeat, /today and the whole DSL are local. Worth saying,
+            # because "the bot is down" and "the parser is down" are different
+            # situations and only one of them stops you logging lunch.
+            return (f"⚠️ {sentence}\n\nNothing was logged. "
+                    "<code>/repeat</code> still works — it never calls a model.")
+    return (f"That did not go through — {escape(type(exc).__name__)}. "
+            "Nothing was logged. The detail is in the bot logs; try again in a moment.")
 
 
 # -------------------------------------------------------------------- text

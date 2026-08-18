@@ -232,3 +232,42 @@ def test_csv_does_not_print_decimal_noise():
 def test_export_is_empty_for_no_rows():
     from nutrai.bot import _csv
     assert _csv([]) == b""
+
+
+def test_out_of_credit_does_not_advise_retrying():
+    """An exhausted balance is a 400, and "try again in a moment" never works.
+
+    The message named the exception class — "BadRequestError" — and then gave
+    the one piece of advice guaranteed to fail. Waiting and fixing are
+    different responses and the message has to say which.
+    """
+    from nutrai.bot import _failure_reason
+
+    class BadRequestError(Exception):
+        pass
+
+    out = _failure_reason(BadRequestError(
+        "Error code: 400 - {'error': {'message': 'Your credit balance is too "
+        "low to access the Anthropic API. Please go to Plans & Billing'}}"))
+    assert "out of credit" in out
+    assert "try again in a moment" not in out
+    # The local paths are unaffected, and that is the useful thing to know.
+    assert "/repeat" in out
+
+
+def test_a_rate_limit_does_advise_retrying():
+    from nutrai.bot import _failure_reason
+
+    class RateLimitError(Exception):
+        pass
+
+    assert "try again" in _failure_reason(RateLimitError("429 rate_limit_error"))
+
+
+def test_an_unrecognised_failure_still_names_itself():
+    from nutrai.bot import _failure_reason
+
+    class WeirdError(Exception):
+        pass
+
+    assert "WeirdError" in _failure_reason(WeirdError("no idea"))
