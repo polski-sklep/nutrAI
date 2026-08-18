@@ -343,8 +343,14 @@ def test_the_pick_card_does_not_blame_the_schedule_for_what_was_already_logged()
 
     stack = [_supp(i, f"Supp {i}") for i in range(1, 10)]
     out = supplement_pick_card(stack, [1, 2, 3, 4, 5, 6], reason="logged")
-    assert "already logged today" in out
+    assert "taken so far today" in out
     assert "every other day" not in out
+
+    # And with nothing ticked it says what a tick means, rather than
+    # implying the list is a plan you have failed to follow.
+    fresh = supplement_pick_card(stack, [], reason="logged")
+    assert "Nothing ticked yet today" in fresh
+    assert "a tick is a record, not a plan" in fresh
 
 
 def test_the_schedule_branch_names_what_is_not_due():

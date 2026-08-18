@@ -1140,6 +1140,10 @@ def test_supplements_count_toward_targets_and_stay_attributable(harness):
         await harness.feed("/supp")
         picker = harness.sent.last()
         assert "Which did you take?" in picker.text
+        # Nothing arrives pre-ticked, so ticking it is the act being tested.
+        for toggle in [b for b in picker.buttons if b.startswith("supt:")]:
+            await harness.press(toggle, picker.message_id)
+            picker = harness.sent.last()
         log_btn = next(b for b in picker.buttons if b.startswith("suplog:"))
         await harness.press(log_btn, picker.message_id)
 
@@ -1200,17 +1204,15 @@ def test_supplement_picker_lets_you_drop_one(harness):
         harness.sent.clear()
         await harness.feed("/supp")
         picker = harness.sent.last()
-        # Ticks live on the buttons; the card states the count, and does not
-        # repeat the list the buttons already are.
-        assert "All 2 pre-ticked" in picker.text, picker.text
+        # Nothing is pre-ticked. A tick is a record of having taken it, which
+        # is the only version that can carry a time and the only one where an
+        # untaken capsule cannot reach a day's totals by default.
+        assert "Nothing ticked yet today" in picker.text, picker.text
 
         toggle = next(b for b in picker.buttons if b.startswith("supt:"))
         await harness.press(toggle, picker.message_id)
         picker = harness.sent.last()
-        # Unticking one leaves it not-due, and the card now names it rather
-        # than claiming a category the list contradicts.
-        assert "1 of 2 due today" in picker.text, picker.text
-        assert "Not due:" in picker.text, picker.text
+        assert "1 of 2 taken so far today" in picker.text, picker.text
 
         await harness.press(
             next(b for b in picker.buttons if b.startswith("suplog:")), picker.message_id
@@ -2820,5 +2822,73 @@ def test_a_black_coffee_does_not_break_a_fast(harness):
 
         await p.execute("UPDATE app_user SET fast_break_kcal = 25 WHERE id=$1", uid)
         await p.execute("DELETE FROM log_entry WHERE user_id=$1 AND name IN ('Dinner','Black coffee')", uid)
+
+    run(scenario())
+
+
+def test_a_supplement_named_in_a_meal_is_ticked_off(harness):
+    """"Protein shake with creatine" should not need ticking twice, and the
+    nutrients only reach the day's totals through supplement_log."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await p.execute("DELETE FROM supplement WHERE user_id=$1", uid)
+        await p.execute("DELETE FROM supplement_log WHERE user_id=$1", uid)
+        sid = await db.upsert_supplement(uid, "Creatine", [(1008, 20.0)],
+                                         serving_desc="4 capsules")
+        day = db.local_date_for(dt.datetime.now(dt.timezone.utc), "Europe/Warsaw", 4)
+
+        harness.llm.meal = {
+            "dish_name": "Protein shake with creatine", "confidence": 0.9, "notes": "",
+            "items": [{"label": "creatine", "search_terms": "whey protein powder",
+                       "grams": 5, "grams_source": "stated", "state": "as_sold",
+                       "confidence": 0.9}],
+        }
+        harness.sent.clear()
+        await harness.feed("protein shake with creatine")
+        card = harness.sent.last()
+        await harness.press(f"ok:{_confirm_id(card)}", card.message_id)
+
+        logged = await db.supplements_logged_on(uid, day)
+        assert any(r["name"] == "Creatine" for r in logged), logged
+        via = await p.fetchval(
+            """SELECT logged_via FROM supplement_log
+                WHERE user_id=$1 AND supplement_id=$2 AND local_date=$3""",
+            uid, sid, day)
+        # Its provenance is kept: your tick and the system's inference from a
+        # sentence are different confidences.
+        assert via == "from_meal"
+        assert any("Also ticked off" in t for t in harness.sent.texts())
+
+        await p.execute("DELETE FROM supplement_log WHERE user_id=$1", uid)
+        await p.execute("DELETE FROM supplement WHERE user_id=$1", uid)
+
+    run(scenario())
+
+
+def test_a_substring_does_not_tick_a_supplement_off(harness):
+    """"zinc" inside "Chelated Magnesium" would be a false positive nobody
+    could explain, and a capsule recorded because a sentence contained a
+    substring is worse than one not recorded at all."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await p.execute("DELETE FROM supplement WHERE user_id=$1", uid)
+        await db.upsert_supplement(uid, "Zinc", [(1095, 22.0)], serving_desc="1 tablet")
+        day = db.local_date_for(dt.datetime.now(dt.timezone.utc), "Europe/Warsaw", 4)
+
+        # Both of these are ingredient labels, and neither is the tablet.
+        assert await db.supplements_named_in(uid, day, ["zinc-rich beef stew"]) == []
+        assert await db.supplements_named_in(uid, day, ["beef", "onion"]) == []
+        # An ingredient the parser isolated and called "zinc" is the tablet.
+        assert await db.supplements_named_in(uid, day, ["zinc"]) != []
+
+        await p.execute("DELETE FROM supplement WHERE user_id=$1", uid)
 
     run(scenario())

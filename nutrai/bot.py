@@ -2098,6 +2098,13 @@ async def supp(msg: Message) -> None:
         )
         return
 
+    if sub.startswith("taken"):
+        await msg.answer(
+            render.supplement_taken_card(
+                await db.supplements_logged_on(u["id"], day), u["tz"]),
+            parse_mode="HTML")
+        return
+
     if sub.startswith(("time", "when")):
         await msg.answer(
             render.slot_settings_card(stack, await db.slot_times(u["id"])),
@@ -2124,12 +2131,13 @@ async def supp(msg: Message) -> None:
     # Ask rather than assume, and pre-tick by each supplement's own cadence:
     # daily always, alternate only when yesterday was a rest day, occasional
     # never. Anything already logged today stays ticked.
+    # Nothing is pre-ticked any more. A tick used to mean "this is on your
+    # daily list" and now means "I took this", which is the only version that
+    # can carry a time with it — and the only one where an untaken capsule
+    # cannot end up in a day's totals because you did not think to untick it.
     today_names = {r["name"] for r in await db.supplements_logged_on(u["id"], day)}
     selected = [s["id"] for s in stack if s["name"] in today_names]
     reason = "logged"
-    if not selected:
-        selected = await db.supplements_due(u["id"], day)
-        reason = "schedule"
 
     action_id = await db.put_pending(u["id"], "supp_pick", {
         "selected": selected, "day": day.isoformat(), "reason": reason,
@@ -3373,6 +3381,19 @@ async def cb_ok(cq: CallbackQuery) -> None:
     entry, _comps = await db.entry_with_components(entry_id)
     u = await db.get_or_create_user(cq.from_user.id)
 
+    # A supplement named in the meal you just logged is a supplement you took.
+    # "Protein shake with creatine" should not need ticking twice, and the
+    # nutrients only reach the day's totals through supplement_log.
+    #
+    # Against the meal's own ingredients, exactly, and never against the dish
+    # name. An ingredient the parser isolated and called "creatine" is strong
+    # evidence; a word inside a dish name is weak — "zinc-rich beef stew"
+    # contains "zinc" and involves no tablet.
+    auto = await db.supplements_named_in(
+        u["id"], _today(u), [c["label"] for c in _comps])
+    if auto:
+        await db.log_supplements(u["id"], _today(u), auto, via="from_meal")
+
     # Retire the card. Its text arrives back from Telegram with the markup
     # already stripped, so it is re-sent as plain text; the detail it held has
     # served its purpose and the progress card below replaces it.
@@ -3381,6 +3402,16 @@ async def cb_ok(cq: CallbackQuery) -> None:
     )
 
     day = _today(u)
+    if auto:
+        p = await db.pool()
+        names = await p.fetch(
+            "SELECT name FROM supplement WHERE id = ANY($1::bigint[])", auto)
+        await cq.message.answer(
+            "💊 Also ticked off, because you named "
+            + ("it" if len(names) == 1 else "them") + ": <b>"
+            + render._esc(", ".join(r["name"] for r in names))
+            + "</b>.\n<i>Untick in <code>/supp</code> if that is wrong.</i>",
+            parse_mode="HTML")
     await cq.message.answer(
         render.logged_card(
             entry["name"], totals, await db.day_progress(u["id"], day),

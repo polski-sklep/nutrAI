@@ -904,7 +904,9 @@ async def supplement_stack(user_id: int, active_only: bool = True,
     )
 
 
-async def log_supplements(user_id: int, day: dt.date, supplement_ids: Sequence[int] | None = None) -> int:
+async def log_supplements(user_id: int, day: dt.date,
+                          supplement_ids: Sequence[int] | None = None,
+                          *, via: str = "manual") -> int:
     """Record today's stack. Idempotent: taking it twice is not taking double."""
     p = await pool()
     async with p.acquire() as con, con.transaction():
@@ -929,11 +931,12 @@ async def log_supplements(user_id: int, day: dt.date, supplement_ids: Sequence[i
             )
         for r in rows:
             await con.execute(
-                """INSERT INTO supplement_log (user_id, supplement_id, local_date, servings)
-                   VALUES ($1,$2,$3,$4)
+                """INSERT INTO supplement_log
+                     (user_id, supplement_id, local_date, servings, logged_via)
+                   VALUES ($1,$2,$3,$4,$5)
                    ON CONFLICT (user_id, supplement_id, local_date)
                    DO UPDATE SET servings = EXCLUDED.servings, taken_at = now()""",
-                user_id, r["id"], day, r["servings_per_day"],
+                user_id, r["id"], day, r["servings_per_day"], via,
             )
         return len(rows)
 
@@ -941,7 +944,8 @@ async def log_supplements(user_id: int, day: dt.date, supplement_ids: Sequence[i
 async def supplements_logged_on(user_id: int, day: dt.date) -> list[asyncpg.Record]:
     p = await pool()
     return await p.fetch(
-        """SELECT s.name, sl.servings FROM supplement_log sl
+        """SELECT s.name, sl.servings, sl.taken_at, sl.logged_via
+             FROM supplement_log sl
              JOIN supplement s ON s.id = sl.supplement_id
             WHERE sl.user_id = $1 AND sl.local_date = $2 ORDER BY s.name""",
         user_id, day,
@@ -1895,3 +1899,36 @@ async def rating_notes(user_id: int, days: int = 28) -> list[asyncpg.Record]:
          ORDER BY local_date DESC, kind""",
         user_id, days,
     )
+
+
+async def supplements_named_in(user_id: int, day: dt.date,
+                               labels: Sequence[str]) -> list[int]:
+    """Supplements whose name is exactly one of the meal's own ingredients.
+
+    Exact, against component labels only, and never against the dish name.
+    Substring matching looked reasonable and was not: "zinc-rich beef stew"
+    contains "zinc", and a capsule recorded because a sentence happened to
+    contain a word is worse than one not recorded at all — it puts
+    micronutrients into a day's totals that were never swallowed.
+
+    An ingredient the parser isolated and called "creatine" is strong
+    evidence. A word inside a dish name is weak, so it is not used. That means
+    "protein shake with creatine" only ticks creatine off when the parse gives
+    creatine its own line, which is the right way round to be wrong.
+
+    Only supplements already in your stack, already started, and not already
+    logged today.
+    """
+    wanted = {label.strip().lower() for label in labels if label and label.strip()}
+    if not wanted:
+        return []
+    p = await pool()
+    rows = await p.fetch(
+        """SELECT s.id, s.name FROM supplement s
+            WHERE s.user_id = $1 AND s.active
+              AND (s.starts_on IS NULL OR s.starts_on <= $2)
+              AND NOT EXISTS (SELECT 1 FROM supplement_log l
+                               WHERE l.supplement_id = s.id AND l.local_date = $2)""",
+        user_id, day,
+    )
+    return [r["id"] for r in rows if r["name"].strip().lower() in wanted]

@@ -731,6 +731,27 @@ def _esc(s: str) -> str:
     return escape(str(s), quote=False)
 
 
+def supplement_taken_card(rows: Sequence[Any], tz: str = "UTC") -> str:
+    """What was taken today and when.
+
+    The time is the point. Magnesium at 22:00 and magnesium at 08:00 are the
+    same row and a different intervention, and until now the day's totals
+    could not tell them apart.
+    """
+    import zoneinfo
+
+    if not rows:
+        return "💊 <i>Nothing ticked off today yet.</i>"
+    zone = zoneinfo.ZoneInfo(tz)
+    via = {"from_meal": " (from a meal)", "reminder": " (from a reminder)"}
+    lines = ["💊 <b>Taken today</b>", ""]
+    for r in sorted(rows, key=lambda x: x["taken_at"]):
+        lines.append(f"   • {r['taken_at'].astimezone(zone):%H:%M} "
+                     f"{_esc(_title(r['name']))}"
+                     f"{via.get(r['logged_via'], '')}")
+    return "\n".join(lines)
+
+
 def supplement_stack_card(stack: Sequence[Any], retired: Sequence[Any] = ()) -> str:
     lines = ["💊 <b>Your daily stack</b>", ""]
     cadence = {"alternate": "every other day", "occasional": "occasional"}
@@ -821,12 +842,15 @@ def supplement_pick_card(stack: Sequence[Any], selected: Sequence[int],
     # simply untrue, and a card that misexplains itself is worse than one that
     # says nothing: it invites you to trust the wrong thing.
     if reason == "logged":
-        if n == total:
-            lines.append("<i>All logged already today. Tap any to remove, then update.</i>")
+        if n == 0:
+            lines.append("<i>Nothing ticked yet today. Tap what you have "
+                         "actually taken — a tick is a record, not a plan.</i>")
+        elif n == total:
+            lines.append("<i>All of them today. Tap any to remove.</i>")
         else:
             lines.append(
-                f"<i>{n} of {total} already logged today. Tap anything else you have "
-                "taken since, then “log these”.</i>"
+                f"<i>{n} of {total} taken so far today. Tap anything else you "
+                "have had since, then “log these”.</i>"
             )
     elif n == total:
         lines.append(f"<i>All {total} pre-ticked by their schedule. Tap any to remove.</i>")
