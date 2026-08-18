@@ -2931,3 +2931,50 @@ def test_fat_does_not_break_a_fast_but_honey_does(harness):
         await p.execute("DELETE FROM log_entry WHERE user_id=$1 AND source='text'", uid)
 
     run(scenario())
+
+
+def test_the_dish_name_is_searched_on_a_one_ingredient_meal(harness):
+    """"Pickle juice" parsed to a single component labelled "juice", which
+    resolved to Fruit juice, NFS at 51 kcal and 12 g of carbohydrate — while
+    the user's own brine row sat unconsulted, because nothing ever searched
+    for the two words together."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await p.execute("DELETE FROM food WHERE owner_user_id=$1", uid)
+        await p.execute("DELETE FROM food_alias WHERE user_id=$1", uid)
+        fdc = await db.create_user_food(
+            uid, "Pickle juice", {1008: 5.0, 1005: 0.95, 1003: 0.23, 1093: 757.0})
+
+        harness.llm.meal = {
+            "dish_name": "Pickle juice", "confidence": 0.9, "notes": "",
+            "items": [{"label": "juice", "search_terms": "juice",
+                       "grams": 100, "grams_source": "stated",
+                       "state": "as_sold", "confidence": 0.9}],
+        }
+        harness.sent.clear()
+        await harness.feed("100 ml pickle juice")
+        card = harness.sent.last()
+        await harness.press(f"ok:{_confirm_id(card)}", card.message_id)
+
+        got = await p.fetchval(
+            """SELECT lc.fdc_id FROM log_entry le JOIN log_component lc ON lc.entry_id=le.id
+                WHERE le.user_id=$1 ORDER BY le.id DESC LIMIT 1""", uid)
+        assert got == fdc, f"resolved to {got}, not the user's own row {fdc}"
+
+        # The entry references the food, so it goes first — the foreign key is
+        # the point of storing user foods in `food` rather than beside it.
+        # The entry and the dish both reference the food, so they go first.
+        await p.execute(
+            """DELETE FROM log_entry WHERE user_id=$1 AND id IN
+                 (SELECT entry_id FROM log_component WHERE fdc_id=$2)""", uid, fdc)
+        await p.execute(
+            "DELETE FROM dish WHERE id IN (SELECT dish_id FROM dish_component WHERE fdc_id=$1)",
+            fdc)
+        await p.execute("DELETE FROM food_alias WHERE user_id=$1", uid)
+        await p.execute("DELETE FROM food WHERE owner_user_id=$1", uid)
+
+    run(scenario())

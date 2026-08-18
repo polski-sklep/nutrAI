@@ -183,7 +183,8 @@ async def _mass_for(user_id: int, fdc_id: int, it: dict[str, Any]) -> MassEstima
     return choose_mass(grams, source, low=low, high=high, history=history)
 
 
-async def _candidates(it: dict[str, Any], label: str, user_id: int | None = None) -> list[Any]:
+async def _candidates(it: dict[str, Any], label: str, user_id: int | None = None,
+                      dish_name: str | None = None) -> list[Any]:
     """Search on the model's `search_terms` *and* on the user's own label.
 
     Trigram similarity punishes a descriptive query. `PARSE_SYSTEM` asks for "a
@@ -199,7 +200,8 @@ async def _candidates(it: dict[str, Any], label: str, user_id: int | None = None
     either achieved, and the threshold itself is untouched — it is eval-set
     work, not something to tune against one plate.
     """
-    queries = [q for q in (str(it.get("search_terms") or "").strip(), label.strip()) if q]
+    queries = [q for q in (str(it.get("search_terms") or "").strip(), label.strip(),
+                           (dish_name or "").strip()) if q]
     pooled: dict[int, Any] = {}
     for q in dict.fromkeys(queries):
         for c in await db.search_foods(q, limit=5, user_id=user_id):
@@ -270,7 +272,8 @@ def inverts_meaning(query: str, description: str) -> bool:
     return any(term in d for term in INVERTING_TERMS)
 
 
-async def resolve_items(user_id: int, items: list[dict[str, Any]]) -> Resolution:
+async def resolve_items(user_id: int, items: list[dict[str, Any]],
+                        dish_name: str | None = None) -> Resolution:
     """Ingredient names to USDA rows.
 
     Three tiers, cheapest first:
@@ -316,7 +319,14 @@ async def resolve_items(user_id: int, items: list[dict[str, Any]]) -> Resolution
             await _accept(label, alias["fdc_id"], it)
             continue
 
-        cands = await _candidates(it, label, user_id)
+        # On a one-ingredient meal the dish name is a third search term, and
+        # often the only one that carries the distinguishing word. "Pickle
+        # juice" parsed to a single component labelled "juice", which resolved
+        # to Fruit juice, NFS at 51 kcal and 12 g of carbohydrate — while the
+        # user's own pickle brine row sat unconsulted, because nothing ever
+        # searched for the two words together.
+        hint = dish_name if (dish_name and len(items) == 1) else None
+        cands = await _candidates(it, label, user_id, dish_name=hint)
         # A candidate that negates the food is never auto-matched, however well
         # it scores. It drops to the model instead of being taken on trust —
         # tier 3 costs a fraction of a penny and can read the word "meatless".

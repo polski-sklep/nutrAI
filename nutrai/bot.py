@@ -1633,7 +1633,7 @@ async def _consume_food_recipe(msg: Message, u: Any, text: str, payload: dict) -
     except Exception as exc:
         await _parse_failed(note, exc)
         return True
-    res = await llm.resolve_items(u["id"], parsed.items)
+    res = await llm.resolve_items(u["id"], parsed.items, parsed.dish_name)
     if not res.components:
         await note.edit_text(
             "None of those matched a food row, so there is nothing to build "
@@ -3139,7 +3139,7 @@ async def _present(
     msg: Message, u: Any, parsed: llm.ParsedMeal, *, source: str,
     photo_file_id: str | None, edit: Message | None = None,
 ) -> None:
-    res = await llm.resolve_items(u["id"], parsed.items)
+    res = await llm.resolve_items(u["id"], parsed.items, parsed.dish_name)
     if not res.components:
         # Keep the parse even though nothing resolved.
         #

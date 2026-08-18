@@ -1708,7 +1708,13 @@ async def delete_user_food(user_id: int, fdc_id: int) -> str | None:
     """Only if nothing has been logged against it. A food referenced by a
     log_component cannot go without taking the entry's history with it."""
     p = await pool()
-    used = await p.fetchval("SELECT count(*) FROM log_component WHERE fdc_id = $1", fdc_id)
+    # dish_component references food as well, and checking only log_component
+    # meant a food used by a saved dish raised a raw foreign-key error rather
+    # than the refusal this function exists to give.
+    used = await p.fetchval(
+        """SELECT (SELECT count(*) FROM log_component WHERE fdc_id = $1)
+                + (SELECT count(*) FROM dish_component WHERE fdc_id = $1)""",
+        fdc_id)
     if used:
         return None
     async with p.acquire() as con, con.transaction():
