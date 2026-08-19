@@ -2059,9 +2059,9 @@ def why_card(nutrient_name: str, unit: str, day: dt.date, entries: Sequence[Any]
     lines.append("<pre>" + "\n".join(_esc(r) for r in rows) + "</pre>")
 
     lines.append(
-        "<i>Totals per meal are the snapshot taken when you confirmed it. The "
-        "indented lines are that total split across the ingredients, so they "
-        "add up to it by construction rather than by luck.</i>"
+        "<i>Each meal shows what was saved when you confirmed it. The lines "
+        "underneath show where it came from, ingredient by ingredient — they "
+        "always add up to the meal above them.</i>"
     )
     return "\n".join(lines)
 
