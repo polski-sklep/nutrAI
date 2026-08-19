@@ -22,6 +22,7 @@ import decimal
 import hmac
 import logging
 import os
+import zoneinfo
 
 from aiohttp import web
 
@@ -139,6 +140,22 @@ async def post_activity(request: web.Request) -> web.Response:
         except ValueError:
             return _reject("local_date must be YYYY-MM-DD", 400)
 
+    # When the session actually happened. Optional, and only load-bearing for
+    # the RPE observation below: an effort rating correlates against how long
+    # you had been fasted at the time, and "the time" is the workout's, not the
+    # moment its record happened to be posted.
+    at: dt.datetime | None = None
+    if body.get("at"):
+        try:
+            at = dt.datetime.fromisoformat(str(body["at"]).replace("Z", "+00:00"))
+        except ValueError:
+            return _reject("at must be an ISO 8601 timestamp", 400)
+        if at.tzinfo is None:
+            return _reject("at must carry a timezone offset", 400)
+        at = at.astimezone(dt.timezone.utc)
+        if at > dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=5):
+            return _reject("at is in the future", 400)
+
     user = await db.get_or_create_user(int(telegram_id))
     day = explicit_day or db.local_date_for(
         dt.datetime.now(dt.timezone.utc), user["tz"], user["day_rollover_hour"]
@@ -149,6 +166,35 @@ async def post_activity(request: web.Request) -> web.Response:
         intensity=intensity, rpe=rpe,
         note=(str(body["note"])[:500] if body.get("note") else None),
     )
+    # An RPE is a rating, and ratings live in `observation` — that is the table
+    # /insight correlates against, and a number that only ever reaches
+    # `activity.rpe` is visible in /training and invisible to every analysis.
+    # Writing it here means the training bot does not also have to know to send
+    # a /rate, and the two can never disagree about what the effort was.
+    #
+    # Only on `created`. A re-post of the same session is the same effort
+    # asserted twice, and letting it through would firm up a correlation on its
+    # own echo — the failure sql/008 fixed for repeated portions.
+    if rpe is not None and created:
+        now = dt.datetime.now(dt.timezone.utc)
+        today = db.local_date_for(now, user["tz"], user["day_rollover_hour"])
+        known_time = at is not None or day == today
+        # The day is known even when the hour is not, and the observation has
+        # to land on the day it describes — dating a Sunday session to Monday
+        # would put it against the wrong day's food. Noon is the placeholder,
+        # for the same reason a backdated meal uses it: inside the day whatever
+        # the rollover hour is. The fasting figure is withheld rather than
+        # computed from that placeholder.
+        when = at or (now if day == today else dt.datetime.combine(
+            day, dt.time(12, 0), tzinfo=zoneinfo.ZoneInfo(user["tz"])
+        ).astimezone(dt.timezone.utc))
+        await db.log_observation(
+            user["id"], "rpe", float(rpe), scale="1-10",
+            note=f"{kind} (from the training bot)",
+            tz=user["tz"], rollover_hour=user["day_rollover_hour"],
+            when=when, with_fasting=known_time,
+        )
+
     log.info("activity %s %s %s (%s)", user["id"], day, kind, "new" if created else "duplicate")
     return web.json_response(
         {"ok": True, "id": activity_id, "created": created, "local_date": day.isoformat()},

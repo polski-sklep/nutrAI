@@ -305,6 +305,26 @@ area; do not re-litigate them.
   fire: the once-a-year case that reports a confident wrong number is worse than
   the one that admits it does not know.
 
+## Training input
+
+The training bot POSTs to `/activity`. An `rpe` in that payload is stored on
+`activity.rpe` **and** written to `observation` as kind `rpe`, exactly as a
+hand-typed `/rate` would be. `/insight` correlates over `observation`, so an
+effort figure that only reached the activity row would be visible in
+`/training` and invisible to every analysis.
+
+Two rules hold that honest:
+
+- **Only when `created` is true.** A re-posted session is the same effort
+  asserted twice, and a second observation would firm up a correlation on its
+  own echo — the failure `sql/008_repeat_provenance.sql` fixed for portions.
+- **`hours_fasted` is withheld when the time is unknown.** The payload may
+  carry `at` (an ISO instant); without it, a same-day post uses now and a
+  backdated one is dated noon on its own day with no fasting figure. The
+  fasting state at an invented hour is not a weak covariate, it is a fabricated
+  one, and `db.observations()` filters `hours_fasted IS NOT NULL` so such a row
+  is recorded and never correlated.
+
 ## Unprompted messages
 
 Threshold notifications are **deliberately off** and no longer seeded by

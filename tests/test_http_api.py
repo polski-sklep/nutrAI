@@ -201,3 +201,98 @@ def test_rpe_is_stored_at_the_precision_it_actually_has(api):
                  (SELECT id FROM app_user WHERE telegram_id = 1)""")
 
     run(scenario())
+
+
+@pytest.mark.integration
+def test_an_rpe_becomes_an_observation_as_if_rated_by_hand(api):
+    """`activity.rpe` is visible in /training and invisible to /insight.
+
+    /insight correlates over `observation`, so an effort figure that only ever
+    reaches the activity row is a number the analysis cannot see. Writing it
+    here also means the training bot does not have to know to send a /rate as
+    well, and the two can never disagree about what the effort was.
+    """
+    async def scenario():
+        from nutrai import db
+
+        h = {"X-Nutrai-Token": TOKEN}
+        pool = await db.pool()
+        uid = await pool.fetchval(
+            "SELECT id FROM app_user WHERE telegram_id = 1")
+        before = await pool.fetchval(
+            "SELECT count(*) FROM observation WHERE user_id = $1 AND kind = 'rpe'",
+            uid) if uid else 0
+
+        async with TestClient(TestServer(api.build_app())) as c:
+            r = await c.post(
+                "/activity",
+                json={"telegram_id": 1, "kind": "lifting", "minutes": 45, "rpe": 8.5},
+                headers=h)
+            assert r.status == 201, await r.text()
+            # The same session posted twice is one effort asserted twice. A
+            # second observation would firm up a correlation on its own echo.
+            r2 = await c.post(
+                "/activity",
+                json={"telegram_id": 1, "kind": "lifting", "minutes": 45, "rpe": 8.5},
+                headers=h)
+            assert r2.status == 200 and (await r2.json())["created"] is False
+
+        uid = await pool.fetchval("SELECT id FROM app_user WHERE telegram_id = 1")
+        rows = await pool.fetch(
+            """SELECT value, scale, note, local_date FROM observation
+                WHERE user_id = $1 AND kind = 'rpe' ORDER BY id DESC""", uid)
+        assert len(rows) == before + 1, "a duplicate activity wrote a second rating"
+        assert float(rows[0]["value"]) == 8.5
+        assert rows[0]["scale"] == "1-10"
+        assert "lifting" in (rows[0]["note"] or "")
+        # Not asserting hours_fasted here: this user has no confirmed meals, so
+        # fast_hours_at correctly returns NULL and the figure would be absent
+        # whichever branch ran. The backdated test below is what distinguishes
+        # them, because there the date is the evidence.
+        import datetime as _dt
+        assert rows[0]["local_date"] == _dt.date.today()
+
+        await pool.execute("DELETE FROM observation WHERE user_id = $1 AND kind = 'rpe'", uid)
+        await pool.execute("DELETE FROM activity WHERE user_id = $1", uid)
+
+    run(scenario())
+
+
+@pytest.mark.integration
+def test_a_backdated_rpe_lands_on_its_own_day_without_a_made_up_fast(api):
+    """The day is known even when the hour is not.
+
+    Dating a Sunday session to Monday puts it against the wrong day's food.
+    Noon is the placeholder — inside the day whatever the rollover hour is —
+    and the fasting figure is withheld rather than computed from it, because
+    the fasting state at an invented hour is not a weak covariate but a
+    fabricated one. observations() filters on hours_fasted IS NOT NULL, so the
+    rating is recorded and never correlated.
+    """
+    async def scenario():
+        import datetime as _dt
+
+        from nutrai import db
+
+        h = {"X-Nutrai-Token": TOKEN}
+        day = _dt.date.today() - _dt.timedelta(days=3)
+        async with TestClient(TestServer(api.build_app())) as c:
+            r = await c.post(
+                "/activity",
+                json={"telegram_id": 1, "kind": "running", "minutes": 40,
+                      "rpe": 6, "local_date": day.isoformat()},
+                headers=h)
+            assert r.status == 201, await r.text()
+
+        pool = await db.pool()
+        uid = await pool.fetchval("SELECT id FROM app_user WHERE telegram_id = 1")
+        row = await pool.fetchrow(
+            """SELECT local_date, hours_fasted FROM observation
+                WHERE user_id = $1 AND kind = 'rpe' ORDER BY id DESC LIMIT 1""", uid)
+        assert row["local_date"] == day
+        assert row["hours_fasted"] is None
+
+        await pool.execute("DELETE FROM observation WHERE user_id = $1 AND kind = 'rpe'", uid)
+        await pool.execute("DELETE FROM activity WHERE user_id = $1", uid)
+
+    run(scenario())

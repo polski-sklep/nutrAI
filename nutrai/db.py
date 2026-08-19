@@ -748,15 +748,25 @@ async def current_fast_hours(user_id: int) -> float:
 async def log_observation(
     user_id: int, kind: str, value: float, *, scale: str = "1-10",
     note: str | None = None, tz: str = "Europe/Warsaw", rollover_hour: int = 4,
+    when: dt.datetime | None = None, with_fasting: bool = True,
 ) -> int:
     """Stamp the observation with the fasting state it was made in.
 
     Recomputing this later from the log would be subtly wrong the moment you
-    correct a meal's timestamp, and the correlation would silently shift."""
-    now = dt.datetime.now(dt.timezone.utc)
+    correct a meal's timestamp, and the correlation would silently shift.
+
+    `with_fasting=False` writes the rating and leaves `hours_fasted` NULL. That
+    is for an observation whose *time* is not known — a workout posted for
+    yesterday with no clock reading. The fasting state at some invented hour is
+    not a weak covariate, it is a fabricated one, and `observations()` filters
+    on `hours_fasted IS NOT NULL` precisely so such a row records the rating
+    without ever entering a correlation.
+    """
+    now = when or dt.datetime.now(dt.timezone.utc)
     p = await pool()
     async with p.acquire() as con, con.transaction():
-        hours = await con.fetchval("SELECT fast_hours_at($1,$2)", user_id, now)
+        hours = (await con.fetchval("SELECT fast_hours_at($1,$2)", user_id, now)
+                 if with_fasting else None)
         kcal = await con.fetchval(
             """SELECT COALESCE(sum(ln.amount),0) FROM log_entry e
                  JOIN log_nutrient ln ON ln.entry_id = e.id AND ln.nutrient_id = 1008
