@@ -161,9 +161,20 @@ async def post_activity(request: web.Request) -> web.Response:
         dt.datetime.now(dt.timezone.utc), user["tz"], user["day_rollover_hour"]
     )
 
+    # The client's own id for the session, when it has one. Dedup keyed on the
+    # shape of a workout — date, kind, minutes, intensity — is a heuristic
+    # standing in for an identity, and two real sessions of similar length on
+    # one day collapse into one. A retry carries the same id; two sessions do
+    # not.
+    external_id = body.get("external_id")
+    if external_id is not None:
+        external_id = str(external_id).strip()[:128]
+        if not external_id:
+            return _reject("external_id must not be empty", 400)
+
     activity_id, created = await db.record_activity(
         user["id"], day, kind, minutes=minutes, kcal_burned=kcal,
-        intensity=intensity, rpe=rpe,
+        intensity=intensity, rpe=rpe, external_id=external_id, occurred_at=at,
         note=(str(body["note"])[:500] if body.get("note") else None),
     )
     # An RPE is a rating, and ratings live in `observation` — that is the table

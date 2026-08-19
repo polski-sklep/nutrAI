@@ -296,3 +296,46 @@ def test_a_backdated_rpe_lands_on_its_own_day_without_a_made_up_fast(api):
         await pool.execute("DELETE FROM activity WHERE user_id = $1", uid)
 
     run(scenario())
+
+
+@pytest.mark.integration
+def test_two_similar_sessions_on_one_day_are_two_sessions(api):
+    """Dedup on the shape of a workout is a heuristic standing in for identity.
+
+    The fitness side flagged it: their lifting sessions cluster at 96-108
+    minutes against four coarse intensity bands, so two real sessions on one
+    date look identical and the second is swallowed. It fires exactly when they
+    batch-backfill. A retry carries the same session id; two sessions do not.
+    """
+    async def scenario():
+        from nutrai import db
+
+        h = {"X-Nutrai-Token": TOKEN}
+        base = {"telegram_id": 1, "kind": "lifting", "minutes": 100,
+                "intensity": "hard", "rpe": 9}
+        async with TestClient(TestServer(api.build_app())) as c:
+            a = await c.post("/activity", json={**base, "external_id": "s-1"}, headers=h)
+            b = await c.post("/activity", json={**base, "external_id": "s-2"}, headers=h)
+            # Same id twice is a retry, and must not double the covariate.
+            again = await c.post("/activity", json={**base, "external_id": "s-1"},
+                                 headers=h)
+            assert a.status == 201 and b.status == 201, (await a.text(), await b.text())
+            assert again.status == 200 and (await again.json())["created"] is False
+            assert (await a.json())["id"] != (await b.json())["id"]
+
+            # Without an id the old shape heuristic still applies, so a client
+            # that has not been updated keeps its idempotency.
+            c1 = await c.post("/activity", json=base, headers=h)
+            c2 = await c.post("/activity", json=base, headers=h)
+            assert c1.status == 201 and c2.status == 200
+            assert (await c2.json())["created"] is False
+
+        pool = await db.pool()
+        uid = await pool.fetchval("SELECT id FROM app_user WHERE telegram_id = 1")
+        n = await pool.fetchval(
+            "SELECT count(*) FROM activity WHERE user_id = $1", uid)
+        assert n == 3, f"expected two identified sessions plus one unidentified, got {n}"
+        await pool.execute("DELETE FROM observation WHERE user_id = $1 AND kind = 'rpe'", uid)
+        await pool.execute("DELETE FROM activity WHERE user_id = $1", uid)
+
+    run(scenario())

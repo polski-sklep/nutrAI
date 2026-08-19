@@ -1193,30 +1193,48 @@ async def record_activity(
     user_id: int, day: dt.date, kind: str, *,
     minutes: int | None = None, kcal_burned: float | None = None,
     intensity: str | None = None, rpe: float | None = None,
-    note: str | None = None,
+    note: str | None = None, external_id: str | None = None,
+    occurred_at: dt.datetime | None = None,
 ) -> tuple[int, bool]:
     """Append one session. Returns (id, created).
 
-    Idempotent on (user, date, kind, minutes), because a workout bot that
-    retries on a timeout will eventually retry on a success, and a duplicated
-    training day would quietly double a covariate rather than fail loudly.
+    Idempotent, because a workout bot that retries on a timeout will eventually
+    retry on a success, and a duplicated training day would quietly double a
+    covariate rather than fail loudly.
+
+    On `external_id` where the client supplies one, and only then on the old
+    shape heuristic. The heuristic — (user, date, kind, minutes, intensity) —
+    is a stand-in for an identity, and the fitness side flagged where it
+    breaks: their lifting sessions cluster at 96-108 minutes against four
+    coarse intensity bands, so two real sessions on one date can look identical
+    and the second is swallowed. A retry carries the same session id; two
+    sessions do not.
     """
     p = await pool()
     async with p.acquire() as con, con.transaction():
-        existing = await con.fetchval(
-            """SELECT id FROM activity
-                WHERE user_id = $1 AND local_date = $2 AND kind = $3
-                  AND minutes IS NOT DISTINCT FROM $4
-                  AND intensity IS NOT DISTINCT FROM $5""",
-            user_id, day, kind, minutes, intensity,
-        )
+        if external_id:
+            existing = await con.fetchval(
+                "SELECT id FROM activity WHERE user_id = $1 AND external_id = $2",
+                user_id, external_id,
+            )
+        else:
+            existing = await con.fetchval(
+                """SELECT id FROM activity
+                    WHERE user_id = $1 AND local_date = $2 AND kind = $3
+                      AND minutes IS NOT DISTINCT FROM $4
+                      AND intensity IS NOT DISTINCT FROM $5
+                      AND external_id IS NULL""",
+                user_id, day, kind, minutes, intensity,
+            )
         if existing:
             return existing, False
         new_id = await con.fetchval(
             """INSERT INTO activity
-                 (user_id, local_date, kind, minutes, kcal_burned, intensity, rpe, note)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id""",
+                 (user_id, local_date, kind, minutes, kcal_burned, intensity, rpe,
+                  note, external_id, occurred_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id""",
             user_id, day, kind, minutes, kcal_burned, intensity, rpe, note,
+            external_id, occurred_at,
         )
         return new_id, True
 

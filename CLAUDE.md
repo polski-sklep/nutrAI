@@ -318,6 +318,11 @@ Two rules hold that honest:
 - **Only when `created` is true.** A re-posted session is the same effort
   asserted twice, and a second observation would firm up a correlation on its
   own echo — the failure `sql/008_repeat_provenance.sql` fixed for portions.
+  Which makes idempotency load-bearing: `external_id` is the client's own id
+  for the session and dedup keys on it where present. The older heuristic —
+  (user, date, kind, minutes, intensity) — still covers clients that send no
+  id, and is a shape standing in for an identity: sessions of similar length
+  on one day collapse into one.
 - **`hours_fasted` is withheld when the time is unknown.** The payload may
   carry `at` (an ISO instant); without it, a same-day post uses now and a
   backdated one is dated noon on its own day with no fasting figure. The
