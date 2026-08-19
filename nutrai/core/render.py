@@ -2303,6 +2303,40 @@ def off_choices_card(results: Sequence[dict], term: str) -> str:
         kcal = p["panel"].get(1008)
         lines.append(f"<code>{i}</code> {_esc(p['name'])}{brand}"
                      + (f" — {kcal:,.0f} kcal/100 g" if kcal else ""))
+        # Whatever tells this entry apart from the one above it.
+        detail = []
+        if p.get("quantity"):
+            detail.append(_esc(p["quantity"]))
+        if p.get("completeness"):
+            detail.append(f"{float(p['completeness']):.0%} complete")
+        if p.get("barcode"):
+            detail.append(f"…{_esc(str(p['barcode'])[-4:])}")
+        if detail:
+            lines.append("      <i>" + " · ".join(detail) + "</i>")
+
+    # Same product, two entries, different numbers. Worth naming: the reader
+    # would otherwise take the first and never learn that the site disagrees
+    # with itself about this packet.
+    seen: dict[str, list[int]] = {}
+    for i, p in enumerate(results, 1):
+        key = f"{(p.get('name') or '').strip().lower()}|{(p.get('brand') or '').strip().lower()}"
+        seen.setdefault(key, []).append(i)
+    clashes = []
+    for idxs in seen.values():
+        if len(idxs) < 2:
+            continue
+        kcals = [results[i - 1]["panel"].get(1008) for i in idxs]
+        kcals = [k for k in kcals if k]
+        if len(kcals) >= 2 and max(kcals) - min(kcals) > 0.05 * max(kcals):
+            clashes.append(" and ".join(str(i) for i in idxs))
+    if clashes:
+        lines += ["", "⚠️ <i>" + "; ".join(clashes)
+                  + " are the same product with different figures. "
+                    "OpenFoodFacts is written by the public and holds "
+                    "conflicting entries — the pack size and completeness "
+                    "above are the best guide, and the barcode on your packet "
+                    "settles it.</i>"]
+
     lines += ["", "<i>Tap one to see its panel. Nothing is saved until you "
                   "have looked at it.</i>"]
     return "\n".join(lines)

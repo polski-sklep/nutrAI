@@ -389,6 +389,18 @@ Rules when adding a message:
 - Tests for anything where a silent wrong answer is possible. That is the bar,
   not coverage percentage.
 
+## Retiring a user food
+
+A user food whose panel turns out to be wrong cannot be deleted once anything
+has been logged against it: `log_component` references it and `log_nutrient`
+holds the snapshot that entry was scored on. `food.retired_at` takes it out of
+`user_foods`, out of `search_foods` and out of `resolve_alias`, so it stays
+readable as history and stops being offered or matched.
+
+The first version of this renamed the row to "Blondie (retired: energy figure
+was wrong)". Do not do that again: a status encoded in a display string
+truncates in the card, sorts under B, and cannot be filtered on.
+
 ## Two USDA ids, one measurement
 
 `nutrient.canonical_id` folds ids that report the same thing. Today it holds

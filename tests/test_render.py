@@ -816,3 +816,52 @@ def test_week_chart_has_one_row_per_logged_day_in_one_pre():
     # Header plus seven days.
     assert len(chart.strip().splitlines()) == 8
     assert "Wed 12" in chart and "Tue 18" in chart
+
+
+def _off(name, brand, kcal, **kw):
+    return dict(name=name, brand=brand, panel={1008: kcal},
+                quantity=kw.get("quantity", ""), completeness=kw.get("completeness", 0),
+                barcode=kw.get("barcode", ""))
+
+
+def test_off_choices_are_told_apart():
+    """Two rows read identically and the numbers differed by 13%.
+
+    OpenFoodFacts is crowd-sourced and holds several entries per product. A
+    search for Monster Munch returned "Monster Munch · Monster Munch" twice, at
+    556 and 492 kcal/100 g, so the only way to choose was to open one — and
+    everything needed to choose was already fetched and simply not printed.
+    """
+    from nutrai.core.render import off_choices_card
+
+    out = off_choices_card([
+        _off("monster munch", "Monster Munch", 556, quantity="85 g",
+             completeness=0.62, barcode="5000184123021"),
+        _off("Monster Munch", "Monster Munch", 492, quantity="22 g",
+             completeness=0.89, barcode="5000184127742"),
+    ], "Monster Munch")
+    assert "85 g" in out and "22 g" in out
+    assert "62% complete" in out and "89% complete" in out
+    assert "…3021" in out and "…7742" in out
+    assert "1 and 2 are the same product with different figures" in out
+
+
+def test_off_choices_do_not_cry_duplicate_over_the_same_number():
+    """Two entries agreeing is not a conflict, and neither is a 2% difference.
+
+    Warning on every repeated name would make the notice meaningless on the
+    searches where it matters.
+    """
+    from nutrai.core.render import off_choices_card
+
+    same = off_choices_card([
+        _off("Monster Munch", "Monster Munch", 492),
+        _off("Monster Munch", "Monster Munch", 495),
+    ], "Monster Munch")
+    assert "same product with different figures" not in same
+
+    different = off_choices_card([
+        _off("Monster Munch", "Monster Munch", 492),
+        _off("Monster Munch Pickled Onion", "Monster Munch", 556),
+    ], "Monster Munch")
+    assert "same product with different figures" not in different

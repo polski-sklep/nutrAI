@@ -103,6 +103,7 @@ async def resolve_alias(user_id: int, name: str) -> asyncpg.Record | None:
              FROM food_alias a JOIN food f ON f.fdc_id = a.fdc_id
             WHERE a.user_id = $1
               AND (a.alias = lower($2) OR similarity(a.alias, lower($2)) > $3)
+              AND f.retired_at IS NULL
               -- An alias is a cache of a past resolution, and a past
               -- resolution can be wrong. Skipping it here sends the name back
               -- through search, which now cannot return one of these at all.
@@ -181,6 +182,7 @@ async def search_foods(query: str, limit: int = 5, data_types: Sequence[str] | N
                -- Somebody else's private food must never be a candidate for
                -- your meal, and your own must always be one.
                AND (f.owner_user_id IS NULL OR f.owner_user_id = $3)
+               AND f.retired_at IS NULL
                -- A row with macronutrients and no energy figure is not a
                -- lower-quality candidate, it is an unusable one, and ranking
                -- was the wrong instrument for it.
@@ -1943,7 +1945,8 @@ async def user_foods(user_id: int) -> list[asyncpg.Record]:
                     WHERE fn.fdc_id = f.fdc_id AND fn.nutrient_id = 1008) AS kcal_100g,
                   (SELECT count(*) FROM log_component c WHERE c.fdc_id = f.fdc_id) AS times_used
              FROM food f
-            WHERE f.owner_user_id = $1 ORDER BY f.description""",
+            WHERE f.owner_user_id = $1 AND f.retired_at IS NULL
+         ORDER BY f.description""",
         user_id,
     )
 
