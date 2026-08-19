@@ -187,6 +187,7 @@ COMMANDS: list[tuple[str, str]] = [
     ("/export", "Your whole diary as a spreadsheet"),
     ("/why", "Where a nutrient came from today"),
     ("/last", "What you logged most recently"),
+    ("/incomplete", "Mark a day you did not log properly"),
     ("/undo", "Unlog your last entry"),
     # The other things you record daily.
     ("/supp", "Log today's supplements"),
@@ -470,6 +471,67 @@ async def export(msg: Message) -> None:
         BufferedInputFile(days, filename=f"nutrai-days-{stamp}.csv"),
         caption="Daily totals per nutrient, food and supplement kept apart, "
                 "with the target that applied on the day.")
+
+
+@dp.message(Command("incomplete", "partial"))
+async def incomplete(msg: Message) -> None:
+    """Mark a day as not properly logged, so nothing draws conclusions from it.
+
+    Every trend, correlation and measured-TDEE figure reads the diary as if it
+    were complete. A day out where three meals went unlogged is not a 900 kcal
+    day — it is a day with no usable number in it, and left unmarked it drags
+    the weight-trend deficit, weakens a real /insight correlation, and raises
+    the energy target off the back of a day nobody recorded.
+
+    The alternative was to guess at what was missed, which is the estimate this
+    design refuses everywhere else.
+    """
+    u = await _user(msg)
+    rest = (msg.text or "").split(maxsplit=1)
+    arg = rest[1].strip().lower() if len(rest) > 1 else ""
+
+    if arg in ("list", "which"):
+        rows = await db.incomplete_days(u["id"])
+        if not rows:
+            await msg.answer("No days marked incomplete.")
+            return
+        lines = ["📉 <b>Marked incomplete</b>", ""]
+        lines += [f"   • {r['local_date']:%a %-d %b}"
+                  + (f" — {render._esc(r['note'])}" if r["note"] else "")
+                  for r in rows]
+        lines.append("\n<i>Excluded from trends, /insight and measured TDEE. "
+                     "<code>/incomplete 2026-08-17 ok</code> puts one back.</i>")
+        await msg.answer("\n".join(lines), parse_mode="HTML")
+        return
+
+    day = _today(u) - dt.timedelta(days=1)
+    complete = False
+    note = None
+    for tok in arg.split():
+        if tok in ("today",):
+            day = _today(u)
+        elif tok in ("ok", "fine", "complete", "undo"):
+            complete = True
+        else:
+            try:
+                day = min(dt.date.fromisoformat(tok), _today(u))
+            except ValueError:
+                note = (note + " " + tok) if note else tok
+
+    await db.mark_day(u["id"], day, complete, note)
+    if complete:
+        await msg.answer(
+            f"✅ <b>{day:%a %-d %b}</b> counts again — back in trends, "
+            "/insight and measured TDEE.", parse_mode="HTML")
+        return
+    await msg.answer(
+        f"📉 <b>{day:%a %-d %b}</b> marked incomplete"
+        + (f" — {render._esc(note)}" if note else "") + ".\n\n"
+        "<i>Its entries stay in the diary and still show in /today and "
+        "/history. What changes is that nothing draws a conclusion from it: "
+        "no weight trend, no /insight pair, no measured TDEE.</i>\n\n"
+        "<code>/incomplete list</code> · <code>/incomplete "
+        f"{day:%Y-%m-%d} ok</code> to undo.", parse_mode="HTML")
 
 
 @dp.message(Command("week"))

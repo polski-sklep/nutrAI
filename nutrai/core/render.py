@@ -1239,6 +1239,8 @@ def week_card(rows: Sequence[Any], ctx: dict) -> str:
     """
     from statistics import median
 
+    from ..config import ENERGY_KCAL
+
     if not rows:
         return (
             f"📅 <b>{ctx['start']:%-d %b} – {ctx['end']:%-d %b}</b>\n\n"
@@ -1279,9 +1281,46 @@ def week_card(rows: Sequence[Any], ctx: dict) -> str:
         f"{ctx.get('meals') or 0} meals</i>",
     ]
 
+    # A shape, before any of the words.
+    #
+    # The lists below say which nutrients went wrong and how often, which is
+    # what you act on — but not whether the week was steady or two good days
+    # around five bad ones, and those call for different responses. One row per
+    # day, in one <pre> block because per-line <code> spans render
+    # proportionally and the columns drift.
+    #
+    # Energy against its ceiling, floors met as a fraction, ceilings crossed as
+    # a count. Three numbers is the most a row can carry and still be read down
+    # a column rather than across.
+    by_day: dict[Any, list[Any]] = {}
+    for r in rows:
+        by_day.setdefault(r["day"], []).append(r)
+
+    chart = ["Day     Energy vs cap   Floors  Over"]
+    for day in sorted(by_day):
+        rs = by_day[day]
+        energy = next((r for r in rs if r["nutrient_id"] == ENERGY_KCAL), None)
+        cap = float(energy["max_amount"]) if energy and energy["max_amount"] else 0.0
+        kcal = float(energy["amount"]) if energy else 0.0
+        pct = (kcal / cap * 100) if cap else 0.0
+        floors = [r for r in rs
+                  if r["min_amount"] is not None and float(r["min_amount"]) > 0]
+        met = sum(1 for r in floors if float(r["amount"]) >= float(r["min_amount"]))
+        crossed = sum(1 for r in rs
+                      if r["max_amount"] is not None and float(r["max_amount"]) > 0
+                      and float(r["amount"]) > float(r["max_amount"]))
+        chart.append(
+            f"{day:%a %-d}".ljust(8)
+            + f"{bar(pct, 8)}{pct:4.0f}%"
+            + f"{met:>6}/{len(floors)}"
+            + f"{crossed if crossed else '-':>5}"
+        )
+    lines += ["", "<pre>" + "\n".join(chart) + "</pre>"]
+    lines += _prior_day_detail(by_day, ctx["end"])
+
     if over:
         lines += ["", "⚠️ <b>Over the ceiling</b>"]
-        for n_over, nid, name, worst in sorted(over, reverse=True)[:6]:
+        for n_over, nid, name, worst in sorted(over, reverse=True)[:4]:
             lines.append(
                 f"   • {_emoji(nid)} {_esc(name)} — {n_over} of {n_days} days, "
                 f"worst {worst * 100:.0f}%"
@@ -1289,7 +1328,7 @@ def week_card(rows: Sequence[Any], ctx: dict) -> str:
 
     if under:
         lines += ["", "🎯 <b>Floors you kept missing</b>"]
-        for _rate, nid, name, n_met, typical in sorted(under)[:6]:
+        for _rate, nid, name, n_met, typical in sorted(under)[:4]:
             lines.append(
                 f"   • {_emoji(nid)} {_esc(name)} — reached on {n_met} of {n_days} days "
                 f"<i>(typical {_esc(typical)})</i>"
@@ -1328,6 +1367,44 @@ def week_card(rows: Sequence[Any], ctx: dict) -> str:
         lines.append(f"   • 💸 {float(ctx['cents']):.1f}¢")
 
     return "\n".join(lines)
+
+
+def _prior_day_detail(by_day: dict, end: Any) -> list[str]:
+    """Yesterday, in more detail than a chart row can hold.
+
+    Yesterday specifically, not the latest day with entries: today is still
+    being lived and half its lines are simply not eaten yet, so every floor
+    reads as missed. Yesterday is finished, and it is the day whose shape you
+    are about to repeat.
+    """
+    earlier = [d for d in by_day if d < end]
+    prior = max(earlier) if earlier else None
+    lines: list[str] = []
+    if prior is not None:
+        rs = by_day[prior]
+        misses = sorted(
+            ((float(r["amount"]) / float(r["min_amount"]), r) for r in rs
+             if r["min_amount"] is not None and float(r["min_amount"]) > 0
+             and float(r["amount"]) < float(r["min_amount"])),
+            key=lambda t: t[0])[:3]
+        overs = sorted(
+            ((float(r["amount"]) / float(r["max_amount"]), r) for r in rs
+             if r["max_amount"] is not None and float(r["max_amount"]) > 0
+             and float(r["amount"]) > float(r["max_amount"])),
+            key=lambda t: -t[0])[:3]
+        if misses or overs:
+            lines += ["", f"🔍 <b>{prior:%A} {prior:%-d %b} in detail</b>"]
+            for share, r in overs:
+                lines.append(
+                    f"   • ⚠️ {_emoji(r['nutrient_id'])} {_esc(_short(r['nutrient_name']))} "
+                    f"{fmt_amount(float(r['amount']), r['unit'])} — "
+                    f"{share * 100:.0f}% of the ceiling")
+            for share, r in misses:
+                short = float(r["min_amount"]) - float(r["amount"])
+                lines.append(
+                    f"   • {_emoji(r['nutrient_id'])} {_esc(_short(r['nutrient_name']))} "
+                    f"{share * 100:.0f}% — {fmt_amount(short, r['unit'])} short")
+    return lines
 
 
 def weight_card(rows: Sequence[Any], tz: str = "UTC") -> str:

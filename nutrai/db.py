@@ -781,6 +781,13 @@ async def observations(user_id: int, kind: str, days: int = 90) -> list[asyncpg.
             WHERE user_id = $1 AND kind = $2
               AND observed_at > now() - ($3 || ' days')::interval
               AND hours_fasted IS NOT NULL
+              -- A rating from a day you did not log has nothing to correlate
+              -- against: the covariate is missing, not low.
+              AND NOT EXISTS (
+                  SELECT 1 FROM day_quality q
+                   WHERE q.user_id = observation.user_id
+                     AND q.local_date = observation.observed_at::date
+                     AND NOT q.complete)
          ORDER BY observed_at""",
         user_id, kind, str(days),
     )
@@ -842,6 +849,39 @@ async def weight_series(user_id: int, days: int = 42) -> list[tuple[dt.date, flo
     return [(r["local_date"], float(r["v"])) for r in rows]
 
 
+async def mark_day(user_id: int, day: dt.date, complete: bool,
+                   note: str | None = None) -> None:
+    """Record that a day was, or was not, logged properly."""
+    p = await pool()
+    await p.execute(
+        """INSERT INTO day_quality (user_id, local_date, complete, note)
+           VALUES ($1,$2,$3,$4)
+           ON CONFLICT (user_id, local_date) DO UPDATE
+             SET complete = EXCLUDED.complete, note = EXCLUDED.note,
+                 marked_at = now()""",
+        user_id, day, complete, note,
+    )
+
+
+async def incomplete_days(user_id: int, days: int = 90) -> list[asyncpg.Record]:
+    p = await pool()
+    return await p.fetch(
+        """SELECT local_date, note FROM day_quality
+            WHERE user_id = $1 AND NOT complete
+              AND local_date > current_date - $2::int
+         ORDER BY local_date DESC""",
+        user_id, days,
+    )
+
+
+async def day_is_complete(user_id: int, day: dt.date) -> bool:
+    p = await pool()
+    row = await p.fetchrow(
+        "SELECT complete FROM day_quality WHERE user_id = $1 AND local_date = $2",
+        user_id, day)
+    return True if row is None else bool(row["complete"])
+
+
 async def daily_energy(user_id: int, days: int = 42) -> list[float]:
     p = await pool()
     rows = await p.fetch(
@@ -849,6 +889,15 @@ async def daily_energy(user_id: int, days: int = 42) -> list[float]:
             WHERE user_id = $1 AND nutrient_id = 1008
               AND local_date > current_date - $2::int
               AND local_date < current_date
+              -- This feeds measured TDEE, which feeds the energy target. A day
+              -- with three meals unlogged reads as a 900 kcal day, which makes
+              -- the measured burn look higher than it is and then raises the
+              -- target off the back of a day nobody recorded.
+              AND NOT EXISTS (
+                  SELECT 1 FROM day_quality q
+                   WHERE q.user_id = v_day_nutrient.user_id
+                     AND q.local_date = v_day_nutrient.local_date
+                     AND NOT q.complete)
          GROUP BY local_date ORDER BY local_date""",
         user_id, days,
     )

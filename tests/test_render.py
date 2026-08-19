@@ -772,3 +772,47 @@ def test_history_card_says_what_it_is_not_showing():
 
     span["entries"] = 1
     assert "That is everything" in history_card(rows, span, 14, tz="Europe/Warsaw")
+
+
+def _week_rows(days=7):
+    from datetime import date, timedelta
+    out = []
+    for i, kcal in enumerate([1840, 2400, 2100, 1500, 2286, 900, 2050][:days]):
+        d = date(2026, 8, 12) + timedelta(days=i)
+        out += [
+            dict(day=d, nutrient_id=1008, nutrient_name="Energy", unit="kcal",
+                 amount=kcal, min_amount=None, max_amount=2286),
+            dict(day=d, nutrient_id=1003, nutrient_name="Protein", unit="g",
+                 amount=120 + i * 5, min_amount=165, max_amount=None),
+        ]
+    return out
+
+
+def test_week_detail_is_yesterday_not_today():
+    """Today is still being lived and half its lines are not eaten yet.
+
+    Taking the latest day with entries makes every floor read as missed on a
+    card sent at lunchtime. Yesterday is finished, and it is the day whose
+    shape is about to be repeated.
+    """
+    from nutrai.core.render import week_card
+
+    ctx = dict(start=dt.date(2026, 8, 12), end=dt.date(2026, 8, 18), meals=41,
+               pct_measured=86, weights=[])
+    out = week_card(_week_rows(), ctx)
+    assert "Monday 17 Aug in detail" in out
+    assert "Tuesday 18 Aug in detail" not in out
+
+
+def test_week_chart_has_one_row_per_logged_day_in_one_pre():
+    """Per-line <code> spans render proportionally and the columns drift."""
+    from nutrai.core.render import week_card
+
+    ctx = dict(start=dt.date(2026, 8, 12), end=dt.date(2026, 8, 18), meals=41,
+               pct_measured=86, weights=[])
+    out = week_card(_week_rows(), ctx)
+    assert out.count("<pre>") == 1 and out.count("</pre>") == 1
+    chart = out[out.index("<pre>"):out.index("</pre>")]
+    # Header plus seven days.
+    assert len(chart.strip().splitlines()) == 8
+    assert "Wed 12" in chart and "Tue 18" in chart

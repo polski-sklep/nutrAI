@@ -92,7 +92,9 @@ Rules, in priority order:
 6. Calibrate confidence honestly, against what is actually uncertain. Masses the user stated in text are not in doubt — they were there and you were not — so when every mass is stated or read off a scale, confidence reflects only whether you identified the foods correctly, and 0.85 to 0.95 is the honest range. Reserve 0.4 to 0.6 for what it is for: a plated mixed dish photographed from above with no scale and no stated masses. Overconfidence corrupts weeks of trend data; reflex under-confidence is its own failure, because a warning attached to every meal is a warning nobody reads.
 7. Cooking fat and oil absorbed during cooking are real and routinely forgotten. If a dish is visibly fried or glossy, include an oil item and mark grams_source='estimate'.
 8. Be terse. Output tokens are the dominant cost of this call and prose in `notes` is charged at five times the rate of the image you are reading. State what affects accuracy and stop; do not restate what the item list already says.
-9. Whenever grams_source is 'estimate', give grams_low and grams_high as a genuine interval. A point estimate with no range asserts a precision the photograph does not contain. Use visible reference objects to narrow it: a standard dinner plate is 26-28 cm across, a dinner fork is 19-20 cm, a chicken egg is 55-60 g, a slice of sandwich bread is 35-40 g."""
+9. Whenever grams_source is 'estimate', give grams_low and grams_high as a genuine interval. A point estimate with no range asserts a precision the photograph does not contain. Use visible reference objects to narrow it: a standard dinner plate is 26-28 cm across, a dinner fork is 19-20 cm, a chicken egg is 55-60 g, a slice of sandwich bread is 35-40 g.
+
+Write every name, label, note and explanation in ENGLISH, translating where the source is not — the food database, the nutrient names and the person's cards are all English, and a label in another language is also a worse search query against them. The sole exception is a field explicitly asking for text as printed or as stated: those are the record of what was actually on the packet and stay verbatim."""
 
 DISAMBIGUATE_TOOL = {
     "name": "choose_food",
@@ -136,7 +138,9 @@ Prefer Foundation and SR Legacy rows over Branded rows unless a specific brand w
 Choosing nothing is not the safe option. An unmatched ingredient is dropped from the meal entirely and contributes zero of every nutrient — a 100% error on that item, invisible in the total. A near neighbour of the same food is usually a few percent out. So:
 
 - Match when a candidate is the same food in a different variety, cut, brand or preparation. "Salami, Italian, pork and beef" is a match for Italian salami. "Pickles, cucumber, dill or kosher dill" is a match for a dill gherkin. Set confidence to reflect the distance — 0.6 for a near neighbour is honest and useful.
-- Return fdc_id 0 only when no candidate is the same food at all, or when the candidates are so different that a wrong nutrient profile would be worse than nothing. A cut of beef offered for a slice of bread is a refusal; a different fat percentage of the same mince is not."""
+- Return fdc_id 0 only when no candidate is the same food at all, or when the candidates are so different that a wrong nutrient profile would be worse than nothing. A cut of beef offered for a slice of bread is a refusal; a different fat percentage of the same mince is not.
+
+Write every name, label, note and explanation in ENGLISH, translating where the source is not — the food database, the nutrient names and the person's cards are all English, and a label in another language is also a worse search query against them. The sole exception is a field explicitly asking for text as printed or as stated: those are the record of what was actually on the packet and stay verbatim."""
 
 MODIFIER_TOOL = {
     "name": "modify_dish",
@@ -167,7 +171,9 @@ MODIFIER_SYSTEM = """You are given the component list of a dish the user has eat
 
 A substitution is a drop plus an add. "decaf espresso", "skimmed not whole milk", "brown rice instead" all mean: drop the component being replaced, and add the replacement with the same mass. There is no swap operation; two operations express it exactly.
 
-If the phrase describes something you cannot express as set, add, drop or scale_all — a cooking method, a brand, a comment — return no operations for it rather than approximating. An edit that was not made and not mentioned is worse than one that was refused."""
+If the phrase describes something you cannot express as set, add, drop or scale_all — a cooking method, a brand, a comment — return no operations for it rather than approximating. An edit that was not made and not mentioned is worse than one that was refused.
+
+Write every name, label, note and explanation in ENGLISH, translating where the source is not — the food database, the nutrient names and the person's cards are all English, and a label in another language is also a worse search query against them. The sole exception is a field explicitly asking for text as printed or as stated: those are the record of what was actually on the packet and stay verbatim."""
 
 PLAN_TOOL = {
     "name": "propose_plan",
@@ -312,7 +318,9 @@ This is transcription, not estimation. The difference matters more here than any
 7. Many supplement actives have no nutrient id here: ashwagandha, CoQ10, collagen, curcumin, alpha-GPC, piperine, hyaluronic acid. Name them in `not_tracked` rather than omitting them silently, so the user can see they were read and deliberately not counted.
 8. The source may be a photograph of one packet or a written description of several products. Return one entry per distinct product either way.
 9. The dose someone takes is not always the label's serving. "Magnesium 175 mg, 1 capsule" against a panel stating 350 mg per 2-capsule serving means half a serving: set servings_per_day to 0.5 and leave the per-serving amounts as printed. Getting this backwards doubles the recorded dose every day.
-10. Record cadence where the source gives it. "Zinc 22 mg, every other day" is schedule 'alternate', not 'daily'. Assuming daily overstates a nutrient by half, permanently, and nothing downstream can detect it."""
+10. Record cadence where the source gives it. "Zinc 22 mg, every other day" is schedule 'alternate', not 'daily'. Assuming daily overstates a nutrient by half, permanently, and nothing downstream can detect it.
+
+Write every name, label, note and explanation in ENGLISH, translating where the source is not — the food database, the nutrient names and the person's cards are all English, and a label in another language is also a worse search query against them. The sole exception is a field explicitly asking for text as printed or as stated: those are the record of what was actually on the packet and stay verbatim."""
 
 
 # ------------------------------------------------------------- food labels
@@ -396,4 +404,6 @@ This is transcription, not estimation. The number you report becomes the stored 
 4. Use only the nutrient ids supplied to you. A line with no id in that list goes in not_tracked, never approximated onto a neighbour. Vitamin B6 is not vitamin B12, and folic acid is not the same id as food folate.
 5. If a digit or a unit is unclear, put the line in `unreadable` rather than guessing. A wrong digit here is wrong in every future serving of this food, silently.
 6. A printed zero is a measurement and should be reported as 0. A line that is simply absent from the panel must be omitted entirely — an absent nutrient and a nutrient present at zero are different facts, and recording the first as the second understates nothing but claims a certainty the label does not give.
-7. Copy each line verbatim into `as_printed`. The person will check your transcription against the packet in their hand, and that is only possible if they can see what you read."""
+7. Copy each line verbatim into `as_printed`. The person will check your transcription against the packet in their hand, and that is only possible if they can see what you read.
+
+Write every name, label, note and explanation in ENGLISH, translating where the source is not — the food database, the nutrient names and the person's cards are all English, and a label in another language is also a worse search query against them. The sole exception is a field explicitly asking for text as printed or as stated: those are the record of what was actually on the packet and stay verbatim."""
