@@ -735,9 +735,10 @@ def test_ceilings_and_floors_are_grouped_not_suffixed():
     out = logged_card("Cake", {}, _macro_rows())
     assert "Stay under" in out and "Reach" in out
     assert "kcal ceiling" not in out and "g target" not in out
-    # Energy under its own heading, protein under the other, in that order.
-    assert out.index("Stay under") < out.index("Energy") < out.index("Reach")
-    assert out.index("Reach") < out.index("Protein")
+    # Floors lead — the first line of a card sets the agenda, and "eat more
+    # protein" is a better agenda than "you have 2,128 kcal left".
+    assert out.index("Reach") < out.index("Protein") < out.index("Stay under")
+    assert out.index("Stay under") < out.index("Energy")
 
 
 def test_a_ceiling_reports_headroom_and_then_the_breach():

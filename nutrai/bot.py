@@ -185,6 +185,7 @@ COMMANDS: list[tuple[str, str]] = [
     ("/history", "Everything you have logged"),
     ("/export", "Your whole diary as a spreadsheet"),
     ("/why", "Where a nutrient came from today"),
+    ("/last", "What you logged most recently"),
     ("/undo", "Unlog your last entry"),
     # The other things you record daily.
     ("/supp", "Log today's supplements"),
@@ -2517,6 +2518,44 @@ async def cb_supp_none(cq: CallbackQuery) -> None:
     )
 
 
+@dp.message(Command("last"))
+async def last_entry(msg: Message) -> None:
+    """What went in most recently. The question asked after every gap.
+
+    "Did that log?" was previously answered by /today, which means reading a
+    whole day's card to check one line at the bottom of it.
+    """
+    u = await _user(msg)
+    rows = await db.history_entries(
+        u["id"], _today(u) - dt.timedelta(days=6), _today(u))
+    if not rows:
+        await msg.answer("Nothing logged in the last week.")
+        return
+    e = rows[0]
+    zone = zoneinfo.ZoneInfo(u["tz"])
+    when = e["logged_at"].astimezone(zone)
+    ago = (_local_now(u) - when)
+    mins = int(ago.total_seconds() // 60)
+    since = (f"{mins} min ago" if mins < 60 else
+             f"{mins // 60} h {mins % 60:02d} ago" if mins < 1440 else
+             f"{mins // 1440} days ago")
+    _row, comps = await db.entry_with_components(int(e["id"]))
+    lines = [
+        f"🕐 <b>Last logged</b> — {render._esc(render._title(e['name'] or '?'))}",
+        f"<i>{when:%a %-d %b, %H:%M} · {since}</i>",
+        "",
+    ]
+    for c in comps:
+        lines.append(f"   • {render._esc(c['label'])} — {float(c['grams']):,.0f} g")
+    lines += ["", f"📊 {float(e['kcal'] or 0):,.0f} kcal · "
+                  f"{float(e['protein'] or 0):.0f} g protein"]
+    await msg.answer("\n".join(lines), parse_mode="HTML",
+                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                         InlineKeyboardButton(text="↩️ undo it",
+                                              callback_data=f"undook:{e['id']}"),
+                     ]]))
+
+
 @dp.message(Command("undo"))
 async def undo(msg: Message) -> None:
     """Unlog the last thing logged today.
@@ -2831,9 +2870,11 @@ async def _parse_failed(note: Message, exc: Exception) -> None:
 # malformed" — and only the body separates them. Substrings, not exact
 # matches: the wording changes, the noun does not.
 _FAILURES: tuple[tuple[tuple[str, ...], str], ...] = (
-    (("credit balance", "billing"),
-     "The Anthropic API is out of credit, so nothing can be parsed until it is "
-     "topped up. Retrying will not help."),
+    (("credit balance", "billing", "insufficient_quota", "quota", "usage limit",
+      "spending limit", "payment"),
+     "Your Anthropic API account has hit a limit — credit, quota or spend cap. "
+     "Nothing can be parsed until it is topped up or the cap is raised, at "
+     "console.anthropic.com. Retrying will not help."),
     (("invalid x-api-key", "authentication_error", "invalid api key"),
      "The Anthropic API key is being rejected. It needs replacing in "
      "<code>.env</code>; retrying will not help."),
@@ -2857,6 +2898,16 @@ def _failure_reason(exc: Exception) -> str:
             # situations and only one of them stops you logging lunch.
             return (f"⚠️ {sentence}\n\nNothing was logged. "
                     "<code>/repeat</code> still works — it never calls a model.")
+    # Naming the exception class tells you the HTTP shape and nothing about
+    # the cause. Where the failure plainly came from the model API, say so —
+    # that alone distinguishes "my account" from "my bot is broken", which are
+    # the two things worth telling apart before reading a log.
+    if "anthropic" in blob or "api" in blob or "400" in blob:
+        return ("⚠️ The Anthropic API refused that request "
+                f"(<code>{escape(type(exc).__name__)}</code>) — most often an "
+                "account limit. Check console.anthropic.com; the exact message "
+                "is in the bot logs.\n\nNothing was logged. "
+                "<code>/repeat</code> still works — it never calls a model.")
     return (f"That did not go through — {escape(type(exc).__name__)}. "
             "Nothing was logged. The detail is in the bot logs; try again in a moment.")
 

@@ -274,12 +274,17 @@ def logged_card(
             ceilings.append(row)
         else:
             floors.append(row)
-    if ceilings:
-        lines.append("  ⬇️ <b>Stay under</b>")
-        lines += ceilings
+    # Floors lead. A floor is a thing to go and do something about; a ceiling
+    # is a thing to not do. Energy was put first originally because it is the
+    # number people check, but the first line of a card is also the one that
+    # sets the agenda, and "eat more protein" is a better agenda than "you have
+    # 2,128 kcal left".
     if floors:
         lines.append("  ⬆️ <b>Reach</b>")
         lines += floors
+    if ceilings:
+        lines.append("  ⬇️ <b>Stay under</b>")
+        lines += ceilings
     lines += plain
 
     # --- what this meal actually brought
@@ -795,7 +800,12 @@ def audit_card(findings: Sequence[Any]) -> str:
     a trend, then a recommendation.
     """
     if not findings:
-        return "🩺 <b>Daily check</b>\n\nNothing to flag. The log looks sound."
+        return ("🩺 <b>Match check</b>\n\n"
+                "Nothing to flag — every entry's numbers agree with the USDA "
+                "rows behind them.\n\n"
+                "<i>This checks the database, not your eating. It looks for "
+                "components matched to the wrong food, masses that do not fit "
+                "their calories, and rows with nutrients missing.</i>")
 
     icons = {"error": "❌", "warn": "⚠️", "info": "💡"}
     titles = {
@@ -804,9 +814,25 @@ def audit_card(findings: Sequence[Any]) -> str:
         "info": "Would pay off later",
     }
 
-    lines = ["🩺 <b>Daily check</b>"]
+    # "Daily check" said when it ran and nothing about what it does, which
+    # left it reading as a verdict on the eating rather than on the matching.
+    # It has no opinion about the food at all.
+    lines = ["🩺 <b>Match check</b> — entries whose numbers do not add up",
+             "<i>About the food database, not about your eating.</i>"]
+    seen: set[tuple[str, str]] = set()
     for severity in ("error", "warn", "info"):
-        group = [f for f in findings if f.severity == severity]
+        group = []
+        for f in findings:
+            if f.severity != severity:
+                continue
+            # Two entries of the same dish on the same day produce the same
+            # sentence twice, and a list that repeats itself reads as two
+            # problems. It is one, said twice.
+            key = (f.summary, f.detail)
+            if key in seen:
+                continue
+            seen.add(key)
+            group.append(f)
         if not group:
             continue
         lines.append("")
@@ -1504,12 +1530,12 @@ def profile_card(data: dict[str, Any], today: dt.date | None = None) -> str:
         field, label, hint = PROFILE_ROWS[nxt - 1]
         lines += [
             f"<b>Next: {_esc(label.lower())}</b> — reply <code>{nxt}. {_esc(hint)}</code>",
-            "<i>You can send several at once, one per line.</i>",
+            "<i>One per line for several.</i>",
         ]
     else:
         lines += [
-            "Reply with a numbered line to change anything — "
-            "<code>5. 1.4</code>. Several at once is fine.",
+            "To change something, reply with its number and the new value — "
+            "<code>5. 1.4</code>. One per line for several.",
         ]
     return "\n".join(lines)
 
@@ -1724,7 +1750,7 @@ def slot_settings_card(stack: Sequence[Any], times: dict) -> str:
         "• <code>3. evening</code> puts line 3 in the evening",
         "• <code>evening 21:00</code> sets when that moment is",
         "• <code>evening off</code> stops that reminder",
-        "<i>Several at once is fine, one per line.</i>",
+        "<i>One per line for several.</i>",
     ]
     return "\n".join(lines)
 

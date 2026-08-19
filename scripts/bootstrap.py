@@ -81,23 +81,10 @@ async def main(a: argparse.Namespace) -> None:
             )
 
         await con.execute("DELETE FROM notification_rule WHERE user_id = $1", user_id)
-        rules = [
-            (ENERGY_KCAL, "over", 80, 240),
-            (ENERGY_KCAL, "over", 100, 240),
-            (CARB, "over", 80, 240),
-            (FAT, "over", 90, 240),
-            (SODIUM, "over", 100, 480),
-            (PROTEIN, "under", 60, 600),
-        ]
-        for nid, direction, pct, cooldown in rules:
-            await con.execute(
-                """INSERT INTO notification_rule
-                     (user_id, kind, nutrient_id, direction, threshold_pct, cooldown_minutes)
-                   VALUES ($1,'threshold',$2,$3,$4,$5)""",
-                user_id, nid, direction, pct, cooldown,
-            )
+        rules: list[tuple[int, str, int, int]] = []
 
-    print(f"user {user_id} ready: {len(targets)} targets, 6 notification rules")
+    print(f"user {user_id} ready: {len(targets)} targets, "
+          f"{len(rules)} notification rules")
     await con.close()
 
 

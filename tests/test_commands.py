@@ -249,7 +249,7 @@ def test_out_of_credit_does_not_advise_retrying():
     out = _failure_reason(BadRequestError(
         "Error code: 400 - {'error': {'message': 'Your credit balance is too "
         "low to access the Anthropic API. Please go to Plans & Billing'}}"))
-    assert "out of credit" in out
+    assert "hit a limit" in out and "console.anthropic.com" in out
     assert "try again in a moment" not in out
     # The local paths are unaffected, and that is the useful thing to know.
     assert "/repeat" in out
