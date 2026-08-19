@@ -389,6 +389,40 @@ Rules when adding a message:
 - Tests for anything where a silent wrong answer is possible. That is the bar,
   not coverage percentage.
 
+## Two USDA ids, one measurement
+
+`nutrient.canonical_id` folds ids that report the same thing. Today it holds
+one row: **1063 "Sugars, Total" → 2000 "Total Sugars"**. FNDDS reports sugar
+under 1063, SR Legacy under 2000, Foundation under either, and with the target
+on 2000 every FNDDS food's sugar went uncounted — a day totalling 53.8 g
+displayed 11 g at 19% of its ceiling, and nothing raised anything.
+
+The mapping lives in `v_nutrient_canonical` and is applied in exactly three
+places: `v_day_nutrient`, `v_day_supplement_nutrient` and `db._profiles_con`.
+The last is the write path — without it a new entry is still *stored* split and
+the confirm card, which is read before anything is stored, stays wrong.
+
+`food_nutrient` and `log_nutrient` are never rewritten. The first is a faithful
+copy of a public dataset and the next loader run would undo any edit; the
+second is an immutable snapshot (invariant 2). Only the aggregate above them
+changes, which is why the fix reaches history at all.
+
+**Energy is not in this table and must not be.** `canonical_id` means "the same
+measurement, add them up". The Atwater ids (1008 / 2047 / 2048) mean
+"alternative estimates of the same thing, use whichever exists" — summing them
+would treble a Foundation row. `core.nutrition.normalise_energy` and the one
+hard-coded branch in `day_nutrient_coverage` handle that. Two rules because
+there are two relationships.
+
+`tests/test_integration.py::test_no_targeted_nutrient_is_silently_split` fails
+if a future load introduces another split. It detects them by *complementary
+coverage* — foods carry one id or the other and almost never both — because
+genuinely different nutrients are measured together and overlap almost
+completely. Name similarity alone finds nothing but fatty acids. The test
+carries an explicit exceptions list: 1119 Zeaxanthin and 1123 Lutein +
+zeaxanthin look complementary and must not be folded, because 1123 is a sum
+that already contains 1119.
+
 ## Things that will look like bugs and are not
 
 - **The 300 mg cholesterol ceiling is obsolete and is staying.** Reviewed on

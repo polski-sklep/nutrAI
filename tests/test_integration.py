@@ -3110,3 +3110,85 @@ def test_an_alias_cannot_resurrect_an_unusable_row(database_url):
                 "DELETE FROM food_alias WHERE user_id = $1 AND alias = 'zzunusable'", uid)
 
     run(check())
+
+
+@pytest.mark.integration
+def test_sugar_is_not_split_across_two_usda_ids(database_url):
+    """USDA reports the same measurement under 1063 and 2000.
+
+    FNDDS uses 1063 "Sugars, Total", SR Legacy uses 2000 "Total Sugars", and
+    Foundation carries either. The target sits on 2000, so every FNDDS food's
+    sugar went uncounted: a day whose snapshot totalled 43.25 g displayed 11 g
+    at 19% of its ceiling, with no error anywhere. The only visible symptom was
+    a coverage note reading "(from 32% of food)", which was accurate and
+    answered the wrong question.
+    """
+    from nutrai import db
+
+    async def check() -> None:
+        p = await db.pool()
+        canon = await p.fetchval(
+            "SELECT canonical_id FROM v_nutrient_canonical WHERE id = 1063")
+        assert canon == 2000
+        # Nothing aggregates under the folded id any more.
+        rows = await p.fetch(
+            "SELECT DISTINCT nutrient_id FROM v_day_nutrient WHERE nutrient_id = 1063")
+        assert not rows
+
+    run(check())
+
+
+@pytest.mark.integration
+def test_no_targeted_nutrient_is_silently_split(database_url):
+    """The general form: two ids for one measurement, unmapped.
+
+    The signature is complementary coverage — foods carry one id or the other
+    and almost never both, because the split runs along dataset lines. Nutrients
+    that genuinely differ are measured together and overlap almost completely,
+    which is why name similarity alone finds nothing but false positives among
+    the fatty acids.
+
+    Sugar was the only case. This fails if a future USDA load introduces
+    another, rather than leaving it to be noticed as a number that looks low.
+    """
+    from nutrai import db
+
+    async def check() -> None:
+        p = await db.pool()
+        suspects = await p.fetch(
+            """
+            WITH used AS (
+                SELECT n.id, n.name, n.unit,
+                       count(DISTINCT fn.fdc_id) AS foods
+                  FROM nutrient n JOIN food_nutrient fn ON fn.nutrient_id = n.id
+              GROUP BY 1,2,3 HAVING count(DISTINCT fn.fdc_id) > 500)
+            SELECT a.id AS a_id, a.name AS a_name, b.id AS b_id, b.name AS b_name,
+                   (SELECT count(*) FROM (
+                        SELECT fdc_id FROM food_nutrient WHERE nutrient_id = a.id
+                        INTERSECT
+                        SELECT fdc_id FROM food_nutrient WHERE nutrient_id = b.id) x
+                   ) AS overlap
+              FROM used a JOIN used b ON a.unit = b.unit AND a.id < b.id
+              JOIN v_nutrient_canonical ca ON ca.id = a.id
+              JOIN v_nutrient_canonical cb ON cb.id = b.id
+             WHERE similarity(lower(a.name), lower(b.name)) > 0.45
+               AND ca.canonical_id <> cb.canonical_id
+            """)
+        # Pairs that look complementary and must not be folded, with the
+        # reason, because the reason is the point. Folding means "these are the
+        # same measurement, add them up", and that is wrong whenever one id
+        # already contains the other.
+        deliberate = {
+            (1119, 1123): "1123 'Lutein + zeaxanthin' is a sum that already "
+                          "includes 1119 'Zeaxanthin'. Adding them would count "
+                          "zeaxanthin twice; the right rule here is prefer-one, "
+                          "not fold, and neither is targeted.",
+        }
+        split = [s for s in suspects
+                 if s["overlap"] < 100 and (s["a_id"], s["b_id"]) not in deliberate]
+        assert not split, (
+            "two ids look like one measurement and are not mapped: "
+            + "; ".join(f"{s['a_id']} {s['a_name']} / {s['b_id']} {s['b_name']} "
+                        f"(overlap {s['overlap']})" for s in split))
+
+    run(check())

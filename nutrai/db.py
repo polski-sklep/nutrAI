@@ -426,7 +426,11 @@ async def _profiles_con(con: Any, fdc_ids: Iterable[int]) -> dict[int, dict[int,
     if not ids:
         return {}
     rows = await con.fetch(
-        "SELECT fdc_id, nutrient_id, amount FROM food_nutrient WHERE fdc_id = ANY($1::int[])", ids
+        """SELECT fn.fdc_id, c.canonical_id AS nutrient_id, sum(fn.amount) AS amount
+             FROM food_nutrient fn
+             JOIN v_nutrient_canonical c ON c.id = fn.nutrient_id
+            WHERE fn.fdc_id = ANY($1::int[])
+         GROUP BY fn.fdc_id, c.canonical_id""", ids
     )
     out: dict[int, dict[int, float]] = {i: {} for i in ids}
     for r in rows:
