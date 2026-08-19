@@ -305,6 +305,34 @@ area; do not re-litigate them.
   fire: the once-a-year case that reports a confident wrong number is worse than
   the one that admits it does not know.
 
+## Unprompted messages
+
+Threshold notifications are **deliberately off** and no longer seeded by
+`bootstrap.py`. "You are at 60% of protein" at four in the afternoon is
+arithmetic the user can do, arriving unasked, on a day that is not over. A
+tracker that interrupts is one you mute, and the muting takes the useful
+messages with it.
+
+What still arrives unbidden, and should: the morning note (07:30), supplement
+reminders at their scheduled slots, and the Sunday report. Everything else is
+pull — `/today`, `/next`, `/week`, `/last`.
+
+## Days that do not count
+
+`/incomplete` marks a day the user knows they did not log properly. Absence of
+a `day_quality` row means complete, deliberately: a flag that must be set on
+every ordinary day is one people stop setting, which turns "not marked" from a
+default into a silent unknown.
+
+The exclusion has to reach **every** analysis or it is worse than none — a day
+dropped from the weight trend but still feeding `/insight` is a flag that is
+half true. Currently applied in `db.daily_energy` (which feeds measured TDEE,
+which feeds the energy target) and `db.observations`. Anything new that draws a
+conclusion across days must filter on it too.
+
+The entries themselves stay visible in `/today` and `/history`. What stops is
+inference.
+
 ## Outgoing message format
 
 Telegram **HTML**, not Markdown. Legacy Markdown has no defined escape syntax,
