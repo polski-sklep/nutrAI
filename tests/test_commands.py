@@ -438,3 +438,25 @@ def test_no_low_confidence_warning_for_your_own_food_at_a_stated_mass():
     assert "not (all_hard and own_food)" in guard[:120]
     # And the model's stale explanation of a mass it did not supply goes too.
     assert "notes=None if all_hard and res.prior_notes else parsed.notes" in src
+
+
+def test_backdate_prompt_has_a_consumer_and_does_not_teach_syntax():
+    """The failure this file has hit eight times: a card that explains a
+    command form instead of doing the thing.
+
+    /yesterday accepts `/yesterday 2 empanadas 19:00` because it is the
+    fastest path, but the card asks a question and waits for the answer.
+    """
+    from nutrai.bot import PROMPT_CONSUMERS
+
+    assert "backdate_food" in PROMPT_CONSUMERS
+
+
+def test_trailing_time_is_read_off_the_meal_line():
+    from nutrai.bot import _TRAILING_TIME
+
+    assert _TRAILING_TIME.search("2 empanadas 19:00").groups() == ("19", "00")
+    assert _TRAILING_TIME.search("toast at 8.30").groups() == ("8", "30")
+    # A meal with no time must not have one invented from its digits.
+    assert _TRAILING_TIME.search("2 empanadas") is None
+    assert _TRAILING_TIME.search("250 g chicken") is None

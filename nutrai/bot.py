@@ -61,8 +61,9 @@ async def _ask(msg: Message, u: Any, kind: str, text: str, **kw) -> None:
     """Send a prompt and open the wait for its answer. Never one without the other."""
     if kind not in PROMPT_CONSUMERS:
         raise KeyError(f"no consumer registered for prompt {kind!r}")
+    payload = kw.pop("payload", None) or {}
     await msg.answer(text, parse_mode="HTML", **kw)
-    await db.put_pending(u["id"], kind, {})
+    await db.put_pending(u["id"], kind, payload)
 
 
 dp = Dispatcher()
@@ -181,7 +182,7 @@ COMMANDS: list[tuple[str, str]] = [
     ("/repeat", "Log something you have had before"),
     ("/today", "Where you stand today"),
     ("/next", "What would close today's gaps"),
-    ("/yesterday", "Where you stood yesterday"),
+    ("/yesterday", "Log food from an earlier day"),
     ("/history", "Everything you have logged"),
     ("/export", "Your whole diary as a spreadsheet"),
     ("/why", "Where a nutrient came from today"),
@@ -256,10 +257,107 @@ async def today(msg: Message) -> None:
     await _send_day(msg, u, _today(u), show_all="brief" not in (msg.text or ""))
 
 
-@dp.message(Command("yesterday"))
+# How many days back a bare word means. Anything older is a date.
+_BACK_WORDS = {"yesterday": 1, "yday": 1, "sat": None}
+
+
+@dp.message(Command("yesterday", "back", "backdate"))
 async def yesterday(msg: Message) -> None:
+    """Log something you ate on an earlier day.
+
+    This used to show yesterday's card, which /history 2026-08-17 now does
+    better and for any day. What it could not do was put food *into* an
+    earlier day, and food gets remembered late — so the day you actually ate
+    it was either corrupted by omission or corrupted by landing on today.
+
+    `/yesterday 2 empanadas 19:00` works in one message; the argument form is
+    accepted because it is the fastest path, not advertised on the card,
+    because a card that teaches a syntax instead of doing the thing is the
+    failure this file has hit eight times.
+    """
     u = await _user(msg)
-    await _send_day(msg, u, _today(u) - dt.timedelta(days=1))
+    rest = (msg.text or "").split(maxsplit=1)
+    day = _today(u) - dt.timedelta(days=1)
+    if len(rest) > 1 and rest[1].strip():
+        await _backdate(msg, u, rest[1].strip(), day)
+        return
+    await _ask(
+        msg, u, "backdate_food",
+        f"📅 <b>{day:%A %-d %b}</b> — what did you eat?\n\n"
+        "Describe it as you would any meal. I will ask what time it was "
+        "before anything is logged.\n\n"
+        "<i>Or say it in one line — <code>2 empanadas 19:00</code>.</i>",
+        payload={"iso": day.isoformat()},
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✋ never mind", callback_data="backcancel:"),
+        ]]),
+    )
+
+
+# A trailing time on a food line: "2 empanadas 19:00", "toast at 8.30".
+_TRAILING_TIME = re.compile(r"(?:\s+at)?\s+(\d{1,2})[:.](\d{2})\s*$")
+
+
+@consumes("backdate_food")
+async def _consume_backdate(msg: Message, u: Any, text: str, payload: dict) -> bool:
+    day = dt.date.fromisoformat(payload.get("iso") or "") if payload.get("iso") else None
+    if not day:
+        return False
+    await db.clear_pending(u["id"], "backdate_food")
+    await _backdate(msg, u, text, day)
+    return True
+
+
+async def _backdate(msg: Message, u: Any, text: str, day: dt.date) -> None:
+    """Parse a meal, file it on `day`, and settle the time before confirming."""
+    zone = zoneinfo.ZoneInfo(u["tz"])
+    stated = _TRAILING_TIME.search(text)
+    if stated:
+        hh, mm = int(stated.group(1)), int(stated.group(2))
+        if not (0 <= hh < 24 and 0 <= mm < 60):
+            stated = None
+    when = None
+    if stated:
+        text = text[: stated.start()].strip()
+        when = dt.datetime.combine(day, dt.time(int(stated.group(1)), int(stated.group(2))),
+                                   tzinfo=zone).astimezone(dt.timezone.utc)
+    else:
+        # Noon, deliberately: it is inside the day whatever the rollover hour
+        # is, so the entry cannot land on a neighbouring date while its real
+        # time is still unknown.
+        when = dt.datetime.combine(day, dt.time(12, 0), tzinfo=zone).astimezone(dt.timezone.utc)
+
+    if not text:
+        await msg.answer("That was only a time — tell me what you ate too.")
+        return
+
+    note = await msg.answer("🍽 digesting…")
+    try:
+        parsed = await llm.parse_text(text, user_id=u["id"])
+        entry_id = await _present(msg, u, parsed, source="text", photo_file_id=None,
+                                  edit=note, text=text, when=when)
+    except Exception as exc:
+        await _parse_failed(note, exc)
+        return
+
+    if stated or entry_id is None:
+        return
+    # Asked, not assumed. The slot and the fasting window both depend on it,
+    # and noon is a placeholder rather than an answer.
+    await _ask(
+        msg, u, "time_await",
+        f"🕐 What time on <b>{day:%a %-d %b}</b>? — <code>19:00</code>\n"
+        "<i>Confirm above to accept the placeholder of 12:00.</i>",
+        payload={"entry_id": entry_id},
+    )
+
+
+@dp.callback_query(F.data.startswith("backcancel:"))
+async def cb_backdate_cancel(cq: CallbackQuery) -> None:
+    u = await db.get_or_create_user(cq.from_user.id)
+    await db.clear_awaits(u["id"], ("backdate_food",))
+    await cq.answer("Closed")
+    await cq.message.edit_reply_markup(reply_markup=None)
 
 
 async def _send_day(msg: Message, u: Any, day: dt.date, show_all: bool = False) -> None:
@@ -3469,8 +3567,8 @@ async def _matched_names(components: Sequence[Any]) -> dict[int, str]:
 async def _present(
     msg: Message, u: Any, parsed: llm.ParsedMeal, *, source: str,
     photo_file_id: str | None, edit: Message | None = None,
-    text: str | None = None,
-) -> None:
+    text: str | None = None, when: dt.datetime | None = None,
+) -> int | None:
     res = await llm.resolve_items(u["id"], parsed.items, parsed.dish_name, text=text)
     if not res.components:
         # Keep the parse even though nothing resolved.
@@ -3518,8 +3616,9 @@ async def _present(
     totals = total_nutrients(res.components, profs)
 
     slug = _slugify(parsed.dish_name)
-    # The clock decides the meal, not the model — see dsl.slot_for_hour.
-    slot = dsl.slot_for_hour(_local_now(u).hour, parsed.slot)
+    # The clock decides the meal, not the model — see dsl.slot_for_hour. On a
+    # backdated entry it is the clock of the meal, not of the typing.
+    slot = dsl.slot_for_hour((when or _local_now(u)).hour, parsed.slot)
     dish_name = render._title(parsed.dish_name)
     dish_id = await db.upsert_dish(u["id"], slug, dish_name, slot, res.components)
 
@@ -3529,6 +3628,7 @@ async def _present(
         parse={**(parsed.raw or {}), "_weak": [w[0] for w in res.weak_matches]},
         photo_file_id=photo_file_id, dish_id=dish_id, tz=u["tz"],
         rollover_hour=u["day_rollover_hour"], grams_sources=res.grams_sources,
+        when=when,
     )
 
     warnings = list(verdict.warnings)
@@ -3576,6 +3676,7 @@ async def _present(
         await edit.edit_text(text, parse_mode="HTML", reply_markup=kb)
     else:
         await msg.answer(text, parse_mode="HTML", reply_markup=kb)
+    return entry_id
 
 
 def _slugify(name: str) -> str:
