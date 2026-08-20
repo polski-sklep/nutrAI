@@ -513,3 +513,45 @@ def test_qualifier_mismatch_is_caught():
     # Substrings must not count: "whole" is inside "wholemeal".
     assert _qualifiers("wholemeal bread", egg) == set()
     assert _qualifiers("egg yolk", egg) == {"yolk"}
+
+
+def _block_meals(n=3):
+    return [{"slug": f"s{i}", "label": f"Meal {i}", "icon": "🍽", "at": "08:0%d" % i}
+            for i in range(n)]
+
+
+def test_block_card_shows_ticks_only_while_choosing():
+    """A row of ✅ against every line, before anything has been chosen, is
+    decoration that looks like state. The summary is a list; the picker is a
+    choice, and only the second needs boxes."""
+    from nutrai.bot import _block_card
+
+    meals = _block_meals()
+    summary = _block_card(meals, [0, 1, 2], "Morning")
+    assert "✅" not in summary and "⬜️" not in summary
+    assert "3 meals" in summary
+
+    picking = _block_card(meals, [0, 2], "Morning")
+    assert picking.count("✅") == 2 and picking.count("⬜️") == 1
+    assert "2 meals" in picking
+
+
+def test_block_keyboard_counts_what_it_will_log():
+    """"log all 6" after unticking two is a button that lies about its own
+    effect, and the effect is six confirmation cards."""
+    from nutrai.bot import _block_keyboard
+
+    meals = _block_meals(6)
+    summary = [b.text for row in
+               _block_keyboard(1, meals, list(range(6)), picking=False).inline_keyboard
+               for b in row]
+    assert "🔁 log all 6" in summary and "☑️ choose which" in summary
+
+    picked = [b.text for row in
+              _block_keyboard(1, meals, [0, 1], picking=True).inline_keyboard
+              for b in row]
+    assert "🔁 log 2" in picked
+    # And the choose button is gone once you are choosing.
+    assert not [t for t in picked if "choose which" in t]
+    # One toggle per meal.
+    assert len([t for t in picked if t.startswith(("✅", "⬜️"))]) == 6

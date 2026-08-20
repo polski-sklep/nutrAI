@@ -324,25 +324,111 @@ async def _offer_block(msg: Message, u: Any, which: str, user: Any = None) -> No
     # inherits everything it already does right: component provenance, the
     # portion prior, the confirm gate. A second logging path would be a second
     # place for those to be got wrong.
+    # Slug and label per meal, in order, so a selection can be expressed as
+    # indices and survive the round trip through the pending payload.
     pool = await db.pool()
-    slugs = [r2["slug"] for r2 in await pool.fetch(
+    by_id = {r2["id"]: r2["slug"] for r2 in await pool.fetch(
         "SELECT id, slug FROM dish WHERE id = ANY($1::bigint[])",
-        [int(r["dish_id"]) for r in rows])]
-    await db.put_pending(u["id"], "block_repeat", {"slugs": slugs})
-    lines = [f"{icon} <b>{which.title()} of {src:%a %-d %b}</b>", ""]
-    for r in rows:
-        lines.append(f"   {r['local_time']:%H:%M} "
-                     f"{render.dish_icon(r['name'] or '', r['slot'])} "
-                     f"{render._esc(render._title(r['name'] or '?'))}")
-    lines.append(f"\n<i>{len(rows)} meals. Each comes back as its own card to "
-                 "confirm — nothing is logged by pressing this.</i>")
+        [int(r["dish_id"]) for r in rows])}
+    meals = [
+        {"slug": by_id[int(r["dish_id"])],
+         "label": render._title(r["name"] or "?"),
+         "icon": render.dish_icon(r["name"] or "", r["slot"]),
+         "at": f"{r['local_time']:%H:%M}"}
+        for r in rows if int(r["dish_id"]) in by_id
+    ]
+    if not meals:
+        await msg.answer("None of those dishes still exist.")
+        return
+
+    action_id = await db.put_pending(u["id"], "block_repeat", {
+        "meals": meals, "selected": list(range(len(meals))),
+        "title": f"{icon} {which.title()} of {src:%a %-d %b}",
+    })
     await msg.answer(
-        "\n".join(lines), parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text=f"🔁 log all {len(rows)}",
-                                 callback_data="blkgo:"),
-            InlineKeyboardButton(text="✋ never mind", callback_data="blkno:"),
-        ]]))
+        _block_card(meals, list(range(len(meals))),
+                    f"{icon} {which.title()} of {src:%a %-d %b}"),
+        parse_mode="HTML",
+        reply_markup=_block_keyboard(action_id, meals, list(range(len(meals))),
+                                     picking=False))
+
+
+def _block_card(meals: list[dict], selected: list[int], title: str) -> str:
+    lines = [f"<b>{title}</b>", ""]
+    for i, m in enumerate(meals):
+        mark = "" if len(selected) == len(meals) else ("✅ " if i in selected else "⬜️ ")
+        lines.append(f"   {mark}{m['at']} {m['icon']} {render._esc(m['label'])}")
+    n = len(selected)
+    lines.append(
+        f"\n<i>{n} meal{'s' if n != 1 else ''}. Each comes back as its own card "
+        "to confirm — nothing is logged by pressing this.</i>")
+    return "\n".join(lines)
+
+
+def _block_keyboard(action_id: int, meals: list[dict], selected: list[int],
+                    *, picking: bool) -> InlineKeyboardMarkup:
+    """Two states on one card: the summary, and the same list with checkboxes.
+
+    A separate "choose" card would mean two places rendering one list, and the
+    thing being chosen from is exactly what the summary already shows.
+    """
+    rows: list[list[InlineKeyboardButton]] = []
+    if picking:
+        rows += [
+            [InlineKeyboardButton(
+                text=f"{'✅' if i in selected else '⬜️'} {m['at']} {m['label'][:28]}",
+                callback_data=f"blkt:{action_id}:{i}")]
+            for i, m in enumerate(meals)
+        ]
+    rows.append([
+        InlineKeyboardButton(
+            text=(f"🔁 log {len(selected)}" if picking
+                  else f"🔁 log all {len(meals)}"),
+            callback_data=f"blkgo:{action_id}"),
+        InlineKeyboardButton(text="✋ never mind", callback_data="blkno:"),
+    ])
+    if not picking:
+        rows.append([InlineKeyboardButton(
+            text="☑️ choose which", callback_data=f"blkpick:{action_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@dp.callback_query(F.data.startswith("blkpick:"))
+async def cb_block_pick(cq: CallbackQuery) -> None:
+    """Open the checkboxes on the card already on screen."""
+    payload = await db.take_pending(int(cq.data.split(":")[1]))
+    await cq.answer()
+    if not payload:
+        await cq.message.answer("That block has expired — send /again.")
+        return
+    u = await db.get_or_create_user(cq.from_user.id)
+    meals, selected = payload["meals"], payload["selected"]
+    new_id = await db.put_pending(u["id"], "block_repeat", payload)
+    await cq.message.edit_text(
+        _block_card(meals, selected, payload["title"]), parse_mode="HTML",
+        reply_markup=_block_keyboard(new_id, meals, selected, picking=True))
+
+
+@dp.callback_query(F.data.startswith("blkt:"))
+async def cb_block_toggle(cq: CallbackQuery) -> None:
+    _k, aid, idx = cq.data.split(":")
+    payload = await db.take_pending(int(aid))
+    if not payload:
+        await cq.answer("expired")
+        return
+    await cq.answer()
+    u = await db.get_or_create_user(cq.from_user.id)
+    i = int(idx)
+    selected = list(payload["selected"])
+    selected.remove(i) if i in selected else selected.append(i)
+    selected.sort()
+    new_id = await db.put_pending(u["id"], "block_repeat",
+                                  {**payload, "selected": selected})
+    await cq.message.edit_text(
+        _block_card(payload["meals"], selected, payload["title"]),
+        parse_mode="HTML",
+        reply_markup=_block_keyboard(new_id, payload["meals"], selected,
+                                     picking=True))
 
 
 @dp.callback_query(F.data.startswith("blkno:"))
@@ -356,13 +442,18 @@ async def cb_block_cancel(cq: CallbackQuery) -> None:
 @dp.callback_query(F.data.startswith("blkgo:"))
 async def cb_block_go(cq: CallbackQuery) -> None:
     u = await db.get_or_create_user(cq.from_user.id)
-    pending = await db.latest_pending(u["id"], "block_repeat")
+    aid = cq.data.split(":")[1] if ":" in cq.data else ""
+    pending = await db.take_pending(int(aid)) if aid else None
     await db.clear_awaits(u["id"], ("block_repeat",))
     await cq.answer()
     await cq.message.edit_reply_markup(reply_markup=None)
-    slugs = (pending or {}).get("slugs") or []
+    meals = (pending or {}).get("meals") or []
+    selected = (pending or {}).get("selected") or []
+    slugs = [meals[i]["slug"] for i in selected if 0 <= i < len(meals)]
     if not slugs:
-        await cq.message.answer("That block has expired — send /again.")
+        await cq.message.answer(
+            "Nothing selected." if pending else
+            "That block has expired — send /again.")
         return
     done = 0
     for slug in slugs:
