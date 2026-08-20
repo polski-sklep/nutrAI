@@ -21,6 +21,7 @@ depended on a model would share the failure modes of the thing it audits.
 from __future__ import annotations
 
 import datetime as dt
+import re
 from dataclasses import dataclass
 
 from .. import db
@@ -37,6 +38,39 @@ FIBRE_SHARE_OF_CARB = 0.40
 MASS_CONFIDENCE_FLOOR = 50.0
 # An alias this well used has earned forty seconds of human attention.
 PIN_SUGGEST_HITS = 5
+
+# Words that pick out one member of a family of very similar foods. Within a
+# set they are mutually exclusive: a thing is a white or a yolk or a whole egg,
+# and never two of them.
+#
+# 99 g of "egg whites, fried" was matched to "Egg, whole, cooked, fried" and
+# carried 397 mg of cholesterol that egg white does not contain — the day read
+# 249% of its ceiling and the advice was to eat fewer yolks, on a day with one
+# yolk in it. Trigram similarity cannot see this: the two names share every
+# token that matters and differ by one word which is, precisely, the word that
+# decides what the food is.
+#
+# Only families where the members differ enough for the mismatch to move a
+# number. "Diced" versus "sliced" belongs nowhere near this list.
+QUALIFIER_SETS: tuple[frozenset[str], ...] = (
+    frozenset({"white", "yolk", "whole"}),        # egg
+    frozenset({"skimmed", "skim", "whole"}),      # milk
+    frozenset({"raw", "cooked", "dried"}),
+    frozenset({"decaffeinated", "caffeinated"}),
+    frozenset({"unsweetened", "sweetened"}),
+)
+
+
+def _qualifiers(text: str, family: frozenset[str]) -> set[str]:
+    """Which of a family appear as whole words.
+
+    Substrings will not do: "whole" is inside "wholemeal" and "white" is inside
+    "whitefish". Nor will exact tokens — the label said "whites" and the row
+    said "whole", so a trailing plural has to come off before comparing.
+    """
+    words = {w[:-1] if len(w) > 4 and w.endswith("s") else w
+             for w in re.findall(r"[a-z]+", text.lower())}
+    return words & family
 
 
 @dataclass(frozen=True)
@@ -77,6 +111,30 @@ async def audit_user(user_id: int, days: int = 1) -> list[Finding]:
             f"is wrong, not just this line.",
             r["entry_id"],
         ))
+
+    # --- the qualifier that decides which food this is ---------------------
+    for r in await p.fetch(
+        """SELECT c.entry_id, c.label, f.description, round(c.grams) AS grams
+             FROM log_component c
+             JOIN food f ON f.fdc_id = c.fdc_id
+             JOIN log_entry e ON e.id = c.entry_id
+            WHERE e.user_id = $1 AND e.status = 'confirmed' AND e.local_date >= $2""",
+        user_id, since,
+    ):
+        for family in QUALIFIER_SETS:
+            in_label = _qualifiers(str(r["label"]), family)
+            in_desc = _qualifiers(str(r["description"]), family)
+            if in_label and in_desc and not (in_label & in_desc):
+                found.append(Finding(
+                    "qualifier_mismatch", "error",
+                    f"{r['label']} is matched to a {sorted(in_desc)[0]} row",
+                    f"“{r['description']}” — you said "
+                    f"{sorted(in_label)[0]} and the row says {sorted(in_desc)[0]}, "
+                    f"which for {r['grams']:.0f} g is usually a different food "
+                    f"rather than a different wording.",
+                    r["entry_id"],
+                ))
+                break
 
     # --- a component contributing no energy at all -------------------------
     for r in await p.fetch(

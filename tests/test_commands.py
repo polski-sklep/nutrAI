@@ -116,9 +116,22 @@ def test_the_menu_matches_the_command_table_exactly():
     that exists and cannot be found."""
     names = [name for name, _d in COMMANDS]
     assert len(names) == len(set(names)), "duplicate entry in COMMANDS"
-    for expected in ("/why", "/next", "/stack", "/schedule", "/training",
-                     "/profile", "/target", "/supp", "/food"):
+    for expected in ("/why", "/next", "/training", "/profile", "/target",
+                     "/supp", "/food"):
         assert expected in names, f"{expected} is built but not in the menu"
+
+    # /stack and /schedule are deliberately not in the menu: both are buttons
+    # on the /supp card, which is where you are standing when you want them.
+    # The guarantee this test protects is reachability, not membership — so it
+    # checks the buttons instead of the list.
+    import inspect
+
+    from nutrai import bot
+
+    src = inspect.getsource(bot)
+    for cb in ("supadd:", "supmanage:", "suptimes:"):
+        assert f'callback_data="{cb}"' in src, f"{cb} button is gone"
+        assert f'F.data.startswith("{cb}")' in src, f"{cb} has no handler"
 
 
 def test_every_prompt_opened_has_something_that_consumes_it():
@@ -151,6 +164,7 @@ def test_every_prompt_opened_has_something_that_consumes_it():
         "confirm_entry",  # ✅ / ❌ / ✏️ on a parse
         "off_product",    # ✅ save it / ✏️ rename / 🗑 no on a looked-up panel
         "off_choices",    # the numbered pick buttons under a search
+        "block_repeat",   # 🔁 log all N / ✋ never mind on a block of a day
         "food_panel",     # ✅ save it / 🗑 no on a transcribed panel
     }
 
@@ -460,3 +474,42 @@ def test_trailing_time_is_read_off_the_meal_line():
     # A meal with no time must not have one invented from its digits.
     assert _TRAILING_TIME.search("2 empanadas") is None
     assert _TRAILING_TIME.search("250 g chicken") is None
+
+
+def test_supplement_name_matching_ignores_punctuation():
+    """"Vitamin D3 + K2" in the stack and "vitamin d3/k2" in the message are
+    the same supplement, and a literal substring test says they are not.
+
+    The capsule was named explicitly in the sentence and went unticked, which
+    is this matcher doing the opposite of its job. The multi-word guard stays:
+    a single-word name is still too easily an ingredient or an adjective, and
+    "zinc-rich beef stew" involves no tablet.
+    """
+    import re
+
+    def norm(v: str) -> str:
+        return " ".join(re.sub(r"[^a-z0-9]+", " ", v.lower()).split())
+
+    assert norm("Vitamin D3 + K2") in norm("3 with vitamin d3/k2")
+    assert norm("Vitamin D3 + K2") in norm("pickle juice with Vitamin D3 & K2")
+    assert " " in norm("Vitamin D3 + K2"), "must stay multi-word to be searched"
+    assert " " not in norm("Zinc"), "single-word names are not searched in text"
+
+
+def test_qualifier_mismatch_is_caught():
+    """99 g of "egg whites, fried" matched "Egg, whole, cooked, fried".
+
+    Egg white has no cholesterol; the row carries 401 mg per 100 g. The day
+    read 249% of its ceiling and the morning note advised fewer egg yolks, on
+    a day containing one yolk. Trigram similarity cannot see this: the names
+    share every token that matters and differ by the one word that decides
+    what the food is.
+    """
+    from nutrai.jobs.audit import QUALIFIER_SETS, _qualifiers
+
+    egg = next(f for f in QUALIFIER_SETS if "yolk" in f)
+    assert _qualifiers("egg whites, fried", egg) == {"white"}
+    assert _qualifiers("Egg, whole, cooked, fried", egg) == {"whole"}
+    # Substrings must not count: "whole" is inside "wholemeal".
+    assert _qualifiers("wholemeal bread", egg) == set()
+    assert _qualifiers("egg yolk", egg) == {"yolk"}

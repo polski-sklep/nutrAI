@@ -302,7 +302,7 @@ def logged_card(
     brought.sort(reverse=True)
     if brought:
         lines.append("")
-        lines.append("⭐ <b>What this meal brought most</b>")
+        lines.append("⭐ <b>Biggest share of a daily target</b>")
         for share, nid, amt, r in brought[:top_n]:
             lines.append(
                 f"   • {_emoji(nid)} {_esc(_short(r['nutrient_name']))} — "
@@ -1746,8 +1746,12 @@ def training_card(today_rows: Sequence[Any], week_rows: Sequence[Any],
     if kcal:
         # Reported, not spent. Energy targets are not raised by training — see
         # the activity-factor note in core/profile.py.
-        lines.append(f"   • {kcal:,.0f} kcal reported burned "
-                     "<i>(not added to your target)</i>")
+        lines.append(f"   • {kcal:,.0f} kcal reported burned")
+        lines.append(
+            "     <i>Not added to your energy target. Your target is corrected "
+            "against three weeks of weight trend, which already contains "
+            "whatever you burned — adding a watch's estimate on top would "
+            "count the same energy twice.</i>")
     return "\n".join(lines)
 
 

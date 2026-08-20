@@ -146,13 +146,17 @@ def test_logged_card_reports_progress_contributions_and_gaps():
 
     assert out.startswith("✅ <b>Logged</b>")
     assert "Today so far" in out
-    assert "What this meal brought most" in out
+    # The heading has to name the basis. Ranked by share of a floor, a protein
+    # shake shows Vitamin B12 above protein — 24 g is 15% of a 165 g target and
+    # 1.1 µg is 44% of a 2.4 µg one — which is the ranking working and reads as
+    # a mistake under a heading that says "most".
+    assert "Biggest share of a daily target" in out
     assert "Still to go today" in out
 
     # Ranked by share of the day's floor: folate (20%) beats calcium (3%).
     assert out.index("Folate") < out.index("Calcium")
     # Energy is excluded from "brought most" — it is already in the progress block.
-    brought = out.split("brought most")[1].split("Still to go")[0]
+    brought = out.split("share of a daily target")[1].split("Still to go")[0]
     assert "Energy" not in brought
 
     # Protein and fibre are always named in the gaps, and the remainder is what

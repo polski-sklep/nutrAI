@@ -180,30 +180,29 @@ def _today(u: Any) -> dt.date:
 COMMANDS: list[tuple[str, str]] = [
     # Logging and checking, which is nearly everything.
     ("/repeat", "Log something you have had before"),
+    ("/again", "Repeat a whole morning, afternoon or evening"),
+    ("/supp", "Tick off today's supplements"),
     ("/today", "Where you stand today"),
     ("/next", "What would close today's gaps"),
+    ("/last", "What you logged most recently"),
     ("/yesterday", "Log food from an earlier day"),
+    ("/undo", "Unlog your last entry"),
+    ("/why", "Where a nutrient came from today"),
     ("/history", "Everything you have logged"),
     ("/export", "Your whole diary as a spreadsheet"),
-    ("/why", "Where a nutrient came from today"),
-    ("/last", "What you logged most recently"),
     ("/incomplete", "Mark a day you did not log properly"),
-    ("/undo", "Unlog your last entry"),
     # The other things you record daily.
-    ("/supp", "Log today's supplements"),
     ("/weight", "Log a weigh-in"),
     ("/rate", "Rate sleep, focus, mood or effort"),
     ("/training", "Sessions, and this week's total"),
     ("/fast", "Your current fast"),
     ("/window", "Your eating window"),
     # Looking back, weekly or thereabouts.
-    ("/week", "The last seven days"),
-    ("/report", "The weekly review"),
+    ("/week", "Seven days of numbers, day by day"),
+    ("/report", "Four weeks read by a model, with an argument"),
     ("/insight", "What your own data supports"),
     # Setting things up, rarely after the first week.
     ("/food", "Foods you define yourself"),
-    ("/stack", "Add, stop or restore a supplement"),
-    ("/schedule", "When each supplement is taken"),
     ("/profile", "Your details, and targets from them"),
     ("/target", "Set a nutrient target yourself"),
     # Checking on the system rather than on yourself.
@@ -248,6 +247,130 @@ async def repeat_menu(msg: Message) -> None:
     })
     await msg.answer(render.repeat_menu(dishes, components=components),
                      parse_mode="HTML")
+
+
+# Where the day divides. Not meal slots: a coffee at 09:00 is a "drink" and
+# belongs to the morning, and a snack at 16:00 is a "snack" and does not.
+BLOCKS: dict[str, tuple[int, int, str]] = {
+    "morning":   (0, 12, "🌅"),
+    "afternoon": (12, 18, "🌤"),
+    "evening":   (18, 24, "🌙"),
+}
+
+
+@dp.message(Command("again", "block"))
+async def again(msg: Message) -> None:
+    """Repeat a whole block of a day — `/again morning`.
+
+    A morning is a set of meals rather than a dish, and repeating it through
+    /repeat is five taps with a chance of forgetting the fourth. The dishes are
+    already stored; what was missing was a way to name several of them at once.
+
+    Nothing is logged here. Each meal comes back as its own confirmation card,
+    because five meals landing silently is exactly the case invariant 5 exists
+    for — an unmodified repeat of one confirmed dish is a small assertion, and
+    a whole morning is not.
+    """
+    u = await _user(msg)
+    rest = (msg.text or "").split(maxsplit=1)
+    which = rest[1].strip().lower() if len(rest) > 1 else ""
+
+    if which not in BLOCKS:
+        hour = _local_now(u).hour
+        guess = next((n for n, (lo, hi, _i) in BLOCKS.items() if lo <= hour < hi),
+                     "morning")
+        await msg.answer(
+            "🔁 <b>Repeat a block of a day</b>\n\n"
+            "Which part?",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(
+                    text=f"{icon} {name}" + (" (now)" if name == guess else ""),
+                    callback_data=f"blk:{name}")
+                for name, (_lo, _hi, icon) in BLOCKS.items()
+            ]]))
+        return
+    await _offer_block(msg, u, which)
+
+
+@dp.callback_query(F.data.startswith("blk:"))
+async def cb_block(cq: CallbackQuery) -> None:
+    u = await db.get_or_create_user(cq.from_user.id)
+    await cq.answer()
+    await cq.message.edit_reply_markup(reply_markup=None)
+    await _offer_block(cq.message, u, cq.data.split(":", 1)[1], user=u)
+
+
+async def _offer_block(msg: Message, u: Any, which: str, user: Any = None) -> None:
+    lo, hi, icon = BLOCKS[which]
+    today = _today(u)
+    # The most recent day that had one, not necessarily yesterday: a morning
+    # skipped is not a morning of nothing, and offering an empty block because
+    # the calendar says "yesterday" is a worse answer than reaching back a day.
+    src = await db.recent_block_day(u["id"], today - dt.timedelta(days=1), hi, u["tz"])
+    if not src:
+        await msg.answer(f"Nothing logged in a {which} yet.")
+        return
+    rows = [r for r in await db.block_entries(u["id"], src, hi, u["tz"])
+            if r["local_time"].hour >= lo]
+    rows = [r for r in rows if r["dish_id"]]
+    if not rows:
+        await msg.answer(
+            f"That {which} had nothing repeatable — its entries were one-offs "
+            "rather than saved dishes.")
+        return
+
+    # Slugs rather than ids, so logging each one goes through _try_repeat and
+    # inherits everything it already does right: component provenance, the
+    # portion prior, the confirm gate. A second logging path would be a second
+    # place for those to be got wrong.
+    pool = await db.pool()
+    slugs = [r2["slug"] for r2 in await pool.fetch(
+        "SELECT id, slug FROM dish WHERE id = ANY($1::bigint[])",
+        [int(r["dish_id"]) for r in rows])]
+    await db.put_pending(u["id"], "block_repeat", {"slugs": slugs})
+    lines = [f"{icon} <b>{which.title()} of {src:%a %-d %b}</b>", ""]
+    for r in rows:
+        lines.append(f"   {r['local_time']:%H:%M} "
+                     f"{render.dish_icon(r['name'] or '', r['slot'])} "
+                     f"{render._esc(render._title(r['name'] or '?'))}")
+    lines.append(f"\n<i>{len(rows)} meals. Each comes back as its own card to "
+                 "confirm — nothing is logged by pressing this.</i>")
+    await msg.answer(
+        "\n".join(lines), parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text=f"🔁 log all {len(rows)}",
+                                 callback_data="blkgo:"),
+            InlineKeyboardButton(text="✋ never mind", callback_data="blkno:"),
+        ]]))
+
+
+@dp.callback_query(F.data.startswith("blkno:"))
+async def cb_block_cancel(cq: CallbackQuery) -> None:
+    u = await db.get_or_create_user(cq.from_user.id)
+    await db.clear_awaits(u["id"], ("block_repeat",))
+    await cq.answer("Closed")
+    await cq.message.edit_reply_markup(reply_markup=None)
+
+
+@dp.callback_query(F.data.startswith("blkgo:"))
+async def cb_block_go(cq: CallbackQuery) -> None:
+    u = await db.get_or_create_user(cq.from_user.id)
+    pending = await db.latest_pending(u["id"], "block_repeat")
+    await db.clear_awaits(u["id"], ("block_repeat",))
+    await cq.answer()
+    await cq.message.edit_reply_markup(reply_markup=None)
+    slugs = (pending or {}).get("slugs") or []
+    if not slugs:
+        await cq.message.answer("That block has expired — send /again.")
+        return
+    done = 0
+    for slug in slugs:
+        if await _try_repeat(cq.message, u, dsl.RepeatCommand(
+                selector=str(slug), selector_kind="slug")):
+            done += 1
+    if not done:
+        await cq.message.answer("None of those dishes still exist.")
 
 
 @dp.message(Command("today"))
@@ -2533,6 +2656,17 @@ async def supp(msg: Message) -> None:
     # daily list" and now means "I took this", which is the only version that
     # can carry a time with it — and the only one where an untaken capsule
     # cannot end up in a day's totals because you did not think to untick it.
+    await _send_supp_picker(msg, u, stack, day)
+
+
+async def _send_supp_picker(msg: Message, u: Any, stack: list[Any],
+                            day: dt.date) -> None:
+    """The checklist, from /supp or from a reminder's third button.
+
+    Shared rather than reimplemented, because the callback has no user on its
+    message — `cq.message.from_user` is the bot — so the caller passes the user
+    it already resolved instead of the handler digging one out.
+    """
     today_names = {r["name"] for r in await db.supplements_logged_on(u["id"], day)}
     selected = [s["id"] for s in stack if s["name"] in today_names]
     reason = "logged"
@@ -2546,6 +2680,24 @@ async def supp(msg: Message) -> None:
         reply_markup=_supp_keyboard(action_id, stack, selected),
     )
 
+
+
+@dp.callback_query(F.data.startswith("suppick:"))
+async def cb_supp_pick_from_reminder(cq: CallbackQuery) -> None:
+    """The reminder's third button: the same checklist /supp opens.
+
+    "Taken" logs the whole slot and "not yet" logs none of it, which are the
+    two ends of a range that is mostly used in the middle — three of the five,
+    the collagen forgotten. Without this the honest answer costs a trip to the
+    menu, and the quick answer is the inaccurate one.
+    """
+    u = await db.get_or_create_user(cq.from_user.id)
+    await cq.answer()
+    stack = await db.supplement_stack(u["id"])
+    if not stack:
+        await cq.message.answer("No supplements set up yet.")
+        return
+    await _send_supp_picker(cq.message, u, stack, _today(u))
 
 
 def _button_label(sup: Any) -> str:

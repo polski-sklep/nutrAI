@@ -169,12 +169,16 @@ async def supplement_reminders(bot) -> None:
                     u["telegram_id"],
                     render.supplement_reminder_card(slot, rows),
                     parse_mode="HTML",
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                        InlineKeyboardButton(text="✅ taken",
-                                             callback_data=f"slotlog:{slot}"),
-                        InlineKeyboardButton(text="not yet",
-                                             callback_data=f"slotskip:{slot}"),
-                    ]]),
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [
+                            InlineKeyboardButton(text="✅ all taken",
+                                                 callback_data=f"slotlog:{slot}"),
+                            InlineKeyboardButton(text="not yet",
+                                                 callback_data=f"slotskip:{slot}"),
+                        ],
+                        [InlineKeyboardButton(text="☑️ tick the ones I took",
+                                              callback_data="suppick:")],
+                    ]),
                 )
             except Exception as exc:
                 log.warning("supplement reminder failed for %s: %s", u["telegram_id"], exc)

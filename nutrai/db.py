@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import decimal
 import json
+import re
 from typing import Any, Iterable, Sequence
 
 import asyncpg
@@ -675,6 +676,39 @@ async def export_day_rows(user_id: int) -> list[asyncpg.Record]:
             WHERE d.user_id = $1
          ORDER BY d.local_date, d.nutrient_id""",
         user_id,
+    )
+
+
+async def block_entries(user_id: int, day: dt.date, until_hour: int,
+                        tz: str) -> list[asyncpg.Record]:
+    """Everything confirmed on `day` before `until_hour`, local time.
+
+    A morning is a set of meals, not a dish, and repeating it one tap at a
+    time is five taps and a chance to forget the fourth. This is the query
+    behind repeating the block whole.
+    """
+    p = await pool()
+    return await p.fetch(
+        """SELECT e.id, e.name, e.slot, e.dish_id, e.logged_at,
+                  (e.logged_at AT TIME ZONE $4)::time AS local_time
+             FROM log_entry e
+            WHERE e.user_id = $1 AND e.local_date = $2 AND e.status = 'confirmed'
+              AND EXTRACT(hour FROM (e.logged_at AT TIME ZONE $4)) < $3
+         ORDER BY e.logged_at""",
+        user_id, day, until_hour, tz,
+    )
+
+
+async def recent_block_day(user_id: int, before: dt.date, until_hour: int,
+                           tz: str) -> dt.date | None:
+    """The most recent day that had anything logged before `until_hour`."""
+    p = await pool()
+    return await p.fetchval(
+        """SELECT max(e.local_date) FROM log_entry e
+            WHERE e.user_id = $1 AND e.status = 'confirmed'
+              AND e.local_date <= $2
+              AND EXTRACT(hour FROM (e.logged_at AT TIME ZONE $4)) < $3""",
+        user_id, before, until_hour, tz,
     )
 
 
@@ -2173,8 +2207,12 @@ async def supplements_named_in(user_id: int, day: dt.date,
     Only supplements already in your stack, already started, and not already
     logged today.
     """
-    wanted = {label.strip().lower() for label in labels if label and label.strip()}
-    text = (free_text or "").lower()
+    def _norm(v: str) -> str:
+        return " ".join(re.sub(r"[^a-z0-9]+", " ", v.lower()).split())
+
+    wanted = {_norm(label) for label in labels if label and label.strip()}
+    wanted.discard("")
+    text = _norm(free_text or "")
     if not wanted and not text:
         return []
     p = await pool()
@@ -2188,7 +2226,7 @@ async def supplements_named_in(user_id: int, day: dt.date,
     )
     out = []
     for r in rows:
-        name = r["name"].strip().lower()
+        name = _norm(r["name"])
         if name in wanted:
             out.append(r["id"])
             continue
