@@ -555,3 +555,25 @@ def test_block_keyboard_counts_what_it_will_log():
     assert not [t for t in picked if "choose which" in t]
     # One toggle per meal.
     assert len([t for t in picked if t.startswith(("✅", "⬜️"))]) == 6
+
+
+def test_photo_placeholders_say_what_is_being_read():
+    """A photo of a banana announced "reading the label…".
+
+    The wording came from the supplement-label path and stayed on the meal path
+    after the routing bug above it was fixed. It is not cosmetic: it tells the
+    reader the answer will come from a printed panel, when it will come from
+    the model looking at food, and those have very different error modes.
+    """
+    import inspect
+    import re
+
+    from nutrai import bot
+
+    src = inspect.getsource(bot)
+    # Every "reading the label" placeholder must sit in a label handler.
+    for m in re.finditer(r'answer\("[^"]*reading the label[^"]*"\)', src):
+        before = src[:m.start()]
+        fn = before.rsplit("async def ", 1)[1].split("(", 1)[0]
+        assert "label" in fn, f"{fn} says 'reading the label' and is not a label path"
+    assert "looking at the photo" in src

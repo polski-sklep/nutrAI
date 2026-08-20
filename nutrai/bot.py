@@ -3229,7 +3229,7 @@ async def _handle_photos(msgs: list[Message]) -> None:
         b64, w, h = llm.prepare_image(buf.read())
         images.append((b64, w, h, m.photo[-1].file_id))
 
-    note = await msg.answer("🔍 reading the label…")
+    note = await msg.answer("🍽 looking at the photo…")
     try:
         parsed = await llm.parse_photo(images[0][0], caption, user_id=u["id"])
         for extra in images[1:]:
