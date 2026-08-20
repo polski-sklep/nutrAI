@@ -437,6 +437,17 @@ that already contains 1119.
 
 ## Things that will look like bugs and are not
 
+- **Fruit ripeness is not modelled, and asked-and-declined on 20 Aug 2026.**
+  USDA carries `Bananas, overripe, raw` (85 kcal) and `Bananas, ripe and
+  slightly ripe, raw` (97 kcal), and typing "overripe banana" already resolves
+  to the right one — so the case where the data exists is already handled by
+  the words. It is not worth machinery: the 14% gap is almost entirely water,
+  the sugars figure is identical at 15.8 g across all three banana rows, and so
+  the starch-to-sugar conversion anyone actually means by "ripeness" is not in
+  the dataset at all. For every fruit other than banana there is no ripeness
+  row, and supplying one would mean a model estimating a nutrient value —
+  invariant 1.
+
 - **The 300 mg cholesterol ceiling is obsolete and is staying.** Reviewed on
   16 Aug 2026 and deliberately kept. The figure was dropped from the US
   Dietary Guidelines in the 2015-2020 edition, and the AHA dropped its numeric
