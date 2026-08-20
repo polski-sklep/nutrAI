@@ -582,6 +582,14 @@ def test_album_becomes_one_meal_not_four(harness):
         cards = [s for s in harness.sent.sent if s.buttons]
         assert len(cards) == 1, f"{len(cards)} confirmation cards for one album"
 
+        # One card was never the whole guarantee. The three photos used to be
+        # parsed separately and their items concatenated, so one meal became
+        # one card listing everything three times — a drink photographed twice
+        # was logged as 660 ml and 61 g of sugar for a 330 ml bottle.
+        assert harness.llm.calls.count("record_meal") == 1, (
+            f"{harness.llm.calls.count('record_meal')} parses for one album — "
+            "items from separate parses get concatenated, not merged")
+
     run(scenario())
 
 

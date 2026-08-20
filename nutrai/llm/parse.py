@@ -84,7 +84,8 @@ class ParsedMeal:
 
 
 async def parse_photo(
-    image_b64: str, caption: str | None, *, user_id: int, escalate: bool = True
+    images: str | list[str], caption: str | None, *, user_id: int,
+    escalate: bool = True
 ) -> ParsedMeal:
     """Vision parse with one conditional escalation.
 
@@ -92,13 +93,32 @@ async def parse_photo(
     than run always: on a clearly weighed single ingredient the small model is
     right and the large one costs 2.5x for nothing. On an ambiguous plate the
     escalation is the difference between a usable number and a guess.
+
+    Every photo of one meal goes in one call. Parsing them separately and
+    concatenating the results counted a drink twice: two photos of the same
+    bottle produced "Coffee and orange juice drink, 330 g" and "Coffee &
+    orange juice beverage, 330 g", and the day recorded 660 g and 61 g of
+    sugar for a 330 ml drink. Nothing downstream can detect that — they are
+    two plausible items with two plausible masses. The model can only avoid it
+    if it sees the photographs together, which is also cheaper than a call
+    each.
     """
+    if isinstance(images, str):
+        images = [images]
     content: list[dict[str, Any]] = [
         {
             "type": "image",
-            "source": {"type": "base64", "media_type": "image/jpeg", "data": image_b64},
+            "source": {"type": "base64", "media_type": "image/jpeg", "data": b64},
         }
+        for b64 in images
     ]
+    if len(images) > 1:
+        content.append({"type": "text", "text": (
+            f"These {len(images)} photographs are of ONE meal, taken from "
+            "different angles or at different moments. Report each food ONCE. "
+            "A dish visible in more than one photograph is the same dish, not "
+            "a second helping of it — use whichever view shows it best, and do "
+            "not add the masses together.")})
     if caption:
         content.append({"type": "text", "text": f"The user says: {caption}"})
 

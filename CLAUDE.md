@@ -401,6 +401,24 @@ The first version of this renamed the row to "Blondie (retired: energy figure
 was wrong)". Do not do that again: a status encoded in a display string
 truncates in the card, sorts under B, and cannot be filtered on.
 
+## Photographs of one meal
+
+Every photo of an album goes to the model in **one call**, with a line saying
+they are views of one meal. They were parsed separately and the item lists
+concatenated, which counted anything visible in two photographs twice: a
+330 ml bottle photographed from both sides became "Coffee and orange juice
+drink 330 g" plus "Coffee & orange juice beverage 330 g", 660 g in total, and
+61 g of sugar — more than a day's ceiling from one drink.
+
+Nothing downstream can catch it. Both items are plausible, both masses are
+plausible, and the energy cross-check passes because the doubled food is
+internally consistent. Only the model, seeing the photographs together, can
+tell that it is one bottle.
+
+`tests/test_integration.py::test_album_becomes_one_meal_not_four` asserts one
+`record_meal` call per album, not merely one confirmation card. The card count
+was the original guarantee and it stayed true while the contents doubled.
+
 ## Two USDA ids, one measurement
 
 `nutrient.canonical_id` folds ids that report the same thing. Today it holds
