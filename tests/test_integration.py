@@ -1646,7 +1646,7 @@ def test_an_unapplied_modifier_is_stated_not_swallowed(harness):
 
         # The stub's modify_dish returns no operations — the real failure mode.
         harness.sent.clear()
-        await harness.feed("1 something the grammar cannot read")
+        await harness.feed("1 with something the grammar cannot read")
 
         out = harness.sent.last()
         assert "could not apply" in out.text, out.text

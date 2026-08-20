@@ -149,6 +149,21 @@ def _f(tok: str) -> float:
     return float(tok.replace(",", "."))
 
 
+# Words that say "this is a change to that dish" rather than "this is a food".
+#
+# Deliberately only connectives and comparatives. A food word must never appear
+# here: the test is whether the phrase is *about* an existing dish, and any
+# ingredient name added to this set would make its own dish unloggable.
+# "x1.5" mistyped as "x1.5.2" is still an attempt at a scale factor.
+SIGIL_NUM = re.compile(r"^[x*×]\d", re.I)
+
+MODIFIER_WORDS = frozenset({
+    "with", "without", "no", "not", "minus", "plus", "extra", "more", "less",
+    "instead", "swap", "sub", "skip", "hold", "add", "and", "but", "only",
+    "half", "double", "light", "heavy", "big", "small", "large",
+})
+
+
 def parse(text: str) -> RepeatCommand | None:
     """Parse a repeat command, or return None if this is not one at all.
 
@@ -168,6 +183,31 @@ def parse(text: str) -> RepeatCommand | None:
         return None
 
     cmd.ops, cmd.unparsed = parse_ops(toks[1:])
+
+    # "1 pickle" is one pickle, not dish 1 with a pickle in it.
+    #
+    # A bare index followed by a bare noun matched no operator, went to
+    # `unparsed`, and `needs_model` then paid a model to read it as a
+    # modification — which it duly did, adding 100 g of pickle to a protein
+    # shake and logging it. "2 eggs", "1 banana" and "3 slices salami" are all
+    # the same shape, and all of them are food.
+    #
+    # A real modification says so. Every one carries either an operator token
+    # (-onion, +50 rice, x1.5, @14:00) or a connective, because that is how the
+    # sentence works: you are describing a change *to* something. A noun on its
+    # own describes a thing, not a change to one.
+    #
+    # Index selectors only. A slug that does not exist already falls through to
+    # the parser in `_try_repeat`, so a bare digit is the one head that cannot
+    # correct itself — and bare digits are exactly what quantities look like.
+    if (cmd.selector_kind == "index" and not cmd.ops and cmd.unparsed
+            and not any(t.lower() in MODIFIER_WORDS for t in cmd.unparsed)
+            # A token wearing an operator's sigil is a failed operator, not a
+            # food. "@99:99" is a time typed wrong, and answering it with a
+            # search for something called "@99:99" helps nobody — the repeat
+            # path is where it gets told it could not be read.
+            and not any(t[:1] in "@#+-*×" or SIGIL_NUM.match(t) for t in cmd.unparsed)):
+        return None
     return cmd
 
 

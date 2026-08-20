@@ -184,8 +184,56 @@ def test_one_letter_label_is_never_a_food():
     Left unparsed the user is told it could not be read. Treated as a label it
     becomes a database search, and a database search always succeeds.
     """
-    for text in ("1 x", "1 q 40", "1 40g z"):
+    for text in ("1 q 40", "1 40g z"):
         cmd = dsl.parse(text)
         assert cmd is not None
         assert not [o for o in cmd.ops if isinstance(o, dsl.SetComponent)], text
         assert cmd.unparsed, text
+    # "1 x" now leaves the repeat grammar entirely — a bare index and a bare
+    # token with no operator and no connective is a food description, and "x"
+    # simply is not a food. It fails at the resolver instead, which says so.
+    assert dsl.parse("1 x") is None
+
+
+def test_a_number_and_a_food_is_food_not_a_modified_repeat():
+    """"1 pickle" put 100 g of pickle into a protein shake and logged it.
+
+    The bare noun matched no operator, went to `unparsed`, and `needs_model`
+    paid a model to read it as a modification — which it did, because that is
+    what it was asked. "2 eggs", "1 banana" and "3 slices salami" are the same
+    shape and all of them are food.
+
+    Returning None is the whole fix: the handler then treats the message as a
+    novel food description, which is what it is.
+    """
+    for text in ("1 pickle", "2 eggs", "1 banana", "3 slices salami",
+                 "2 chicken breasts", "1 apple"):
+        assert dsl.parse(text) is None, text
+
+
+def test_a_real_modification_still_reaches_the_repeat_path():
+    """A change to a dish says so — with an operator or a connective."""
+    for text in ("1 -onion", "1 +pickle", "1 x1.5", "1 250", "1 @14:00",
+                 "1 with pickle", "1 without onion", "1 extra rice",
+                 "3 with vitamin d3/k2", "1"):
+        assert dsl.parse(text) is not None, text
+
+
+def test_the_modifier_words_contain_no_foods():
+    """The test is whether a phrase is *about* a dish. Any ingredient name in
+    this set makes that ingredient's own dish unloggable — "1 rice" would stop
+    meaning a portion of rice."""
+    for food in ("rice", "pickle", "onion", "egg", "eggs", "banana", "chicken",
+                 "salami", "apple", "milk", "oil"):
+        assert food not in dsl.MODIFIER_WORDS, food
+
+
+def test_a_mistyped_operator_stays_a_mistyped_operator():
+    """"@99:99" is a time typed wrong, not a food called "@99:99".
+
+    The rule that sends "1 pickle" to the meal parser must not also send a
+    failed operator there — answering a mistyped time with a database search
+    helps nobody, and the repeat path is where it gets told it was unreadable.
+    """
+    for text in ("3 @99:99", "1 x1.5.2", "1 -", "1 +"):
+        assert dsl.parse(text) is not None, text
