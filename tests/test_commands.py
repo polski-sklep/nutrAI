@@ -577,3 +577,29 @@ def test_photo_placeholders_say_what_is_being_read():
         fn = before.rsplit("async def ", 1)[1].split("(", 1)[0]
         assert "label" in fn, f"{fn} says 'reading the label' and is not a label path"
     assert "looking at the photo" in src
+
+
+def test_the_api_client_has_a_real_retry_budget():
+    """A few seconds of dead DNS lost a meal, twice.
+
+    Docker's embedded resolver stopped answering for a moment. The SDK default
+    of two retries with sub-second backoff exhausted itself inside a second,
+    the parse failed, the food was retyped, and it failed again. The cost of
+    waiting is a slower failure; the cost of not waiting is a failure.
+    """
+    from nutrai.llm.client import MAX_RETRIES, TIMEOUT_S, client
+
+    c = client()
+    assert c.max_retries == MAX_RETRIES >= 4
+    assert c.timeout == TIMEOUT_S >= 60
+
+
+def test_a_connection_failure_says_so_and_names_what_still_works():
+    from nutrai.bot import _failure_reason
+
+    class APIConnectionError(Exception):
+        pass
+
+    out = _failure_reason(APIConnectionError("Connection error."))
+    assert "reach" in out.lower()
+    assert "/repeat" in out

@@ -11,10 +11,30 @@ from ..config import CACHE_READ_MULT, CACHE_WRITE_MULT, PRICES, settings
 _client: AsyncAnthropic | None = None
 
 
+# The SDK defaults to two retries with sub-second backoff, which covers a
+# rejected packet and not much else. What actually happened here was Docker's
+# embedded resolver failing to answer for a few seconds: three attempts inside
+# a second all hit the same dead DNS, the parse was lost, and the food was
+# retyped and lost again.
+#
+# Four attempts over roughly ten seconds is the difference between a blip the
+# user never notices and a meal they have to type twice. The cost of waiting is
+# a slower failure; the cost of not waiting is a failure at all.
+MAX_RETRIES = 4
+
+# Long enough for an escalated photo parse, short enough that a hung
+# connection surfaces as an error rather than as a card that never arrives.
+TIMEOUT_S = 90.0
+
+
 def client() -> AsyncAnthropic:
     global _client
     if _client is None:
-        _client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+        _client = AsyncAnthropic(
+            api_key=settings.anthropic_api_key,
+            max_retries=MAX_RETRIES,
+            timeout=TIMEOUT_S,
+        )
     return _client
 
 
