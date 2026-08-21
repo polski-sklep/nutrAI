@@ -1607,8 +1607,9 @@ async def find_nutrients(term: str, limit: int = 6) -> list[asyncpg.Record]:
     """
     p = await pool()
     return await p.fetch(
-        """SELECT id, name, unit FROM nutrient
-            WHERE lower(name) LIKE '%' || lower($1) || '%'
+        """SELECT n.id, n.name, n.unit FROM nutrient n
+            WHERE n.canonical_id IS NULL
+              AND lower(n.name) LIKE '%' || lower($1) || '%'
          ORDER BY (lower(name) = lower($1)) DESC,
                   (lower(name) LIKE lower($1) || '%') DESC,
                   length(name)

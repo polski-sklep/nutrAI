@@ -3201,3 +3201,51 @@ def test_no_targeted_nutrient_is_silently_split(database_url):
                         f"(overlap {s['overlap']})" for s in split))
 
     run(check())
+
+
+@pytest.mark.integration
+def test_every_name_the_cards_print_can_be_targeted(database_url):
+    """`/target sugar max 40` answered "I could not find a nutrient in sugar".
+
+    DISPLAY_TO_USDA held "Sugars, total including NLEA" — the name USDA
+    publishes in its documentation, and not the name this database stores. The
+    word was on every card and on a live target, and the one command that
+    changes it could not find it.
+
+    So the mapping is checked against the database rather than against the
+    documentation, for every display name the cards actually use.
+    """
+    from nutrai import db
+    from nutrai.core.render import DISPLAY_TO_USDA, usda_name_for
+
+    async def check() -> None:
+        broken = []
+        for term in DISPLAY_TO_USDA:
+            rows = await db.find_nutrients(usda_name_for(term) or term)
+            if not rows:
+                broken.append(term)
+        assert not broken, f"display names that resolve to nothing: {broken}"
+
+    run(check())
+
+
+@pytest.mark.integration
+def test_a_folded_nutrient_is_never_offered_as_a_target(database_url):
+    """A target on 1063 is a target nothing can ever satisfy.
+
+    Every aggregate groups under the canonical id, so the row would sit on
+    every card at 0% for ever and the cause would be invisible — the failure
+    the fold was introduced to end, reappearing through the one command that
+    creates targets.
+    """
+    from nutrai import db
+
+    async def check() -> None:
+        for row in await db.find_nutrients("sugar", limit=10):
+            assert row["id"] != 1063, "the folded sugar id is offerable"
+        p = await db.pool()
+        folded = await p.fetchval(
+            "SELECT count(*) FROM nutrient WHERE canonical_id IS NOT NULL")
+        assert folded >= 1, "nothing is folded, so this test proves nothing"
+
+    run(check())

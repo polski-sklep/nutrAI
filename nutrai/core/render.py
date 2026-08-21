@@ -415,7 +415,8 @@ DISPLAY_TO_USDA.update({
     "kcal": "Energy",
     "b12": "Vitamin B-12",
     "b6": "Vitamin B-6",
-    "sugar": "Sugars, total including NLEA",
+    "sugar": "Total Sugars",
+    "sugars": "Total Sugars",
     "salt": "Sodium, Na",
 })
 
