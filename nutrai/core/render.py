@@ -47,6 +47,21 @@ def bar(pct: float, width: int = 10) -> str:
     return BAR_FULL * filled + BAR_EMPTY * (width - filled)
 
 
+def fmt_usd(usd: float) -> str:
+    """Money as money. Cents were being printed as "104.4¢", which is a unit
+    nobody quotes a monthly bill in and reads as a typo beside every other
+    figure on the card.
+
+    Below a cent the two-decimal form rounds to "$0.00" and hides the whole
+    point of a per-parse cost, so those keep the digits that distinguish them.
+    """
+    if usd >= 0.01:
+        return f"${usd:,.2f}"
+    if usd > 0:
+        return f"${usd:.4f}".rstrip("0")
+    return "$0.00"
+
+
 def fmt_amount(value: float, unit: str) -> str:
     u = unit.upper()
     if u == "KCAL":
@@ -166,7 +181,7 @@ def confirm_card(
         lines += [f"⚠️ {_esc(w)}" for w in warnings]
     if cost_usd:
         lines.append("")
-        lines.append(f"<i>💸 {cost_usd*100:.2f}¢</i>")
+        lines.append(f"<i>💸 {fmt_usd(cost_usd)}</i>")
     lines.append("")
     lines.append("Nothing is logged until you confirm.")
     return "\n".join(lines)
@@ -1247,8 +1262,14 @@ def week_card(rows: Sequence[Any], ctx: dict) -> str:
             "Nothing logged this week."
         )
 
+    _incomplete = set(ctx.get("incomplete") or ())
     by_nutrient: dict[int, list[Any]] = {}
     for r in rows:
+        # "Fibre reached on 0 of 6 days" must not count a day whose fibre was
+        # simply not recorded. The chart still shows the day; the arithmetic
+        # about how often you hit a floor cannot include it.
+        if r["day"] in _incomplete:
+            continue
         by_nutrient.setdefault(r["nutrient_id"], []).append(r)
 
     over: list[tuple[int, int, str, float]] = []   # days over, nid, name, worst share
@@ -1274,7 +1295,9 @@ def week_card(rows: Sequence[Any], ctx: dict) -> str:
                     f"{fmt_amount(median(amounts), unit)} of {fmt_amount(float(lo), unit)}",
                 ))
 
-    n_days = len({r["day"] for r in rows})
+    all_days = {r["day"] for r in rows}
+    n_days = len(all_days)
+    n_scored = len(all_days - _incomplete) or n_days
     lines = [
         f"📅 <b>{ctx['start']:%-d %b} – {ctx['end']:%-d %b}</b>",
         f"<i>{n_days} day{'s' if n_days != 1 else ''} logged · "
@@ -1296,6 +1319,11 @@ def week_card(rows: Sequence[Any], ctx: dict) -> str:
     for r in rows:
         by_day.setdefault(r["day"], []).append(r)
 
+    # A day the user said was not properly logged is not a day of bad eating,
+    # and a chart that shows the two identically invites the wrong conclusion
+    # from its own reader. Marked, not hidden: the entries are real, it is only
+    # inference that stops.
+    incomplete = set(ctx.get("incomplete") or ())
     chart = ["Day     Energy vs cap   Floors  Over"]
     for day in sorted(by_day):
         rs = by_day[day]
@@ -1314,15 +1342,22 @@ def week_card(rows: Sequence[Any], ctx: dict) -> str:
             + f"{bar(pct, 8)}{pct:4.0f}%"
             + f"{met:>6}/{len(floors)}"
             + f"{crossed if crossed else '-':>5}"
+            + ("  (partial)" if day in incomplete else "")
         )
     lines += ["", "<pre>" + "\n".join(chart) + "</pre>"]
+    if incomplete & set(by_day):
+        n = len(incomplete & set(by_day))
+        lines.append(
+            f"<i>(partial) — {n} day{'s' if n != 1 else ''} you marked as not "
+            "properly logged. Counted in nothing below, and excluded from the "
+            "weight trend and /insight.</i>")
     lines += _prior_day_detail(by_day, ctx["end"])
 
     if over:
         lines += ["", "⚠️ <b>Over the ceiling</b>"]
         for n_over, nid, name, worst in sorted(over, reverse=True)[:4]:
             lines.append(
-                f"   • {_emoji(nid)} {_esc(name)} — {n_over} of {n_days} days, "
+                f"   • {_emoji(nid)} {_esc(name)} — {n_over} of {n_scored} days, "
                 f"worst {worst * 100:.0f}%"
             )
 
@@ -1330,7 +1365,7 @@ def week_card(rows: Sequence[Any], ctx: dict) -> str:
         lines += ["", "🎯 <b>Floors you kept missing</b>"]
         for _rate, nid, name, n_met, typical in sorted(under)[:4]:
             lines.append(
-                f"   • {_emoji(nid)} {_esc(name)} — reached on {n_met} of {n_days} days "
+                f"   • {_emoji(nid)} {_esc(name)} — reached on {n_met} of {n_scored} days "
                 f"<i>(typical {_esc(typical)})</i>"
             )
 
@@ -1348,10 +1383,13 @@ def week_card(rows: Sequence[Any], ctx: dict) -> str:
     if pct is not None:
         verdict = "" if float(pct) >= 80 else "  ← the number to move" if float(pct) < 50 else ""
         lines.append(f"   • ⚖️ {float(pct):.0f}% of mass weighed or stated{verdict}")
+    span = (ctx["end"] - ctx["start"]).days + 1
     if ctx.get("supp_days") is not None:
-        lines.append(f"   • 💊 supplements logged on {ctx['supp_days']} of {n_days} days")
+        lines.append(f"   • 💊 supplements logged on {ctx['supp_days']} "
+                     f"of {span} days")
     if ctx.get("sessions"):
-        lines.append(f"   • 🏋 {ctx['sessions']} training session(s)")
+        n = int(ctx["sessions"])
+        lines.append(f"   • 🏋 {n} training session{'' if n == 1 else 's'}")
 
     weights = ctx.get("weights") or []
     if len(weights) >= 2:
@@ -1364,7 +1402,7 @@ def week_card(rows: Sequence[Any], ctx: dict) -> str:
         lines.append("   • ⚖ too few weigh-ins to say anything about weight")
 
     if ctx.get("cents") is not None:
-        lines.append(f"   • 💸 {float(ctx['cents']):.1f}¢")
+        lines.append(f"   • 💸 {fmt_usd(float(ctx['cents']) / 100)}")
 
     return "\n".join(lines)
 
@@ -1780,13 +1818,24 @@ SLOT_SHORT = {"fasted": "fasted", "breakfast": "breakfast",
               "evening": "evening", "bed": "bedtime"}
 
 
-def supplement_reminder_card(slot: str, rows: Sequence[Any]) -> str:
+def supplement_reminder_card(slot: str, rows: Sequence[Any],
+                             carried: Sequence[Any] = ()) -> str:
     """The nudge itself. Template and SQL only — invariant 4."""
     outstanding = [r for r in rows if not r["logged"]]
     lines = [f"💊 <b>{slot_name(slot)}</b>", ""]
     for r in outstanding:
         serving = f"{float(r['servings_per_day']):g} × {r['serving_desc']}"
         lines.append(f"   • <b>{_esc(r['name'])}</b> — {_esc(serving)}")
+    # Kept visibly apart. A capsule carried from the morning is a different
+    # fact from one due now, and merging them loses the only thing that
+    # explains why it is on this card at all.
+    if carried:
+        lines.append("")
+        lines.append("<i>Still outstanding from earlier:</i>")
+        for r in carried:
+            serving = f"{float(r['servings_per_day']):g} × {r['serving_desc']}"
+            lines.append(f"   • <b>{_esc(r['name'])}</b> — {_esc(serving)} "
+                         f"<i>({slot_name(r['from_slot']).lower()})</i>")
     done = len(rows) - len(outstanding)
     if done:
         lines.append(f"   <i>{done} already logged for today.</i>")
@@ -2191,7 +2240,7 @@ def plan_card(data: dict, cost_usd: float | None = None) -> str:
         "rather than arithmetic, and nothing changes until you say so.</i>"
     )
     if cost_usd:
-        lines.append(f"<i>💸 {cost_usd*100:.1f}¢</i>")
+        lines.append(f"<i>💸 {fmt_usd(cost_usd)}</i>")
     return "\n".join(lines)
 
 

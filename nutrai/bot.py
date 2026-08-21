@@ -770,7 +770,7 @@ async def spend(msg: Message) -> None:
     # Two decimals renders the entire point of this command as "$0.00". The
     # design target is ~$0.42 a month, so the interesting digits are the ones
     # $%.2f throws away.
-    headline = f"${total:.2f}" if total >= 1 else f"{total*100:.2f}¢"
+    headline = render.fmt_usd(total)
     lines = [f"<b>30 days: {headline}</b>", ""]
     # One <pre> for the whole table: the columns only line up inside a
     # single preformatted block.
@@ -1808,10 +1808,16 @@ async def cb_slot_log(cq: CallbackQuery) -> None:
 @dp.callback_query(F.data.startswith("slotskip:"))
 async def cb_slot_skip(cq: CallbackQuery) -> None:
     slot = cq.data.split(":", 1)[1]
+    u = await db.get_or_create_user(cq.from_user.id)
+    n = await db.defer_supplements(u["id"], slot, _today(u))
     await cq.answer()
     await cq.message.edit_text(
-        f"Nothing logged for {render.slot_name(slot)}. "
-        "<code>/supp</code> when you take them.",
+        f"Carried over — {render.slot_name(slot)} will come round again with "
+        "the next reminder.\n\n"
+        "<i>Unless you log them before then, in which case they stop being "
+        "mentioned. <code>/supp</code> any time.</i>"
+        if n else
+        f"Nothing outstanding for {render.slot_name(slot)}.",
         parse_mode="HTML",
     )
 
@@ -2591,7 +2597,7 @@ async def _handle_food_label(msg: Message, u: Any, name: str) -> None:
     })
     await note.edit_text(
         render.food_label_card(label_name, panel, data, warnings)
-        + f"\n<i>💸 {cost*100:.1f}¢</i>",
+        + f"\n<i>💸 {render.fmt_usd(cost)}</i>",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="✅ save it", callback_data="panelok:"),
@@ -4077,7 +4083,7 @@ async def _handle_supplement_label(
     body = render.supplement_batch_card(parsed, names, units)
     if data.get("unreadable"):
         body += f"\n\n⚠️ {escape(str(data['unreadable']))}"
-    body += f"\n\n<i>💸 {cost*100:.2f}¢</i>"
+    body += f"\n\n<i>💸 {render.fmt_usd(cost)}</i>"
     await note.edit_text(
         body,
         parse_mode="HTML",

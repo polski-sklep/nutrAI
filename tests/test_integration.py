@@ -469,7 +469,7 @@ def test_escalation_cost_is_not_under_reported(harness):
         assert billed == pytest.approx(0.0076)
         shown = harness.sent.last().text
         # 0.76 cents, not 0.38.
-        assert "0.76¢" in shown, shown
+        assert "$0.0076" in shown, shown
 
     run(scenario())
 
@@ -573,6 +573,7 @@ def test_album_becomes_one_meal_not_four(harness):
         await _reset()
         from nutrai.bot import ALBUM_WAIT, dp
 
+        harness.llm.calls.clear()
         for _ in range(3):
             await dp.feed_update(
                 harness.tg.bot, harness.tg.photo_update(_jpeg(), media_group_id="album-1")

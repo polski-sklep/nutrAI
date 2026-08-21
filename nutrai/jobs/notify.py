@@ -158,7 +158,11 @@ async def supplement_reminders(bot) -> None:
             if await db.reminder_already_sent(u["id"], slot, day):
                 continue
             rows = await db.supplements_in_slot(u["id"], slot, day)
-            if not rows or all(r["logged"] for r in rows):
+            # Anything deferred earlier today comes with it. Without this the
+            # only way a "not yet" could be honoured was for the user to
+            # remember unprompted, which is what the reminder exists to avoid.
+            carried = await db.deferred_supplements(u["id"], day, slot)
+            if not (rows and not all(r["logged"] for r in rows)) and not carried:
                 continue
             # Claim the slot before sending: a send that fails should not be
             # retried into a second notification a few minutes later.
@@ -167,7 +171,7 @@ async def supplement_reminders(bot) -> None:
             try:
                 await bot.send_message(
                     u["telegram_id"],
-                    render.supplement_reminder_card(slot, rows),
+                    render.supplement_reminder_card(slot, rows, carried),
                     parse_mode="HTML",
                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                         [

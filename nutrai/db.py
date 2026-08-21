@@ -1427,7 +1427,15 @@ async def week_context(user_id: int, end_day: dt.date, days: int = 7) -> dict[st
                (SELECT round(sum(cost_usd) * 100, 1) FROM llm_call
                  WHERE user_id = $1 AND created_at::date BETWEEN $2 AND $3) AS cents,
                (SELECT count(*) FROM activity
-                 WHERE user_id = $1 AND local_date BETWEEN $2 AND $3)      AS sessions
+                 WHERE user_id = $1 AND local_date BETWEEN $2 AND $3)      AS sessions,
+               -- Days the user marked as not properly logged. Shown rather
+               -- than silently excluded: a chart row at 40% of its ceiling
+               -- means something different when the day is known to be
+               -- half-recorded, and the reader is the one who knows that.
+               (SELECT array_agg(local_date ORDER BY local_date)
+                  FROM day_quality
+                 WHERE user_id = $1 AND NOT complete
+                   AND local_date BETWEEN $2 AND $3)                       AS incomplete
         """,
         user_id, start, end_day,
     )
@@ -1753,6 +1761,45 @@ async def supplements_in_slot(user_id: int, slot: str, day: dt.date) -> list[asy
               AND (s.starts_on IS NULL OR s.starts_on <= $3)
          ORDER BY s.name""",
         user_id, slot, day,
+    )
+
+
+async def defer_supplements(user_id: int, slot: str, day: dt.date) -> int:
+    """Carry a slot's unlogged supplements into the next reminder."""
+    p = await pool()
+    result = await p.execute(
+        """INSERT INTO supplement_deferral (user_id, supplement_id, local_date, from_slot)
+           SELECT s.user_id, s.id, $3, $2 FROM supplement s
+            WHERE s.user_id = $1 AND s.active AND s.slot = $2
+              AND (s.starts_on IS NULL OR s.starts_on <= $3)
+              AND NOT EXISTS (SELECT 1 FROM supplement_log l
+                               WHERE l.supplement_id = s.id AND l.local_date = $3)
+           ON CONFLICT (user_id, supplement_id, local_date) DO NOTHING""",
+        user_id, slot, day,
+    )
+    return int(result.rsplit(" ", 1)[-1] or 0)
+
+
+async def deferred_supplements(user_id: int, day: dt.date,
+                               exclude_slot: str) -> list[asyncpg.Record]:
+    """Today's deferrals that are still unlogged, from some other slot.
+
+    The log is the authority. A capsule taken between the two reminders is
+    logged, and this stops mentioning it — the deferral row is left alone
+    rather than deleted, so what was asked and when stays readable.
+    """
+    p = await pool()
+    return await p.fetch(
+        """SELECT s.id, s.name, s.schedule, s.serving_desc, s.servings_per_day,
+                  d.from_slot, false AS logged
+             FROM supplement_deferral d
+             JOIN supplement s ON s.id = d.supplement_id
+            WHERE d.user_id = $1 AND d.local_date = $2 AND d.from_slot <> $3
+              AND s.active
+              AND NOT EXISTS (SELECT 1 FROM supplement_log l
+                               WHERE l.supplement_id = s.id AND l.local_date = $2)
+         ORDER BY s.name""",
+        user_id, day, exclude_slot,
     )
 
 

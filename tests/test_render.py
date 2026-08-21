@@ -869,3 +869,39 @@ def test_off_choices_do_not_cry_duplicate_over_the_same_number():
         _off("Monster Munch Pickled Onion", "Monster Munch", 556),
     ], "Monster Munch")
     assert "same product with different figures" not in different
+
+
+def test_money_is_shown_as_money():
+    """"104.4¢" is not a unit anyone quotes a bill in, and beside every other
+    figure on the card it reads as a typo. Sub-cent costs keep their digits —
+    rounding a per-parse cost to "$0.01" hides the whole point of showing it."""
+    from nutrai.core.render import fmt_usd
+
+    assert fmt_usd(1.044) == "$1.04"
+    assert fmt_usd(0.42) == "$0.42"
+    assert fmt_usd(0.0076) == "$0.0076"
+    assert fmt_usd(0) == "$0.00"
+
+
+def test_week_card_marks_and_discounts_incomplete_days():
+    """A day marked as not properly logged is not a day of bad eating.
+
+    It stays on the chart, because the entries are real and hiding them would
+    make the week look like it had fewer days in it. What stops is arithmetic:
+    "reached on 0 of 6 days" must not count a day whose fibre was never
+    recorded, and a day excluded from that count cannot sit in its denominator.
+    """
+    from nutrai.core.render import week_card
+
+    rows = _week_rows()
+    ctx = dict(start=dt.date(2026, 8, 12), end=dt.date(2026, 8, 18), meals=41,
+               pct_measured=86, weights=[], incomplete=[dt.date(2026, 8, 14)])
+    out = week_card(rows, ctx)
+    assert "(partial)" in out
+    assert "you marked as not properly logged" in out
+    # Seven days of rows, one of them partial, so six are scored.
+    assert "of 6 days" in out and "of 7 days" not in out
+
+    # And with nothing marked, nothing changes.
+    plain = week_card(rows, {**ctx, "incomplete": []})
+    assert "(partial)" not in plain and "of 7 days" in plain
