@@ -905,3 +905,36 @@ def test_week_card_marks_and_discounts_incomplete_days():
     # And with nothing marked, nothing changes.
     plain = week_card(rows, {**ctx, "incomplete": []})
     assert "(partial)" not in plain and "of 7 days" in plain
+
+
+def test_an_empty_panel_still_says_what_it_saw():
+    """The early return threw away the diagnosis.
+
+    `unreadable` and `not_tracked` were printed further down the card, so the
+    one case where the reader most needs to know what the model saw was the one
+    case that suppressed it: "Nothing usable was read from that photo" over a
+    photo the model had read fine and then declined to transcribe.
+    """
+    from nutrai.core.render import food_label_card
+
+    out = food_label_card("Kaktus lody", {}, {
+        "unreadable": ["Energy 128-141 kcal (a range)",
+                       "this is a search results page, not a product panel"],
+        "not_tracked": ["Salt / Sodium: Trace"]})
+    assert "128-141 kcal" in out
+    assert "search results page" in out
+    assert "Trace" in out
+    # And it says what to do instead, since the reader is standing there
+    # holding the packet.
+    assert "barcode" in out and "ingredients" in out
+
+
+def test_a_range_is_never_averaged_into_a_figure():
+    """Picking a point inside "128-141 kcal" is an estimate, not a
+    transcription — the line ARCHITECTURE.md §1 draws, in the one place a
+    model is allowed near a nutrient value."""
+    from nutrai.llm.schemas import FOOD_LABEL_SYSTEM
+
+    assert "A range is not a figure" in FOOD_LABEL_SYSTEM
+    assert "never its midpoint" in FOOD_LABEL_SYSTEM
+    assert "not a product's own nutrition panel" in FOOD_LABEL_SYSTEM

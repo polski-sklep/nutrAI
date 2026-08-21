@@ -2410,7 +2410,22 @@ def food_label_card(name: str, panel: dict, data: dict,
         lines.append("")
 
     if not panel:
-        lines.append("<i>Nothing usable was read from that photo.</i>")
+        lines.append("<i>Nothing was transcribed from that photo.</i>")
+        if data.get("unreadable"):
+            lines.append(f"\n<b>What it could not use:</b> "
+                         f"{_esc(', '.join(data['unreadable'][:6]))}")
+        if data.get("not_tracked"):
+            lines.append(f"\n<i>Read, but no nutrient id here: "
+                         f"{_esc(', '.join(data['not_tracked'][:6]))}</i>")
+        # The two failures that actually happen, and what to do about each.
+        lines.append(
+            "\n<i>A figure given as a range — <code>128–141 kcal</code> — is "
+            "not a number, and picking a point inside it would be an estimate "
+            "rather than a transcription. Nor is a search result a panel: it "
+            "summarises several products at once, and the one in your hand is "
+            "not necessarily any of them.\n\n"
+            "Photograph the panel on the packet, send the barcode, or type the "
+            "ingredients and I will add them up from USDA.</i>")
         return "\n".join(lines)
 
     rows = []
