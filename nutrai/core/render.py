@@ -1047,18 +1047,6 @@ def supplement_pick_card(stack: Sequence[Any], selected: Sequence[int],
     return "\n".join(lines)
 
 
-
-
-
-
-
-
-
-
-
-
-
-
 # ------------------------------------------------------------- day score
 
 

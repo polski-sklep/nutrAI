@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Create a user, seed targets, seed notification rules.
+"""Create a user and seed targets.
+
+Threshold notification rules are deliberately not seeded — see CLAUDE.md,
+"Unprompted messages". The DELETE below clears any that an older version of
+this script left behind.
 
     python scripts/bootstrap.py --telegram-id 12345 --sex male --age 34 \
         --height-cm 183 --weight-kg 74.4 --activity 1.55 --deficit 500 \
@@ -81,10 +85,8 @@ async def main(a: argparse.Namespace) -> None:
             )
 
         await con.execute("DELETE FROM notification_rule WHERE user_id = $1", user_id)
-        rules: list[tuple[int, str, int, int]] = []
 
-    print(f"user {user_id} ready: {len(targets)} targets, "
-          f"{len(rules)} notification rules")
+    print(f"user {user_id} ready: {len(targets)} targets")
     await con.close()
 
 
