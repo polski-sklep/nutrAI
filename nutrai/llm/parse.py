@@ -22,7 +22,7 @@ from ..config import (
     MODEL_PHOTO_ESCALATE,
     MODEL_TEXT,
 )
-from ..core.estimate import MassEstimate, choose_mass, sigma_for
+from ..core.estimate import MEASURED_SOURCES, MassEstimate, choose_mass, sigma_for
 from ..core.nutrition import ResolvedComponent, energy_cross_check, total_nutrients
 from .client import ToolResult, cached, call_tool
 from .schemas import (
@@ -242,7 +242,7 @@ async def _mass_for(user_id: int, fdc_id: int, it: dict[str, Any],
     grams = float(it.get("grams", 0) or 0)
     low = float(it["grams_low"]) if it.get("grams_low") else None
     high = float(it["grams_high"]) if it.get("grams_high") else None
-    if source not in ("scale", "stated", "package"):
+    if source not in MEASURED_SOURCES:
         # A declared portion beats both the model's eyes and your own history.
         #
         # "One slice of blondie" is an estimate to a parser and arithmetic to

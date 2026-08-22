@@ -38,6 +38,22 @@ ESTIMATE_SIGMA_REL = 0.35
 PRIOR_MIN_SAMPLES = 3
 PRIOR_MAX_SPREAD = 0.25      # (p75 - p25) / median
 
+# The masses that came from the world rather than from a guess: a scale, a
+# number you typed, a printed net weight. `prior` and `estimate` are not in
+# here and must not be — a prior is a median of past guesses and an estimate is
+# a look at a photograph, and both are exactly what invariant 7 keeps out of
+# `portion_history` so the system cannot bootstrap its own guesses into fact.
+#
+# One tuple because the same three words decide four different things — whether
+# a prior may override the model, what counts toward the day's measured
+# fraction, whether a portion lookup is even attempted, and whether a parse is
+# offered for one-tap confirmation. They drifting apart is not a crash, it is
+# four subtly different definitions of "weighed" giving four different answers
+# about the same plate. The SQL in `sql/002_views.sql` and
+# `sql/008_repeat_provenance.sql` holds the same list and cannot import it;
+# a change here is a change there too.
+MEASURED_SOURCES = ("scale", "stated", "package")
+
 
 @dataclass(frozen=True)
 class MassEstimate:
@@ -112,7 +128,7 @@ def choose_mass(
     today's portion genuinely was different, and the photo is the better
     witness).
     """
-    if source in ("scale", "stated", "package"):
+    if source in MEASURED_SOURCES:
         return MassEstimate(model_grams, sigma_for(model_grams, source, low, high), source)
 
     prior = portion_prior(history or [])
@@ -161,5 +177,5 @@ def day_confidence(masses: list[MassEstimate]) -> float:
     trend below it is noise and no improvement plan built on it means anything.
     """
     total = sum(m.grams for m in masses) or 1.0
-    hard = sum(m.grams for m in masses if m.source in ("scale", "stated", "package"))
+    hard = sum(m.grams for m in masses if m.source in MEASURED_SOURCES)
     return hard / total

@@ -1835,7 +1835,7 @@ async def suggest_next(msg: Message) -> None:
     snapshots = await db.dish_snapshots(u["id"])
     ranked = suggest.rank(snapshots, progress)
 
-    energy = next((r for r in progress if r["nutrient_id"] == 1008), None)
+    energy = next((r for r in progress if r["nutrient_id"] == ENERGY_KCAL), None)
     kcal_left = None
     if energy and energy["max_amount"]:
         kcal_left = float(energy["max_amount"]) - float(energy["amount"])
@@ -3554,10 +3554,9 @@ async def _try_fix(msg: Message, u: Any, text: str) -> bool:
         await db.clear_pending(u["id"], "fix_entry")
         entry, comps = await db.entry_with_components(entry_id)
         profs = await db.profiles_for([c["fdc_id"] for c in comps])
-        from .core.nutrition import ResolvedComponent as _RC
-
         resolved = [
-            _RC(c["label"], c["fdc_id"], float(c["grams"]), float(c["yield_factor"]),
+            ResolvedComponent(
+                c["label"], c["fdc_id"], float(c["grams"]), float(c["yield_factor"]),
                 float(c["grams_sigma"] or 0), c["grams_source"])
             for c in comps
         ]
@@ -3945,7 +3944,7 @@ async def _present(
 
     warnings = list(verdict.warnings)
     all_hard = bool(res.grams_sources) and all(
-        src in ("scale", "stated", "package") for src in res.grams_sources
+        src in estimate.MEASURED_SOURCES for src in res.grams_sources
     )
     # A model's confidence is about the parse it made, and a declared portion
     # replaces the part it was unsure of.
@@ -4162,7 +4161,7 @@ async def cb_ok(cq: CallbackQuery) -> None:
     # already stripped, so it is re-sent as plain text; the detail it held has
     # served its purpose and the progress card below replaces it.
     await cq.message.edit_text(
-        (cq.message.text or "") + f"\n\n✅ logged — {totals.get(1008, 0):,.0f} kcal"
+        (cq.message.text or "") + f"\n\n✅ logged — {totals.get(ENERGY_KCAL, 0):,.0f} kcal"
     )
 
     day = _today(u)
