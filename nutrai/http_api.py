@@ -158,9 +158,7 @@ async def post_activity(request: web.Request) -> web.Response:
             return _reject("at is in the future", 400)
 
     user = await db.get_or_create_user(int(telegram_id))
-    day = explicit_day or db.local_date_for(
-        dt.datetime.now(dt.timezone.utc), user["tz"], user["day_rollover_hour"]
-    )
+    day = explicit_day or db.day_for_user(user)
 
     # The client's own id for the session, when it has one. Dedup keyed on the
     # shape of a workout — date, kind, minutes, intensity — is a heuristic
@@ -189,7 +187,7 @@ async def post_activity(request: web.Request) -> web.Response:
     # own echo — the failure sql/008 fixed for repeated portions.
     if rpe is not None and created:
         now = dt.datetime.now(dt.timezone.utc)
-        today = db.local_date_for(now, user["tz"], user["day_rollover_hour"])
+        today = db.day_for_user(user, now)
         known_time = at is not None or day == today
         # The day is known even when the hour is not, and the observation has
         # to land on the day it describes — dating a Sunday session to Monday

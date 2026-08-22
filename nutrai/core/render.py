@@ -18,6 +18,7 @@ supported.
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from html import escape
 from typing import Any, Sequence
@@ -565,7 +566,7 @@ def day_card(
         lines.append(score)
         lines.append("")
     if table:
-        lines.append("<pre>" + "\n".join(table) + "</pre>")
+        lines.append(_pre(table))
 
     spread = protein_spread(entries)
     if spread:
@@ -909,6 +910,23 @@ def _esc(s: str) -> str:
     makes the source unreadable for no gain.
     """
     return escape(str(s), quote=False)
+
+
+def _pre(lines: Iterable[str]) -> str:
+    """One preformatted block from a list of already-padded, already-escaped rows.
+
+    Column-aligned output goes in a *single* <pre>. Per-line <code> spans do
+    not preserve alignment — Telegram renders adjacent spans proportionally and
+    the columns drift down the message. Nested tags inside <pre> are rejected
+    outright, which is why headings inside these tables are plain text.
+
+    This takes finished lines rather than escaping them itself: padding has to
+    happen before escaping, because `&` becomes `&amp;` — five source
+    characters that render as one — and padding an escaped string aligns the
+    source rather than the screen. Callers that need escaping do it as they
+    build each row, where the widths are known.
+    """
+    return "<pre>" + "\n".join(lines) + "</pre>"
 
 
 def supplement_taken_card(rows: Sequence[Any], tz: str = "UTC") -> str:
@@ -1306,7 +1324,7 @@ def week_card(rows: Sequence[Any], ctx: dict) -> str:
             + f"{crossed if crossed else '-':>5}"
             + ("  (partial)" if day in incomplete else "")
         )
-    lines += ["", "<pre>" + "\n".join(chart) + "</pre>"]
+    lines += ["", _pre(chart)]
     if incomplete & set(by_day):
         n = len(incomplete & set(by_day))
         lines.append(
@@ -1527,7 +1545,7 @@ def profile_card(data: dict[str, Any], today: dt.date | None = None) -> str:
         f"{'Weight':<{pad}}{w:g} kg  ({data['weighed_on']:%-d %b})" if w
         else f"{'Weight':<{pad}}— no weigh-ins yet"
     )
-    lines.append("<pre>" + "\n".join(body) + "</pre>")
+    lines.append(_pre(body))
 
     # The derivation inputs, checked independently of whether a target exists.
     # Bootstrap seeded targets without recording what they came from, so "has a
@@ -1573,10 +1591,10 @@ def profile_card(data: dict[str, Any], today: dt.date | None = None) -> str:
         lines.append(f"💊 <b>Supplement stack</b> ({len(stack)})")
         cadence = {"daily": "every day", "alternate": "every other day",
                    "occasional": "now and then"}
-        lines.append("<pre>" + "\n".join(
+        lines.append(_pre(
             f"{_esc(_short(s['name']))[:22]:<24}{cadence.get(s['schedule'], s['schedule'])}"
             for s in stack
-        ) + "</pre>")
+        ))
         lines.append("<i>Manage with <code>/supp</code>.</i>")
 
     custom = data.get("custom_targets") or []
@@ -1593,7 +1611,7 @@ def profile_card(data: dict[str, Any], today: dt.date | None = None) -> str:
             else:
                 v = f"at most {float(hi):g} {t['unit']}"
             rows_t.append(f"{_esc(_short(t['name']))[:20]:<22}{_esc(v)}")
-        lines.append("<pre>" + "\n".join(rows_t) + "</pre>")
+        lines.append(_pre(rows_t))
         lines.append("<i>Everything else is derived. <code>/target</code> to change.</i>")
     else:
         lines.append(
@@ -1671,10 +1689,10 @@ def target_list_card(rows: Sequence[Any]) -> str:
 
     out = ["🎯 <b>Your targets</b>"]
     if mine:
-        out += ["", "<b>Set by you</b>", "<pre>" + "\n".join(_esc(fmt(r)) for r in mine) + "</pre>"]
+        out += ["", "<b>Set by you</b>", _pre(_esc(fmt(r)) for r in mine)]
     if derived:
         out += ["", "<b>Derived from your profile</b>",
-                "<pre>" + "\n".join(_esc(fmt(r)) for r in derived) + "</pre>"]
+                _pre(_esc(fmt(r)) for r in derived)]
     out += [
         "",
         "• <code>/target fibre 40</code> — a daily minimum",
@@ -1815,15 +1833,14 @@ def slot_settings_card(stack: Sequence[Any], times: dict) -> str:
         where = SLOT_SHORT.get(s["slot"], "—") if s["slot"] else "—"
         rows.append((f"{i}. {s['name'][:18]}", where))
     pad = max(len(a) for a, _b in rows) + 2
-    lines.append("<pre>" + "\n".join(
-        _esc(f"{a:<{pad}}{b}") for a, b in rows) + "</pre>")
+    lines.append(_pre(_esc(f"{a:<{pad}}{b}") for a, b in rows))
 
     lines.append("<b>When each moment is</b>")
     trows = []
     for slot in ("fasted", "breakfast", "evening", "bed"):
         t = times.get(slot)
         trows.append(f"{SLOT_SHORT[slot]:<11}{t.strftime('%H:%M') if t else '—'}")
-    lines.append("<pre>" + "\n".join(_esc(r) for r in trows) + "</pre>")
+    lines.append(_pre(_esc(r) for r in trows))
 
     # Assigning a supplement to a moment does nothing on its own. Without a
     # time there is no reminder, and a card that lists nine tidy assignments
@@ -2070,7 +2087,7 @@ def why_card(nutrient_name: str, unit: str, day: dt.date, entries: Sequence[Any]
         rows.append(f"  💊  {_short_note(s_['name'])[:26]:<28}"
                     f"{fmt_amount(s_['amount'], unit):>10}  "
                     f"{shares[len(grouped) + j]:>3.0f}%")
-    lines.append("<pre>" + "\n".join(_esc(r) for r in rows) + "</pre>")
+    lines.append(_pre(_esc(r) for r in rows))
 
     lines.append(
         "<i>Each meal shows what was saved when you confirmed it. The lines "
@@ -2096,7 +2113,7 @@ def user_food_list_card(foods: Sequence[Any]) -> str:
         kcal = f"{float(f['kcal_100g']):,.0f} kcal" if f["kcal_100g"] is not None else "no energy"
         rows.append(f"{_short_note(f['description'])[:22]:<24}{kcal:>12} /100 g")
         rows.append(f"    {f['n_nutrients']} nutrients · used {f['times_used']}×")
-    lines.append("<pre>" + "\n".join(_esc(r) for r in rows) + "</pre>")
+    lines.append(_pre(_esc(r) for r in rows))
     lines += ["", "<b>Reply with a name</b> to add another. Your own rows "
                   "outrank USDA's generic one when you log that name."]
     return "\n".join(lines)
@@ -2292,7 +2309,7 @@ def off_product_card(p: dict, name: str) -> str:
     ):
         if nid in panel:
             rows.append(f"{label:<20}{panel[nid]:>8,.1f} {unit}")
-    lines.append("<pre>" + "\n".join(_esc(r) for r in rows) + "</pre>")
+    lines.append(_pre(_esc(r) for r in rows))
     lines.append("<i>per 100 g</i>")
 
     if p.get("serving"):
@@ -2396,7 +2413,7 @@ def food_label_card(name: str, panel: dict, data: dict,
             continue
         rows.append(f"{_short_note(str(n.get('as_printed', '')))[:30]:<32}"
                     f"{panel[nid]:>9,.1f}")
-    lines.append("<pre>" + "\n".join(_esc(r) for r in rows) + "</pre>")
+    lines.append(_pre(_esc(r) for r in rows))
     lines.append("<i>as printed · per 100 g</i>")
 
     if data.get("not_tracked"):

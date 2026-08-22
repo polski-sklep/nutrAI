@@ -32,6 +32,21 @@ QUIET_FROM_HOUR = 22
 QUIET_UNTIL_HOUR = 7
 
 
+async def _deliver(bot, telegram_id: int, what: str, text: str, **kw: Any) -> None:
+    """Send one scheduled message, and let a failure end with this user.
+
+    Every job here loops over every user, so an exception raised by one send —
+    a blocked bot, a deleted chat, a Telegram outage — would otherwise take the
+    rest of the sweep with it, silently, for everyone. Logged rather than
+    raised for the same reason: nothing downstream can do anything useful with
+    it, and a scheduler job that keeps failing is a job that stops running.
+    """
+    try:
+        await bot.send_message(telegram_id, text, parse_mode="HTML", **kw)
+    except Exception as exc:
+        log.warning("%s failed for %s: %s", what, telegram_id, exc)
+
+
 async def evaluate_user(user_id: int, day: dt.date, *, now: dt.datetime | None = None) -> list[str]:
     """Evaluate every enabled threshold rule for one user against one day.
 
@@ -148,7 +163,7 @@ async def supplement_reminders(bot) -> None:
         if not times:
             continue
         local = now.astimezone(zoneinfo.ZoneInfo(u["tz"]))
-        day = db.local_date_for(now, u["tz"], u["day_rollover_hour"])
+        day = db.day_for_user(u, now)
         for slot, when in times.items():
             # Past its time today, and not so far past that the nudge is noise.
             due_at = local.replace(hour=when.hour, minute=when.minute,
@@ -168,24 +183,20 @@ async def supplement_reminders(bot) -> None:
             # retried into a second notification a few minutes later.
             if not await db.mark_reminder_sent(u["id"], slot, day):
                 continue
-            try:
-                await bot.send_message(
-                    u["telegram_id"],
-                    render.supplement_reminder_card(slot, rows, carried),
-                    parse_mode="HTML",
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                        [
-                            InlineKeyboardButton(text="✅ all taken",
-                                                 callback_data=f"slotlog:{slot}"),
-                            InlineKeyboardButton(text="not yet",
-                                                 callback_data=f"slotskip:{slot}"),
-                        ],
-                        [InlineKeyboardButton(text="☑️ tick the ones I took",
-                                              callback_data="suppick:")],
-                    ]),
-                )
-            except Exception as exc:
-                log.warning("supplement reminder failed for %s: %s", u["telegram_id"], exc)
+            await _deliver(
+                bot, u["telegram_id"], "supplement reminder",
+                render.supplement_reminder_card(slot, rows, carried),
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [
+                        InlineKeyboardButton(text="✅ all taken",
+                                             callback_data=f"slotlog:{slot}"),
+                        InlineKeyboardButton(text="not yet",
+                                             callback_data=f"slotskip:{slot}"),
+                    ],
+                    [InlineKeyboardButton(text="☑️ tick the ones I took",
+                                          callback_data="suppick:")],
+                ]),
+            )
 
 
 async def morning_notes(bot) -> None:
@@ -218,23 +229,19 @@ async def morning_notes(bot) -> None:
         if not (dt.timedelta(0) <= local - send_at <= dt.timedelta(hours=2)):
             continue
 
-        day = db.local_date_for(now, u["tz"], u["day_rollover_hour"])
+        day = db.day_for_user(u, now)
         if not await db.morning_note_sent(u["id"], day):
             continue
 
         yday = day - dt.timedelta(days=1)
-        try:
-            await bot.send_message(
-                u["telegram_id"],
-                render.morning_note(
-                    u["display_name"],
-                    await db.day_progress(u["id"], yday),
-                    await db.day_coverage(u["id"], yday),
-                ),
-                parse_mode="HTML",
-            )
-        except Exception as exc:
-            log.warning("morning note failed for %s: %s", u["telegram_id"], exc)
+        await _deliver(
+            bot, u["telegram_id"], "morning note",
+            render.morning_note(
+                u["display_name"],
+                await db.day_progress(u["id"], yday),
+                await db.day_coverage(u["id"], yday),
+            ),
+        )
 
 
 async def sweep(bot) -> None:
@@ -244,12 +251,9 @@ async def sweep(bot) -> None:
     users = await p.fetch("SELECT id, telegram_id, tz, day_rollover_hour FROM app_user")
     now = dt.datetime.now(dt.timezone.utc)
     for u in users:
-        day = db.local_date_for(now, u["tz"], u["day_rollover_hour"])
+        day = db.day_for_user(u, now)
         for text in await evaluate_user(u["id"], day):
-            try:
-                await bot.send_message(u["telegram_id"], text, parse_mode="HTML")
-            except Exception as exc:  # a blocked bot must not kill the sweep
-                log.warning("notify failed for %s: %s", u["telegram_id"], exc)
+            await _deliver(bot, u["telegram_id"], "notify", text)
 
 
 async def weekly_summary(bot) -> None:
@@ -257,18 +261,14 @@ async def weekly_summary(bot) -> None:
     p = await db.pool()
     now = dt.datetime.now(dt.timezone.utc)
     for u in await p.fetch("SELECT id, telegram_id, tz, day_rollover_hour FROM app_user"):
-        day = db.local_date_for(now, u["tz"], u["day_rollover_hour"])
+        day = db.day_for_user(u, now)
         rows = await db.week_rows(u["id"], day)
         if not rows:
             continue
-        try:
-            await bot.send_message(
-                u["telegram_id"],
-                render.week_card(rows, await db.week_context(u["id"], day)),
-                parse_mode="HTML",
-            )
-        except Exception as exc:
-            log.warning("weekly failed for %s: %s", u["telegram_id"], exc)
+        await _deliver(
+            bot, u["telegram_id"], "weekly",
+            render.week_card(rows, await db.week_context(u["id"], day)),
+        )
 
 
 async def daily_summary(bot) -> None:
@@ -276,18 +276,14 @@ async def daily_summary(bot) -> None:
     users = await p.fetch("SELECT id, telegram_id, tz, day_rollover_hour FROM app_user")
     now = dt.datetime.now(dt.timezone.utc)
     for u in users:
-        day = db.local_date_for(now, u["tz"], u["day_rollover_hour"])
+        day = db.day_for_user(u, now)
         prog = await db.day_progress(u["id"], day)
         entries = await db.day_entries(u["id"], day)
         coverage = await db.day_coverage(u["id"], day)
-        try:
-            await bot.send_message(
-                u["telegram_id"],
-                render.day_card(day, prog, entries, coverage=coverage, tz=u["tz"]),
-                parse_mode="HTML",
-            )
-        except Exception as exc:
-            log.warning("summary failed for %s: %s", u["telegram_id"], exc)
+        await _deliver(
+            bot, u["telegram_id"], "summary",
+            render.day_card(day, prog, entries, coverage=coverage, tz=u["tz"]),
+        )
 
 
 def start_scheduler(bot) -> AsyncIOScheduler:

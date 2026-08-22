@@ -149,7 +149,11 @@ def test_every_prompt_opened_has_something_that_consumes_it():
 
     src = inspect.getsource(botmod)
     opened = set(re.findall(r'put_pending\(\s*u\["id"\],\s*"([a-z_]+)"', src))
-    opened |= set(re.findall(r'_ask\(\s*msg,\s*u,\s*"([a-z_]+)"', src))
+    # `_ask` is reached from commands (`msg`) and from callbacks (`cq.message`)
+    # alike. Matching only the first spelling would quietly stop covering every
+    # prompt a button opens.
+    opened |= set(re.findall(
+        r'_ask\(\s*(?:cq\.message|msg),\s*u,\s*"([a-z_]+)"', src))
 
     # Kinds that are menus rather than typed prompts: their reply arrives as a
     # button press or through the repeat grammar, not as free text.
@@ -345,13 +349,18 @@ def test_every_recipe_prompt_mentions_the_makes_clause():
     and is unreachable in exactly the same way.
     """
     import inspect
+    import re
 
     from nutrai import bot
 
     src = inspect.getsource(bot)
-    prompts = src.count("What goes into it?")
-    assert prompts >= 2
-    assert src.count("makes 850 g, 16 slices") >= prompts
+    # The examples are one constant now, so the thing that has to hold is that
+    # every recipe prompt inlines it rather than writing its own copy. Counting
+    # the literal would pass on a comment that happens to quote it.
+    assert "makes 850 g, 16 slices" in bot._RECIPE_EXAMPLES
+    prompts = len(re.findall(r"what goes into it\?", src, re.IGNORECASE))
+    assert prompts >= 3
+    assert src.count("+ _RECIPE_EXAMPLES") == prompts
 
 
 def test_impossible_panel_is_refused():

@@ -73,6 +73,23 @@ def local_date_for(when: dt.datetime, tz: str, rollover_hour: int) -> dt.date:
     return (local - dt.timedelta(hours=rollover_hour)).date()
 
 
+def day_for_user(user: Any, when: dt.datetime | None = None) -> dt.date:
+    """`local_date_for` given a user row, which is how every caller has it.
+
+    The two columns always travel together — a timezone without the rollover
+    hour dates the 01:09 milk to the wrong day — and the bot, both scheduled
+    jobs and the HTTP endpoint were each unpacking the same pair by hand.
+
+    `when` stays explicit wherever a loop has already taken one clock reading
+    to use for every user: a sweep running across the rollover must not date
+    half its users to one day and half to the next.
+    """
+    return local_date_for(
+        when or dt.datetime.now(dt.timezone.utc),
+        user["tz"], user["day_rollover_hour"],
+    )
+
+
 # ------------------------------------------------------------- food lookup
 
 
@@ -343,6 +360,35 @@ async def upsert_dish(
 # -------------------------------------------------------------------- log
 
 
+async def _write_components(con: Any, entry_id: int,
+                            components: list[ResolvedComponent],
+                            grams_sources: list[str] | None) -> None:
+    """The component rows of one entry, written inside the caller's transaction.
+
+    `grams_sources` overrides the provenance each component was resolved with,
+    position by position, and is how a stated or weighed mass survives into the
+    row a later portion prior reads back. Invariant 7 turns on that column:
+    `portion_history` filters on it, so a wrong value here does not produce a
+    wrong number today — it quietly feeds a guess back in as evidence weeks
+    later.
+
+    Written once because the create path and the replace path must produce
+    identical rows. A `/fix` that stored provenance differently from the parse
+    it corrects would put the same meal on two different footings depending on
+    whether it was edited.
+    """
+    await con.executemany(
+        """INSERT INTO log_component
+             (entry_id, position, fdc_id, label, grams, yield_factor,
+              grams_source, grams_sigma)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)""",
+        [(entry_id, i, c.fdc_id, c.label, c.grams, c.yield_factor,
+          (grams_sources[i] if grams_sources and i < len(grams_sources) else c.grams_source),
+          c.sigma)
+         for i, c in enumerate(components)],
+    )
+
+
 async def create_pending_entry(
     user_id: int, name: str, components: list[ResolvedComponent], *, source: str,
     slot: str | None, confidence: float | None, model: str | None, parse: dict | None,
@@ -367,16 +413,7 @@ async def create_pending_entry(
             sum(c.grams for c in components), source, confidence, model,
             json.dumps(parse) if parse else None, photo_file_id,
         )
-        await con.executemany(
-            """INSERT INTO log_component
-                 (entry_id, position, fdc_id, label, grams, yield_factor,
-                  grams_source, grams_sigma)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8)""",
-            [(entry_id, i, c.fdc_id, c.label, c.grams, c.yield_factor,
-              (grams_sources[i] if grams_sources and i < len(grams_sources) else c.grams_source),
-              c.sigma)
-             for i, c in enumerate(components)],
-        )
+        await _write_components(con, entry_id, components, grams_sources)
     return entry_id
 
 
@@ -467,14 +504,36 @@ async def confirmed_entries_on(user_id: int, day: dt.date) -> list[asyncpg.Recor
     )
 
 
-async def undo_entry(user_id: int, entry_id: int) -> asyncpg.Record | None:
-    """Discard one confirmed entry by id, and correct its dish's counter.
+async def _discard_confirmed(con: Any, entry: asyncpg.Record) -> None:
+    """Take one confirmed entry out of the arithmetic and correct its dish.
 
     Discarded, never deleted. `log_nutrient` is a snapshot and invariant 2 says
     it is never rewritten — every rollup already filters on status='confirmed',
-    so flipping the status removes it from the arithmetic while leaving the
+    so flipping the status removes the entry from every total while leaving the
     record of what was logged and unlogged intact.
+
+    times_logged gates the no-confirmation repeat path, so leaving it inflated
+    would let an undone dish log instantly next time. `last_logged_at` is
+    recomputed from what survives rather than decremented, because there is no
+    arithmetic that recovers a timestamp.
     """
+    await con.execute(
+        "UPDATE log_entry SET status = 'discarded' WHERE id = $1", entry["id"])
+    if entry["dish_id"]:
+        await con.execute(
+            """UPDATE dish d
+                  SET times_logged = GREATEST(d.times_logged - 1, 0),
+                      last_logged_at = (
+                          SELECT max(e.logged_at) FROM log_entry e
+                           WHERE e.dish_id = d.id AND e.status = 'confirmed')
+                WHERE d.id = $1""",
+            entry["dish_id"],
+        )
+
+
+async def undo_entry(user_id: int, entry_id: int) -> asyncpg.Record | None:
+    """Discard one confirmed entry by id. See `_discard_confirmed` for why it
+    is discarded rather than deleted."""
     p = await pool()
     async with p.acquire() as con, con.transaction():
         entry = await con.fetchrow(
@@ -484,19 +543,7 @@ async def undo_entry(user_id: int, entry_id: int) -> asyncpg.Record | None:
         )
         if not entry:
             return None
-        await con.execute("UPDATE log_entry SET status = 'discarded' WHERE id = $1", entry_id)
-        if entry["dish_id"]:
-            # times_logged gates the no-confirmation repeat path, so leaving it
-            # inflated would let an undone dish log instantly next time.
-            await con.execute(
-                """UPDATE dish d
-                      SET times_logged = GREATEST(d.times_logged - 1, 0),
-                          last_logged_at = (
-                              SELECT max(e.logged_at) FROM log_entry e
-                               WHERE e.dish_id = d.id AND e.status = 'confirmed')
-                    WHERE d.id = $1""",
-                entry["dish_id"],
-            )
+        await _discard_confirmed(con, entry)
         return entry
 
 
@@ -983,16 +1030,7 @@ async def replace_components(entry_id: int, components: list[ResolvedComponent],
         if status != "pending":
             raise ValueError(f"entry {entry_id} is {status}, not pending")
         await con.execute("DELETE FROM log_component WHERE entry_id = $1", entry_id)
-        await con.executemany(
-            """INSERT INTO log_component
-                 (entry_id, position, fdc_id, label, grams, yield_factor,
-                  grams_source, grams_sigma)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8)""",
-            [(entry_id, i, c.fdc_id, c.label, c.grams, c.yield_factor,
-              (grams_sources[i] if grams_sources and i < len(grams_sources) else c.grams_source),
-              c.sigma)
-             for i, c in enumerate(components)],
-        )
+        await _write_components(con, entry_id, components, grams_sources)
         await con.execute(
             "UPDATE log_entry SET total_grams = $2 WHERE id = $1",
             entry_id, sum(c.grams for c in components),
@@ -1093,6 +1131,18 @@ async def supplement_stack(user_id: int, active_only: bool = True,
           ORDER BY s.name""",
         *args,
     )
+
+
+async def retired_supplements(user_id: int) -> list[asyncpg.Record]:
+    """Everything stopped but not forgotten.
+
+    Stopping is reversible and a stopped supplement stays in the record of
+    every day it was taken — see `set_supplement_active`. The stack card lists
+    them separately, which three callers were each deriving by reading the
+    whole stack a second time and filtering it.
+    """
+    return [r for r in await supplement_stack(user_id, active_only=False)
+            if not r["active"]]
 
 
 async def log_supplements(user_id: int, day: dt.date,
@@ -1635,9 +1685,8 @@ async def delete_activity(user_id: int, activity_id: int) -> bool:
     A hard delete rather than a status column: `activity` is an append-only
     feed from another system, and a session that should not be there is a bad
     forward rather than a decision worth keeping a record of. Note the workout
-    bot can re-post it — deduplication keys on `external_id`, or on (user, date,
-    kind, minutes, intensity) where the client sends none, and after a delete
-    there is nothing left for either to match.
+    bot can re-post it — deduplication keys on (user, date, kind, minutes,
+    intensity), and after a delete there is nothing left to match.
     """
     p = await pool()
     result = await p.execute(
