@@ -17,6 +17,38 @@ from ..llm.client import cached, call_tool
 from ..llm.schemas import PLAN_SYSTEM, PLAN_TOOL
 
 
+def _median_row(
+    nid: int, name: str, unit: str,
+    m7: float | None, m28: float | None,
+    lo: float | None, hi: float | None,
+) -> str:
+    """One line of the medians table. An absent median is '-', never 0.
+
+    `window_medians` returns a row only for a nutrient that something logged in
+    the window actually reports. Defaulting the miss to 0.0 turned "nothing you
+    ate carries a selenium figure" into "you got no selenium", and the status
+    column then read "under by 55" — a measurement gap presented as a dietary
+    one, in the single artefact where a model is asked to draw conclusions.
+    PLAN_SYSTEM tells it to say so where coverage is poor; it cannot, if the
+    pack has already erased the difference.
+
+    Invariant 6 in the aggregate: missing nutrients are skipped, never zeroed.
+    """
+    if m7 is None:
+        status = "no data — nothing logged in this window reports it"
+    elif hi is not None and m7 > hi:
+        status = f"over by {m7-hi:.0f}"
+    elif lo is not None and m7 < lo:
+        status = f"under by {lo-m7:.0f}"
+    else:
+        status = "ok"
+    return (
+        f"{nid} | {name} | {unit} | {'-' if m7 is None else f'{m7:.1f}'} | "
+        f"{'-' if m28 is None else f'{m28:.1f}'} | {lo if lo is not None else '-'} | "
+        f"{hi if hi is not None else '-'} | {status}"
+    )
+
+
 async def evidence_pack(user_id: int, day: dt.date) -> str:
     """Aggregate first, then send. The model never sees an individual log line.
 
@@ -35,19 +67,11 @@ async def evidence_pack(user_id: int, day: dt.date) -> str:
         t = targets.get(nid)
         if not t:
             continue
-        m7 = med7.get(nid, 0.0)
-        lo = float(t["min_amount"]) if t["min_amount"] is not None else None
-        hi = float(t["max_amount"]) if t["max_amount"] is not None else None
-        status = "ok"
-        if hi is not None and m7 > hi:
-            status = f"over by {m7-hi:.0f}"
-        elif lo is not None and m7 < lo:
-            status = f"under by {lo-m7:.0f}"
-        lines.append(
-            f"{nid} | {t['nutrient_name']} | {t['unit']} | {m7:.1f} | "
-            f"{med28.get(nid,0):.1f} | {lo if lo is not None else '-'} | "
-            f"{hi if hi is not None else '-'} | {status}"
-        )
+        lines.append(_median_row(
+            nid, t["nutrient_name"], t["unit"], med7.get(nid), med28.get(nid),
+            float(t["min_amount"]) if t["min_amount"] is not None else None,
+            float(t["max_amount"]) if t["max_amount"] is not None else None,
+        ))
 
     # Logging completeness. A model told only about the days you logged will
     # confidently describe a diet you do not eat.
