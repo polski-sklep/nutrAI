@@ -135,15 +135,15 @@ async def _user(msg: Message) -> Any:
     if settings.allowed_ids and msg.from_user.id not in settings.allowed_ids:
         raise PermissionError("not allowed")
     u = await db.get_or_create_user(msg.from_user.id, msg.from_user.full_name)
+    # When you first speak each day, which is what the morning note's timing
+    # is learned from. Cheap, and it makes the estimate a measurement rather
+    # than a guess about a guess.
+    await db.note_first_contact(u["id"], _today(u))
     # Typing another command means you moved on. Without this, tapping
     # `/supp add` and then changing your mind leaves the label prompt open, and
     # the next meal you send is parsed as a supplement panel — expensively, and
     # wrongly. `on_text` never reaches here, so a reply to a prompt is safe;
     # only a command clears one.
-    # When you first speak each day, which is what the morning note's timing
-    # is learned from. Cheap, and it makes the estimate a measurement rather
-    # than a guess about a guess.
-    await db.note_first_contact(u["id"], _today(u))
     if (msg.text or "").startswith("/"):
         await db.clear_awaits(u["id"], tuple(PROMPT_CONSUMERS))
     return u
@@ -2746,9 +2746,6 @@ async def supp(msg: Message) -> None:
         await msg.answer(f"Cleared {n} supplement record(s) for today.")
         return
 
-    # Ask rather than assume, and pre-tick by each supplement's own cadence:
-    # daily always, alternate only when yesterday was a rest day, occasional
-    # never. Anything already logged today stays ticked.
     # Nothing is pre-ticked any more. A tick used to mean "this is on your
     # daily list" and now means "I took this", which is the only version that
     # can carry a time with it — and the only one where an untaken capsule
