@@ -84,7 +84,7 @@ class ParsedMeal:
 
 
 async def parse_photo(
-    images: str | list[str], caption: str | None, *, user_id: int,
+    images: list[str], caption: str | None, *, user_id: int,
     escalate: bool = True
 ) -> ParsedMeal:
     """Vision parse with one conditional escalation.
@@ -103,8 +103,6 @@ async def parse_photo(
     if it sees the photographs together, which is also cheaper than a call
     each.
     """
-    if isinstance(images, str):
-        images = [images]
     content: list[dict[str, Any]] = [
         {
             "type": "image",

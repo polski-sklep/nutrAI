@@ -472,10 +472,6 @@ async def today(msg: Message) -> None:
     await _send_day(msg, u, _today(u), show_all="brief" not in (msg.text or ""))
 
 
-# How many days back a bare word means. Anything older is a date.
-_BACK_WORDS = {"yesterday": 1, "yday": 1, "sat": None}
-
-
 @dp.message(Command("yesterday", "back", "backdate"))
 async def yesterday(msg: Message) -> None:
     """Log something you ate on an earlier day.
@@ -2746,9 +2742,6 @@ async def supp(msg: Message) -> None:
         await msg.answer(f"Cleared {n} supplement record(s) for today.")
         return
 
-    # Ask rather than assume, and pre-tick by each supplement's own cadence:
-    # daily always, alternate only when yesterday was a rest day, occasional
-    # never. Anything already logged today stays ticked.
     # Nothing is pre-ticked any more. A tick used to mean "this is on your
     # daily list" and now means "I took this", which is the only version that
     # can carry a time with it — and the only one where an untaken capsule
@@ -2899,7 +2892,7 @@ async def cb_supp_log(cq: CallbackQuery) -> None:
     u = await db.get_or_create_user(cq.from_user.id)
     day = dt.date.fromisoformat(payload["day"])
     await db.unlog_supplements(u["id"], day)
-    n = await db.log_supplements(u["id"], day, payload["selected"])
+    await db.log_supplements(u["id"], day, payload["selected"])
     await cq.answer("logged")
     taken = await db.supplements_logged_on(u["id"], day)
     if taken:

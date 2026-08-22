@@ -177,31 +177,6 @@ async def propose(user_id: int, day: dt.date) -> tuple[dict[str, Any], float]:
     return res.data, res.cost_usd
 
 
-def render_proposal(data: dict[str, Any]) -> str:
-    lines = ["*What the data says*"]
-    for f in data.get("findings", []):
-        lines.append(f"• {f['statement']}  _({f['confidence']})_")
-        lines.append(f"  {f['evidence']}")
-    lines.append("")
-    lines.append("*Proposed changes*")
-    for r in data.get("recommendations", []):
-        lines.append(f"*{r['n']}.* {r['action']}")
-        lines.append(f"    → {r['expected_effect']}")
-        lines.append(f"    risk: {r['risk']}")
-        for tc in r.get("target_changes", []) or []:
-            bits = []
-            if tc.get("min_amount") is not None:
-                bits.append(f"min {tc['min_amount']}")
-            if tc.get("max_amount") is not None:
-                bits.append(f"max {tc['max_amount']}")
-            lines.append(f"    target {tc['nutrient_id']}: {', '.join(bits)}")
-    gap = data.get("what_the_data_cannot_tell_you")
-    if gap:
-        lines += ["", f"_limits: {gap}_"]
-    lines += ["", "Reply `apply 1 3` to take some, `apply all`, or ignore this."]
-    return "\n".join(lines)
-
-
 async def apply_recommendations(user_id: int, data: dict[str, Any], numbers: set[int], day: dt.date) -> list[str]:
     """Close the old target row and open a new one from tomorrow.
 
