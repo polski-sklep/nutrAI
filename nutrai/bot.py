@@ -3557,7 +3557,8 @@ async def _try_fix(msg: Message, u: Any, text: str) -> bool:
         resolved = [
             ResolvedComponent(
                 c["label"], c["fdc_id"], float(c["grams"]), float(c["yield_factor"]),
-                float(c["grams_sigma"] or 0), c["grams_source"])
+                float(c["grams_sigma"] or 0), c["grams_source"],
+            )
             for c in comps
         ]
         await msg.answer(
