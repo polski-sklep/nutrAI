@@ -418,7 +418,8 @@ async def confirm_entry(entry_id: int) -> dict[int, float]:
     return totals
 
 
-async def _profiles_con(con: Any, fdc_ids: Iterable[int]) -> dict[int, dict[int, float]]:
+async def _profiles_con(con: asyncpg.Pool | asyncpg.Connection, fdc_ids: Iterable[int],
+                        ) -> dict[int, dict[int, float]]:
     """Per-100 g nutrient profiles, keyed by fdc_id.
 
     The one place a food's nutrients enter the system, which is why the energy
@@ -987,7 +988,7 @@ async def spend_report(user_id: int, days: int = 30) -> list[asyncpg.Record]:
 # ------------------------------------------------------------ pending actions
 
 
-async def put_pending(user_id: int, kind: str, payload: dict) -> int:
+async def put_pending(user_id: int, kind: str, payload: dict[str, Any]) -> int:
     p = await pool()
     return await p.fetchval(
         "INSERT INTO pending_action (user_id, kind, payload) VALUES ($1,$2,$3) RETURNING id",
@@ -995,7 +996,7 @@ async def put_pending(user_id: int, kind: str, payload: dict) -> int:
     )
 
 
-async def take_pending(action_id: int) -> dict | None:
+async def take_pending(action_id: int) -> dict[str, Any] | None:
     p = await pool()
     row = await p.fetchrow(
         "SELECT payload FROM pending_action WHERE id = $1 AND expires_at > now()", action_id
@@ -1041,7 +1042,7 @@ async def replace_components(entry_id: int, components: list[ResolvedComponent],
 
 
 async def latest_pending(user_id: int, kind: str,
-                         within_minutes: int | None = None) -> dict | None:
+                         within_minutes: int | None = None) -> dict[str, Any] | None:
     """`within_minutes` narrows it to a recently-opened prompt.
 
     pending_action expires after two hours, which is right for "confirm this

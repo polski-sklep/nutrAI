@@ -21,3 +21,22 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 108
 target-version = "py311"
+
+# Advisory only. mypy is deliberately NOT in the dev extra and nothing in this
+# repo runs it: `pytest -q` is the gate, and a type checker wired into the gate
+# would fail the build on aiogram's `CallbackQuery.message` being optional,
+# which is a real hazard but not one worth blocking a commit on today.
+#
+# What this section does is make an ad-hoc run readable:
+#
+#     pipx run mypy nutrai/
+#
+# `ignore_missing_imports` is not laziness. asyncpg 0.31 ships .pyi files but no
+# `py.typed` marker, and apscheduler and aiohttp ship neither, so without it
+# every module that imports one of them opens with an import-untyped notice
+# that says nothing about this code. The consequence worth remembering is that
+# `asyncpg.Record` is `Any` to a checker: annotating a row as `Record`
+# documents it for a reader and buys no checking.
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true

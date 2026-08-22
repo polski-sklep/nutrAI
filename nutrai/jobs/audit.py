@@ -23,11 +23,15 @@ from __future__ import annotations
 import datetime as dt
 import re
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from .. import db
 from ..config import CARB, ENERGY_KCAL, FIBER
 from ..core.nutrition import ENERGY_FALLBACKS
 from ..llm.parse import INVERTING_TERMS
+
+if TYPE_CHECKING:                      # annotation only, as in jobs/notify.py
+    from aiogram import Bot
 
 # Fibre is carbohydrate-by-difference minus the digestible part, so a food whose
 # fibre exceeds this share of its carbohydrate is either a bran product or the
@@ -261,7 +265,7 @@ def summarise(findings: list[Finding]) -> dict[str, int]:
     return out
 
 
-async def audit_and_report(bot) -> None:
+async def audit_and_report(bot: Bot) -> None:
     """Daily job. Silent when there is nothing to say."""
     p = await db.pool()
     for u in await p.fetch("SELECT id, telegram_id FROM app_user"):

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from anthropic import AsyncAnthropic
+from anthropic.types import Usage
 
 from ..config import CACHE_READ_MULT, CACHE_WRITE_MULT, PRICES, settings
 
@@ -38,7 +39,7 @@ def client() -> AsyncAnthropic:
     return _client
 
 
-def price(model: str, usage: Any) -> float:
+def price(model: str, usage: Usage) -> float:
     """Exact cost of one call, from the usage block the API returns.
 
     Estimating this from your own token counts is a mistake: cache hits, tool

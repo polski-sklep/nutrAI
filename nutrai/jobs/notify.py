@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-from typing import Any
+from typing import TYPE_CHECKING
 
+import asyncpg
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from .. import db
 from ..core import render
+
+# Annotation only. This module is imported by `bot.py`, which owns the aiogram
+# session; nothing here constructs a Bot.
+if TYPE_CHECKING:
+    from aiogram import Bot
 
 log = logging.getLogger("nutrai.notify")
 
@@ -62,7 +68,7 @@ async def evaluate_user(user_id: int, day: dt.date, *, now: dt.datetime | None =
     out: list[str] = []
 
     # Which rules actually crossed, and by how much.
-    crossed: list[tuple[Any, float, float]] = []
+    crossed: list[tuple[asyncpg.Record, float, float]] = []
     for rule in rules:
         if rule["direction"] == "under" and local_hour < UNDER_RULES_FROM_HOUR:
             continue
@@ -91,7 +97,7 @@ async def evaluate_user(user_id: int, day: dt.date, *, now: dt.datetime | None =
     # apart. The 80% warning has nothing left to tell you once you are past
     # 100%. Deduped *after* the crossing test, not before: at 85% the 100% rule
     # has not fired and the 80% one is the whole message.
-    best: dict[tuple[int, str], tuple[Any, float, float]] = {}
+    best: dict[tuple[int, str], tuple[asyncpg.Record, float, float]] = {}
     for rule, amount, pct in crossed:
         key = (rule["nutrient_id"], rule["direction"])
         prev = best.get(key)
@@ -128,7 +134,7 @@ async def evaluate_user(user_id: int, day: dt.date, *, now: dt.datetime | None =
     return out
 
 
-async def supplement_reminders(bot) -> None:
+async def supplement_reminders(bot: Bot) -> None:
     """Nudge each supplement moment once, at its own local time.
 
     Template and SQL only, like every other notification here — invariant 4.
@@ -188,7 +194,7 @@ async def supplement_reminders(bot) -> None:
                 log.warning("supplement reminder failed for %s: %s", u["telegram_id"], exc)
 
 
-async def morning_notes(bot) -> None:
+async def morning_notes(bot: Bot) -> None:
     """Good morning, half an hour before you are usually up.
 
     Template and SQL only, like everything else in this module. The one line
@@ -237,7 +243,7 @@ async def morning_notes(bot) -> None:
             log.warning("morning note failed for %s: %s", u["telegram_id"], exc)
 
 
-async def sweep(bot) -> None:
+async def sweep(bot: Bot) -> None:
     """Periodic pass. Catches 'under' rules, which a write can never trigger:
     the reason you missed your protein floor is that you stopped eating."""
     p = await db.pool()
@@ -252,7 +258,7 @@ async def sweep(bot) -> None:
                 log.warning("notify failed for %s: %s", u["telegram_id"], exc)
 
 
-async def weekly_summary(bot) -> None:
+async def weekly_summary(bot: Bot) -> None:
     """Sunday evening. Silent for a week with nothing in it."""
     p = await db.pool()
     now = dt.datetime.now(dt.timezone.utc)
@@ -271,7 +277,7 @@ async def weekly_summary(bot) -> None:
             log.warning("weekly failed for %s: %s", u["telegram_id"], exc)
 
 
-async def daily_summary(bot) -> None:
+async def daily_summary(bot: Bot) -> None:
     p = await db.pool()
     users = await p.fetch("SELECT id, telegram_id, tz, day_rollover_hour FROM app_user")
     now = dt.datetime.now(dt.timezone.utc)
@@ -290,7 +296,7 @@ async def daily_summary(bot) -> None:
             log.warning("summary failed for %s: %s", u["telegram_id"], exc)
 
 
-def start_scheduler(bot) -> AsyncIOScheduler:
+def start_scheduler(bot: Bot) -> AsyncIOScheduler:
     sched = AsyncIOScheduler(timezone="UTC")
     sched.add_job(sweep, "interval", minutes=20, args=[bot], id="sweep")
     # Every ten minutes so a reminder lands near its time rather than up to
