@@ -271,8 +271,8 @@ counted forever. That asymmetry is stated in `DISAMBIGUATE_SYSTEM`.
 
 ### Stage 3 — compute and validate
 
-Pure arithmetic in `core/nutrition.py`, then four guardrails before anything is
-shown:
+Pure arithmetic in `core/nutrition.py`, then the guardrails that run in
+`llm/parse.py:validate()` before anything is shown:
 
 - **Atwater energy cross-check.** Recompute kcal from macros (4/4/9, with fibre
   at −2 kcal/g because fibre sits inside carbohydrate-by-difference but is not
@@ -281,8 +281,9 @@ shown:
   grams are wrong, or the row is internally inconsistent. This is the cheapest
   correctness signal available and it catches the most damaging failure mode: a
   plausible-looking parse against the wrong USDA row.
-- **Mass sanity.** Component sum vs any stated or weighed plate total, 15%
-  tolerance.
+- **A component that reports no energy.** Its grams add 0 kcal to the day and
+  nothing else raises it, because the Atwater check cannot tell "no energy
+  reported" from "zero-energy food". Named on the card instead.
 - **Implausibility.** Any single component over 1,500 g, any yield factor
   outside 0.3–3.0.
 - **Provenance flags.** `state: unknown` on anything over 80 g, or a
@@ -406,6 +407,8 @@ quadrature, not linearly. Two components at ±35 g give a day at ±50 g, not
 ±70 g. That matters: it means **one weighed component disproportionately
 shrinks the whole bar**, which is exactly the incentive you want. Weighing the
 oil is worth more than weighing the rice.
+
+The quadrature sum is computed in SQL, by `db.day_energy_sigma`, from the per-component sigma stored on each row — so it is reproducible from the database alone and does not depend on what the parser was thinking. A second implementation of it in `core/estimate.py` was removed once it became clear nothing called it.
 
 The day card now prints two things it did not before:
 

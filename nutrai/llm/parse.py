@@ -45,6 +45,10 @@ log = logging.getLogger("nutrai")
 # ------------------------------------------------------------------- images
 
 
+def visual_tokens(w: int, h: int) -> int:
+    return -(-w // 28) * -(-h // 28)
+
+
 def prepare_image(raw: bytes, long_edge: int = IMAGE_LONG_EDGE) -> tuple[str, int, int]:
     """Downscale and re-encode before upload.
 
@@ -63,10 +67,6 @@ def prepare_image(raw: bytes, long_edge: int = IMAGE_LONG_EDGE) -> tuple[str, in
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=IMAGE_JPEG_QUALITY, optimize=True)
     return base64.standard_b64encode(buf.getvalue()).decode(), img.size[0], img.size[1]
-
-
-def visual_tokens(w: int, h: int) -> int:
-    return -(-w // 28) * -(-h // 28)
 
 
 # -------------------------------------------------------------------- parse

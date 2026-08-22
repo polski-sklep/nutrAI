@@ -2760,12 +2760,17 @@ async def supp(msg: Message) -> None:
             parse_mode="HTML")
         return
 
+    # `stack` above is the picker's, filtered to what has actually started.
+    # These two screens are the other question — what you have set up — and
+    # reach the same cards as /schedule and /stack, which pass everything. A
+    # supplement you have decided on and not begun is exactly what they exist
+    # to show, so it must not depend on which command you arrived by.
     if sub.startswith(("time", "when")):
-        await _send_slot_settings(msg, u, stack)
+        await _send_slot_settings(msg, u, await db.supplement_stack(u["id"]))
         return
 
     if sub.startswith("list"):
-        await _send_stack_card(msg, u, stack)
+        await _send_stack_card(msg, u, await db.supplement_stack(u["id"]))
         return
 
     if sub.startswith(("skip", "clear", "none")):

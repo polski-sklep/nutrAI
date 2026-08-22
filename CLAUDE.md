@@ -330,6 +330,27 @@ Two rules hold that honest:
   one, and `db.observations()` filters `hours_fasted IS NOT NULL` so such a row
   is recorded and never correlated.
 
+## Code that exists and cannot run
+
+A cleanup sweep found eleven functions with tests and no production caller. The
+ones that were provably unreachable, or a second implementation of something
+production does in SQL, are gone: `mass_sanity` (the parse tool has no field
+for a stated plate weight, so there was never a total to disagree with),
+`propagate`, `fmt_pm`, `nutrient_uncertainty`, `day_confidence` (the day card's
+`±` comes from `db.day_energy_sigma`, in SQL) and `fasting.eating_window` (the
+`/window` screen reads `v_eating_window`).
+
+Deleting them cost the only tests those guarantees had, because the tests were
+written against the twin rather than the original. `test_day_energy_sigma_
+combines_in_quadrature_not_linearly` restores the §4.5 promise against the
+query that actually ships. If you remove a parallel implementation, check what
+its tests were protecting before deleting them with it.
+
+Four thin `db` accessors survive unused — `supplements_due`, `activity_on`,
+`clear_measured_tdee`, `delete_user_food`. Each is one line from a command that
+is plausibly wanted, and `delete_user_food` belongs to the retirement design
+above.
+
 ## Unprompted messages
 
 Threshold notifications are **deliberately off** and no longer seeded by

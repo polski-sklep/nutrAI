@@ -145,32 +145,3 @@ def energy_cross_check(nutrients: dict[int, float]) -> EnergyCheck:
         return EnergyCheck(kcal_db, kcal_atwater, 0.0, False)
     delta = (kcal_atwater - kcal_db) / kcal_db
     return EnergyCheck(kcal_db, kcal_atwater, delta * 100.0, abs(delta) <= ENERGY_TOLERANCE)
-
-
-def nutrient_uncertainty(
-    components: list[ResolvedComponent],
-    profiles: dict[int, dict[int, float]],
-    nutrient_id: int,
-) -> float:
-    """1-sigma on one nutrient total, from mass uncertainty alone.
-
-    It ignores uncertainty in the food database itself, which is real but
-    smaller and not quantified in FDC for most rows. So this is a floor on your
-    true error, not an estimate of it.
-    """
-    var = 0.0
-    for c in components:
-        per_100 = profiles.get(c.fdc_id, {}).get(nutrient_id)
-        if per_100 is None:
-            continue
-        per_gram = per_100 * c.yield_factor / 100.0
-        var += (c.sigma * per_gram) ** 2
-    return var ** 0.5
-
-
-def mass_sanity(components: list[ResolvedComponent], stated_total: float | None) -> bool:
-    """If a plate weight was stated or read off a scale, components must agree."""
-    if not stated_total:
-        return True
-    s = sum(c.grams for c in components)
-    return abs(s - stated_total) <= max(0.15 * stated_total, 20.0)

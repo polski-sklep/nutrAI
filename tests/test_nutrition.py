@@ -1,15 +1,7 @@
 import pytest
 
 from nutrai.config import CARB, ENERGY_KCAL, FAT, FIBER, PROTEIN
-from nutrai.core.nutrition import (
-    ResolvedComponent,
-    coverage,
-    energy_cross_check,
-    mass_sanity,
-    normalise_energy,
-    scale_profile,
-    total_nutrients,
-)
+from nutrai.core.nutrition import ResolvedComponent, coverage, energy_cross_check, normalise_energy, scale_profile, total_nutrients
 
 # Per 100 g, roughly USDA raw 85/15 minced beef and raw white rice.
 MINCE = {ENERGY_KCAL: 215.0, PROTEIN: 18.6, FAT: 15.0, CARB: 0.0, FIBER: 0.0, 1095: 4.2}
@@ -110,13 +102,6 @@ def test_normalise_energy_leaves_a_real_1008_alone():
 def test_normalise_energy_does_not_invent_energy():
     """A row that measured no energy at all still reports none — invariant 6."""
     assert ENERGY_KCAL not in normalise_energy({PROTEIN: 10.0})
-
-
-def test_mass_sanity():
-    comps = [ResolvedComponent("a", 1, 200.0), ResolvedComponent("b", 2, 200.0)]
-    assert mass_sanity(comps, 402.0)
-    assert mass_sanity(comps, None)
-    assert not mass_sanity(comps, 700.0)
 
 
 def test_inverting_terms_block_an_auto_match():

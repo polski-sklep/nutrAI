@@ -33,18 +33,6 @@ def test_running_fast_needs_now():
     assert len(running) == 1 and running[0].running and running[0].hours == 9.0
 
 
-def test_eating_window_and_midpoint():
-    w = fasting.eating_window(dt.date(2026, 8, 10), [t(10, 8, 0), t(10, 13, 0), t(10, 20, 0)])
-    assert w is not None
-    assert w.hours == 12.0
-    assert w.midpoint == dt.time(14, 0)
-    assert w.n_meals == 3
-
-
-def test_single_meal_day_has_no_window():
-    assert fasting.eating_window(dt.date(2026, 8, 10), [t(10, 13, 0)]) is None
-
-
 def test_tre_class_is_about_position_not_length():
     assert fasting.tre_class(dt.time(11, 30)) == "early"
     assert fasting.tre_class(dt.time(14, 0)) == "midday"
@@ -52,15 +40,24 @@ def test_tre_class_is_about_position_not_length():
 
 
 def test_stability_separates_same_length_different_position():
-    """Two people, identical 10-hour median windows. Only one is stable."""
-    steady = [
-        fasting.eating_window(dt.date(2026, 8, d), [t(d, 9, 0), t(d, 19, 0)]) for d in (10, 11, 12)
-    ]
-    erratic = [
-        fasting.eating_window(dt.date(2026, 8, 10), [t(10, 7, 0), t(10, 17, 0)]),
-        fasting.eating_window(dt.date(2026, 8, 11), [t(11, 13, 0), t(11, 23, 0)]),
-        fasting.eating_window(dt.date(2026, 8, 12), [t(12, 7, 0), t(12, 17, 0)]),
-    ]
+    """Two people, identical 10-hour median windows. Only one is stable.
+
+    The windows are built directly, as production does: `/window` reads
+    `v_eating_window` and constructs `EatingWindow` from the SQL row. The
+    Python helper that used to compute one from a list of meal times was a
+    second implementation of that view and is gone.
+    """
+    def w(day: int, first_h: int, last_h: int) -> fasting.EatingWindow:
+        first, last = t(day, first_h, 0), t(day, last_h, 0)
+        return fasting.EatingWindow(
+            dt.date(2026, 8, day), first, last,
+            (last - first).total_seconds() / 3600,
+            (first + (last - first) / 2).time(), 2,
+        )
+
+    steady = [w(d, 9, 19) for d in (10, 11, 12)]
+    erratic = [w(10, 7, 17), w(11, 13, 23), w(12, 7, 17)]
+
     len_a, sd_a = fasting.window_stability(steady)
     len_b, sd_b = fasting.window_stability(erratic)
     assert len_a == len_b == 10.0

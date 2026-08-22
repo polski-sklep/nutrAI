@@ -144,38 +144,3 @@ def choose_mass(
 
 
 # ---------------------------------------------------------------- propagation
-
-
-def propagate(
-    masses: list[MassEstimate],
-    per_gram: list[float],
-) -> tuple[float, float]:
-    """Total and 1-sigma uncertainty for one nutrient across components.
-
-    `per_gram[i]` is that nutrient's amount per gram of component i, already
-    including its yield factor. Errors are combined in quadrature on the
-    assumption that mass errors are independent — which is right for separate
-    ingredients on a plate and wrong if you systematically under-serve
-    everything, so treat the bar as a floor on your true uncertainty.
-    """
-    total = sum(m.grams * g for m, g in zip(masses, per_gram))
-    var = sum((m.sigma * g) ** 2 for m, g in zip(masses, per_gram))
-    return total, math.sqrt(var)
-
-
-def fmt_pm(value: float, sigma: float, unit: str = "kcal", rel_floor: float = 0.03) -> str:
-    """Render a value with its error bar, and drop the bar when it is noise."""
-    if value <= 0 or sigma / value < rel_floor:
-        return f"{value:,.0f} {unit}"
-    return f"{value:,.0f} ± {sigma:,.0f} {unit}"
-
-
-def day_confidence(masses: list[MassEstimate]) -> float:
-    """Fraction of the day's logged mass that was actually weighed or stated.
-
-    The single most useful number in the whole summary. If it reads 40%, every
-    trend below it is noise and no improvement plan built on it means anything.
-    """
-    total = sum(m.grams for m in masses) or 1.0
-    hard = sum(m.grams for m in masses if m.source in MEASURED_SOURCES)
-    return hard / total

@@ -3249,3 +3249,57 @@ def test_a_folded_nutrient_is_never_offered_as_a_target(database_url):
         assert folded >= 1, "nothing is folded, so this test proves nothing"
 
     run(check())
+
+
+@pytest.mark.integration
+def test_day_energy_sigma_combines_in_quadrature_not_linearly(database_url):
+    """The `±` on the day card, tested against the query that produces it.
+
+    ARCHITECTURE §4.5 promises uncertainties add in quadrature: two components
+    at ±35 g give a day at ±50, not ±70. That mattered enough to state, because
+    it is what makes one weighed component shrink the whole bar rather than a
+    fifth of it.
+
+    A pure-Python `propagate()` used to carry this test and nothing called it —
+    production has always read `db.day_energy_sigma`, which does the sum in SQL
+    from the sigma stored on each row. Testing the twin proved nothing about
+    the original, so this exercises the query itself.
+    """
+    from nutrai import db
+
+    async def check() -> None:
+        uid = await _reset()
+        p = await db.pool()
+        # A food whose energy is exactly 100 kcal/100 g, so a gram of sigma is
+        # a kcal of sigma and the arithmetic is readable.
+        fdc = await p.fetchval(
+            """SELECT fdc_id FROM food_nutrient
+                WHERE nutrient_id = 1008 AND amount > 50 LIMIT 1""")
+        kcal_per_100 = float(await p.fetchval(
+            "SELECT amount FROM food_nutrient WHERE fdc_id = $1 AND nutrient_id = 1008", fdc))
+        assert kcal_per_100 > 0, "the fixture food has no energy, so this proves nothing"
+
+        day = dt.date.today()
+        entry = await p.fetchval(
+            """INSERT INTO log_entry (user_id, local_date, name, source, status, logged_at)
+               VALUES ($1,$2,'sigma probe','text','confirmed', now()) RETURNING id""",
+            uid, day)
+        # Two components, 30 g of sigma each.
+        for i in (0, 1):
+            await p.execute(
+                """INSERT INTO log_component
+                     (entry_id, position, fdc_id, label, grams, yield_factor,
+                      grams_source, grams_sigma)
+                   VALUES ($1,$2,$3,'probe',100,1.0,'estimate',30)""",
+                entry, i, fdc)
+
+        got = await db.day_energy_sigma(uid, day)
+        one = 30.0 * kcal_per_100 / 100.0
+        quadrature = (2 ** 0.5) * one
+        linear = 2 * one
+        assert abs(got - quadrature) < 0.01, (got, quadrature)
+        assert got < linear * 0.75, "the sum is linear, not in quadrature"
+
+        await p.execute("DELETE FROM log_entry WHERE id = $1", entry)
+
+    run(check())

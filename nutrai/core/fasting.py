@@ -53,29 +53,6 @@ def fasts_from(times: list[dt.datetime], now: dt.datetime | None = None) -> list
     return out
 
 
-def eating_window(day: dt.date, times: list[dt.datetime]) -> EatingWindow | None:
-    """First bite to last bite. The midpoint is the number worth watching.
-
-    Window *length* is what people talk about; window *position* is what the
-    trial evidence actually separates. Early windows outrank late ones for fat
-    mass even at matched energy, so a midpoint drifting later is a real signal
-    and a midpoint drifting earlier is progress.
-    """
-    ts = sorted(times)
-    if len(ts) < 2:
-        return None
-    first, last = ts[0], ts[-1]
-    mid = first + (last - first) / 2
-    return EatingWindow(
-        day=day,
-        first=first,
-        last=last,
-        hours=(last - first).total_seconds() / 3600,
-        midpoint=mid.time().replace(second=0, microsecond=0),
-        n_meals=len(ts),
-    )
-
-
 def window_stability(windows: list[EatingWindow]) -> tuple[float, float]:
     """Median window length and the standard deviation of its midpoint, hours.
 

@@ -277,21 +277,6 @@ async def weekly_summary(bot: Bot) -> None:
         )
 
 
-async def daily_summary(bot: Bot) -> None:
-    p = await db.pool()
-    users = await p.fetch("SELECT id, telegram_id, tz, day_rollover_hour FROM app_user")
-    now = dt.datetime.now(dt.timezone.utc)
-    for u in users:
-        day = db.day_for_user(u, now)
-        prog = await db.day_progress(u["id"], day)
-        entries = await db.day_entries(u["id"], day)
-        coverage = await db.day_coverage(u["id"], day)
-        await _deliver(
-            bot, u["telegram_id"], "summary",
-            render.day_card(day, prog, entries, coverage=coverage, tz=u["tz"]),
-        )
-
-
 def start_scheduler(bot: Bot) -> AsyncIOScheduler:
     sched = AsyncIOScheduler(timezone="UTC")
     sched.add_job(sweep, "interval", minutes=20, args=[bot], id="sweep")
@@ -306,9 +291,12 @@ def start_scheduler(bot: Bot) -> AsyncIOScheduler:
                   id="morning_notes")
     # 21:00 Europe/Warsaw. Move this to a per-user job once there is more than
     # one user; a single cron is honest for a single-user deployment.
-    sched.add_job(daily_summary, CronTrigger(hour=19, minute=0), args=[bot], id="daily")
-    # After the summary, so a bad match is flagged while the day is still in
-    # mind and the entry is still easy to recognise.
+    # No 19:00 day card. It printed exactly what /today prints, unasked, at an
+    # hour when the day is not over — the same objection that removed the
+    # threshold rules, applied to the card those rules were fragments of.
+    #
+    # In the evening, so a bad match is flagged while the day is still in mind
+    # and the entry is still easy to recognise.
     from .audit import audit_and_report
 
     sched.add_job(audit_and_report, CronTrigger(hour=19, minute=5), args=[bot], id="audit")
