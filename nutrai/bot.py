@@ -6,10 +6,11 @@ import logging
 import re
 import zoneinfo
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from html import escape
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+import asyncpg
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
@@ -32,6 +33,14 @@ from .core.nutrition import (
 from .jobs import report as report_job
 from .llm import parse as llm
 
+if TYPE_CHECKING:
+    # The exact shape aiogram's `RequestMiddlewareType` protocol requires of a
+    # session middleware, spelled out so `bot.session.middleware()` below is
+    # checked against it rather than accepted on faith.
+    from aiogram.client.session.middlewares.base import NextRequestMiddlewareType
+    from aiogram.methods import Response, TelegramMethod
+    from aiogram.methods.base import TelegramType
+
 log = logging.getLogger("nutrai")
 
 
@@ -47,17 +56,24 @@ log = logging.getLogger("nutrai")
 # because this dict *is* the list. A prompt with no consumer cannot be opened,
 # and `_ask` sends the message and registers the wait in one call so the two
 # cannot drift apart.
-PROMPT_CONSUMERS: dict[str, Any] = {}
+#
+# Every consumer has the same four arguments — the message, the user row, the
+# text that was typed and the payload stored when the prompt was opened — and
+# returns whether it handled the reply. `_consume_awaited_reply` calls them
+# through this alias, so a consumer that drifts out of shape is a type error
+# rather than a TypeError in front of a user.
+PromptConsumer = Callable[[Message, asyncpg.Record, str, dict[str, Any]], Awaitable[bool]]
+PROMPT_CONSUMERS: dict[str, PromptConsumer] = {}
 
 
-def consumes(kind: str):
-    def register(fn):
+def consumes(kind: str) -> Callable[[PromptConsumer], PromptConsumer]:
+    def register(fn: PromptConsumer) -> PromptConsumer:
         PROMPT_CONSUMERS[kind] = fn
         return fn
     return register
 
 
-async def _ask(msg: Message, u: Any, kind: str, text: str, **kw) -> None:
+async def _ask(msg: Message, u: asyncpg.Record, kind: str, text: str, **kw: Any) -> None:
     """Send a prompt and open the wait for its answer. Never one without the other."""
     if kind not in PROMPT_CONSUMERS:
         raise KeyError(f"no consumer registered for prompt {kind!r}")
@@ -142,7 +158,7 @@ def kb_confirm(entry_id: int,
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-async def _user(msg: Message) -> Any:
+async def _user(msg: Message) -> asyncpg.Record:
     if settings.allowed_ids and msg.from_user.id not in settings.allowed_ids:
         raise PermissionError("not allowed")
     u = await db.get_or_create_user(msg.from_user.id, msg.from_user.full_name)
@@ -160,11 +176,11 @@ async def _user(msg: Message) -> Any:
     return u
 
 
-def _local_now(u: Any) -> dt.datetime:
+def _local_now(u: asyncpg.Record) -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc).astimezone(zoneinfo.ZoneInfo(u["tz"]))
 
 
-def _today(u: Any) -> dt.date:
+def _today(u: asyncpg.Record) -> dt.date:
     return db.day_for_user(u)
 
 
@@ -312,7 +328,8 @@ async def cb_block(cq: CallbackQuery) -> None:
     await _offer_block(cq.message, u, cq.data.split(":", 1)[1], user=u)
 
 
-async def _offer_block(msg: Message, u: Any, which: str, user: Any = None) -> None:
+async def _offer_block(msg: Message, u: asyncpg.Record, which: str,
+                       user: asyncpg.Record | None = None) -> None:
     lo, hi, icon = BLOCKS[which]
     today = _today(u)
     # The most recent day that had one, not necessarily yesterday: a morning
@@ -364,7 +381,7 @@ async def _offer_block(msg: Message, u: Any, which: str, user: Any = None) -> No
                                      picking=False))
 
 
-def _block_card(meals: list[dict], selected: list[int], title: str) -> str:
+def _block_card(meals: list[dict[str, Any]], selected: list[int], title: str) -> str:
     lines = [f"<b>{title}</b>", ""]
     for i, m in enumerate(meals):
         mark = "" if len(selected) == len(meals) else ("✅ " if i in selected else "⬜️ ")
@@ -376,7 +393,7 @@ def _block_card(meals: list[dict], selected: list[int], title: str) -> str:
     return "\n".join(lines)
 
 
-def _block_keyboard(action_id: int, meals: list[dict], selected: list[int],
+def _block_keyboard(action_id: int, meals: list[dict[str, Any]], selected: list[int],
                     *, picking: bool) -> InlineKeyboardMarkup:
     """Two states on one card: the summary, and the same list with checkboxes.
 
@@ -521,7 +538,7 @@ _TRAILING_TIME = re.compile(r"(?:\s+at)?\s+(\d{1,2})[:.](\d{2})\s*$")
 
 
 @consumes("backdate_food")
-async def _consume_backdate(msg: Message, u: Any, text: str, payload: dict) -> bool:
+async def _consume_backdate(msg: Message, u: asyncpg.Record, text: str, payload: dict[str, Any]) -> bool:
     day = dt.date.fromisoformat(payload.get("iso") or "") if payload.get("iso") else None
     if not day:
         return False
@@ -530,7 +547,7 @@ async def _consume_backdate(msg: Message, u: Any, text: str, payload: dict) -> b
     return True
 
 
-async def _backdate(msg: Message, u: Any, text: str, day: dt.date) -> None:
+async def _backdate(msg: Message, u: asyncpg.Record, text: str, day: dt.date) -> None:
     """Parse a meal, file it on `day`, and settle the time before confirming."""
     zone = zoneinfo.ZoneInfo(u["tz"])
     stated = _TRAILING_TIME.search(text)
@@ -582,7 +599,7 @@ async def cb_backdate_cancel(cq: CallbackQuery) -> None:
     await cq.message.edit_reply_markup(reply_markup=None)
 
 
-async def _send_day(msg: Message, u: Any, day: dt.date, show_all: bool = False) -> None:
+async def _send_day(msg: Message, u: asyncpg.Record, day: dt.date, show_all: bool = False) -> None:
     prog = await db.day_progress(u["id"], day, core_only=not show_all)
     entries = await db.day_entries(u["id"], day)
     conf = await db.day_mass_confidence(u["id"], day)
@@ -636,7 +653,7 @@ async def history(msg: Message) -> None:
                      parse_mode="HTML")
 
 
-def _csv(rows: Sequence[Any]) -> bytes:
+def _csv(rows: Sequence[asyncpg.Record]) -> bytes:
     """Records to CSV bytes, with the numbers readable.
 
     asyncpg returns `numeric` as Decimal, and str(Decimal) prints the full
@@ -1008,7 +1025,7 @@ async def cb_rate_value(cq: CallbackQuery) -> None:
     )
 
 
-async def _record_rating(msg: Message, u: Any, kind: str, value: float,
+async def _record_rating(msg: Message, u: asyncpg.Record, kind: str, value: float,
                          note: str | None = None) -> None:
     obs_id, text = await _rating_text(u, kind, value, note)
     # A note is worth more than the number it annotates and is the part a
@@ -1022,7 +1039,7 @@ async def _record_rating(msg: Message, u: Any, kind: str, value: float,
     await msg.answer(text, parse_mode="HTML", reply_markup=kb)
 
 
-async def _rating_text(u: Any, kind: str, value: float,
+async def _rating_text(u: asyncpg.Record, kind: str, value: float,
                        note: str | None = None) -> tuple[int, str]:
     """Log it and say what it bought.
 
@@ -1076,7 +1093,7 @@ async def cb_rating_note(cq: CallbackQuery) -> None:
 
 
 @consumes("rating_note")
-async def _consume_rating_note(msg: Message, u: Any, text: str, payload: dict) -> bool:
+async def _consume_rating_note(msg: Message, u: asyncpg.Record, text: str, payload: dict[str, Any]) -> bool:
     note = text.strip()
     if not note or len(note) > 500:
         return False
@@ -1137,7 +1154,7 @@ def _date(v: str) -> dt.date:
 # Accept what a person types, not what a parser would prefer. Every one of
 # these was a real refusal: "M" for male, "21/09/1991" for a birth date,
 # "176cm" for a height.
-PROFILE_VALIDATORS: dict[str, Any] = {
+PROFILE_VALIDATORS: dict[str, Callable[[str], Any]] = {
     "sex": lambda v: {"m": "male", "male": "male", "man": "male",
                       "f": "female", "female": "female", "woman": "female"}.get(v.strip().lower()),
     "goal": lambda v: {"lose": "lose", "lose weight": "lose", "cut": "lose",
@@ -1188,7 +1205,7 @@ def _profile_edits(text: str) -> list[tuple[int, str]] | None:
     return out
 
 
-async def _apply_profile_edits(msg: Message, u: Any, edits: list[tuple[int, str]]) -> None:
+async def _apply_profile_edits(msg: Message, u: asyncpg.Record, edits: list[tuple[int, str]]) -> None:
     """Apply what is valid, refuse what is not, and say which was which."""
     notes: list[str] = []
     changed = False
@@ -1242,7 +1259,7 @@ TARGET_LINE = re.compile(
 )
 
 
-async def _set_one_target(msg: Message, u: Any, term: str, bound: str | None,
+async def _set_one_target(msg: Message, u: asyncpg.Record, term: str, bound: str | None,
                           value_tok: str) -> bool:
     """Resolve a nutrient and set or clear one target. False if unresolvable."""
     # Search the word the card printed, not only the word USDA stores.
@@ -1343,7 +1360,7 @@ async def _set_one_target(msg: Message, u: Any, term: str, bound: str | None,
     return True
 
 
-async def _try_target_lines(msg: Message, u: Any, text: str) -> bool:
+async def _try_target_lines(msg: Message, u: asyncpg.Record, text: str) -> bool:
     """"Alcohol 0g", one per line. False if it does not name a nutrient."""
     lines = [ln for ln in text.splitlines() if ln.strip()]
     parsed = [TARGET_LINE.match(ln) for ln in lines]
@@ -1381,7 +1398,7 @@ async def training(msg: Message) -> None:
     )
 
 
-def _training_keyboard(today_rows: Sequence[Any]) -> InlineKeyboardMarkup | None:
+def _training_keyboard(today_rows: Sequence[asyncpg.Record]) -> InlineKeyboardMarkup | None:
     """One ❌ per session logged today.
 
     Only today's: a session from Tuesday is history, and a delete button next
@@ -1400,7 +1417,7 @@ def _training_keyboard(today_rows: Sequence[Any]) -> InlineKeyboardMarkup | None
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def _describe_activity(r: Any) -> str:
+def _describe_activity(r: asyncpg.Record) -> str:
     bits = [r["kind"]]
     if r["minutes"]:
         bits.append(render._hm(float(r["minutes"])))
@@ -1524,7 +1541,7 @@ async def profile_cmd(msg: Message) -> None:
     )
 
 
-async def _recalculate_targets(msg: Message, u: Any) -> None:
+async def _recalculate_targets(msg: Message, u: asyncpg.Record) -> None:
     """Recompute every derived target from the current profile and weight.
 
     Never automatic. Invariant 3 says targets are versioned rather than
@@ -1625,7 +1642,7 @@ async def weight(msg: Message) -> None:
     await _record_weight(msg, u, kg)
 
 
-async def _record_weight(msg: Message, u: Any, kg: float) -> None:
+async def _record_weight(msg: Message, u: asyncpg.Record, kg: float) -> None:
     # A fat-fingered 782 for 78.2 would bend the regression for weeks and never
     # look wrong in a list. Refuse the impossible rather than store it.
     if not 20 <= kg <= 400:
@@ -1665,8 +1682,8 @@ async def _record_weight(msg: Message, u: Any, kg: float) -> None:
     await msg.answer("\n".join(lines), parse_mode="HTML")
 
 
-def _supp_manage_keyboard(stack: Sequence[Any],
-                          retired: Sequence[Any] = ()) -> InlineKeyboardMarkup | None:
+def _supp_manage_keyboard(stack: Sequence[asyncpg.Record],
+                          retired: Sequence[asyncpg.Record] = ()) -> InlineKeyboardMarkup | None:
     """A ❌ per supplement, numbered to match the card, plus ↩️ to restore."""
     rows: list[list[InlineKeyboardButton]] = []
     for chunk in (list(enumerate(stack, start=1))[i:i + 5] for i in range(0, len(stack), 5)):
@@ -1775,7 +1792,7 @@ SLOT_TIME = re.compile(
     re.IGNORECASE)
 
 
-async def _try_slot_lines(msg: Message, u: Any, text: str) -> bool:
+async def _try_slot_lines(msg: Message, u: asyncpg.Record, text: str) -> bool:
     """"3. evening" and "evening 21:00", one per line. False if neither."""
     lines = [ln for ln in text.splitlines() if ln.strip()]
     if not lines:
@@ -1901,7 +1918,8 @@ async def cb_repeat_dish(cq: CallbackQuery) -> None:
         )
 
 
-async def _tdee_offer(u: Any, flr: Any) -> tuple[str, Any] | None:
+async def _tdee_offer(u: asyncpg.Record, flr: insight.FatLossRate | None,
+                      ) -> tuple[str, InlineKeyboardMarkup] | None:
     """The card and keyboard for adopting a measured TDEE, or None."""
     if not flr or not flr.implied_tdee_kcal:
         return None
@@ -2010,7 +2028,7 @@ async def cb_why_nutrient(cq: CallbackQuery) -> None:
     await _explain_nutrient(cq.message, u, name or str(nid))
 
 
-async def _explain_nutrient(msg: Message, u: Any, term: str) -> bool:
+async def _explain_nutrient(msg: Message, u: asyncpg.Record, term: str) -> bool:
     """Returns False when the word is not a nutrient, so a meal still parses."""
     matches = await db.find_nutrients(render.usda_name_for(term) or term)
     if not matches:
@@ -2087,7 +2105,7 @@ async def food_cmd(msg: Message) -> None:
 
 
 @consumes("food_name_await")
-async def _consume_food_name(msg: Message, u: Any, text: str, payload: dict) -> bool:
+async def _consume_food_name(msg: Message, u: asyncpg.Record, text: str, payload: dict[str, Any]) -> bool:
     """The reply to "what would you like to call it?".
 
     A food name and a meal description are the same kind of string — "pickle
@@ -2196,7 +2214,7 @@ def _read_makes(text: str) -> tuple[str, float | None, int | None, str]:
 
 
 @consumes("food_await")
-async def _consume_food_recipe(msg: Message, u: Any, text: str, payload: dict) -> bool:
+async def _consume_food_recipe(msg: Message, u: asyncpg.Record, text: str, payload: dict[str, Any]) -> bool:
     """Turn a list of ingredients into one food row, by arithmetic only."""
     name = payload.get("name") or "unnamed"
 
@@ -2361,7 +2379,7 @@ async def report_cmd(msg: Message) -> None:
 
 
 @consumes("plan_apply")
-async def _consume_plan_apply(msg: Message, u: Any, text: str, payload: dict) -> bool:
+async def _consume_plan_apply(msg: Message, u: asyncpg.Record, text: str, payload: dict[str, Any]) -> bool:
     """"apply 1 3" / "apply all". Anything else is a meal and passes through."""
     words = text.strip().lower().split()
     if not words or words[0] != "apply":
@@ -2424,7 +2442,7 @@ TIME_REPLY = re.compile(
 
 
 @consumes("time_await")
-async def _consume_time(msg: Message, u: Any, text: str, payload: dict) -> bool:
+async def _consume_time(msg: Message, u: asyncpg.Record, text: str, payload: dict[str, Any]) -> bool:
     m = TIME_REPLY.match(text)
     if not m:
         return False    # not a time, so it is a meal and passes through
@@ -2462,7 +2480,8 @@ async def _consume_time(msg: Message, u: Any, text: str, payload: dict) -> bool:
 BARCODE = re.compile(r"^\s*(\d{8,14})\s*$")
 
 
-async def _offer_off_product(msg: Message, u: Any, p: dict, name: str) -> None:
+async def _offer_off_product(msg: Message, u: asyncpg.Record, p: dict[str, Any],
+                             name: str) -> None:
     """Show a looked-up panel and wait for a decision. Never saves first."""
     await db.put_pending(u["id"], "off_product", {"product": {
         "name": p["name"], "brand": p["brand"], "barcode": p["barcode"],
@@ -2565,7 +2584,7 @@ async def cb_off_rename(cq: CallbackQuery) -> None:
 
 
 @consumes("off_rename")
-async def _consume_off_rename(msg: Message, u: Any, text: str, payload: dict) -> bool:
+async def _consume_off_rename(msg: Message, u: asyncpg.Record, text: str, payload: dict[str, Any]) -> bool:
     name = text.strip()
     if not name or len(name) > 60:
         return False
@@ -2590,7 +2609,7 @@ async def cb_off_discard(cq: CallbackQuery) -> None:
                             "another barcode.")
 
 
-async def _handle_food_label(msg: Message, u: Any, name: str) -> None:
+async def _handle_food_label(msg: Message, u: asyncpg.Record, name: str) -> None:
     """Transcribe a packaged food's panel and offer to store it.
 
     Same amendment as the supplement panel: a model may transcribe a printed
@@ -2761,7 +2780,7 @@ async def supp(msg: Message) -> None:
     await _send_supp_picker(msg, u, stack, day)
 
 
-async def _send_supp_picker(msg: Message, u: Any, stack: list[Any],
+async def _send_supp_picker(msg: Message, u: asyncpg.Record, stack: list[asyncpg.Record],
                             day: dt.date) -> None:
     """The checklist, from /supp or from a reminder's third button.
 
@@ -2802,7 +2821,7 @@ async def cb_supp_pick_from_reminder(cq: CallbackQuery) -> None:
     await _send_supp_picker(cq.message, u, stack, _today(u))
 
 
-def _button_label(sup: Any) -> str:
+def _button_label(sup: asyncpg.Record) -> str:
     """Names are the substance now — "Chelated Magnesium", not "HSN
     EssentialSeries Chelated Magnesium" — so this rarely has to do anything.
     Kept as a guard, trimming the front so the substance survives if it ever
@@ -2811,7 +2830,8 @@ def _button_label(sup: Any) -> str:
     return name if len(name) <= 32 else "… " + name[-30:]
 
 
-def _supp_keyboard(action_id: int, stack: list[Any], selected: list[int]) -> InlineKeyboardMarkup:
+def _supp_keyboard(action_id: int, stack: list[asyncpg.Record],
+                   selected: list[int]) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(
             text=f"{'✅' if s['id'] in selected else '⬜️'} {_button_label(s)}",
@@ -3007,7 +3027,7 @@ async def undo(msg: Message) -> None:
 UNDO_ASK_AFTER_MIN = 60
 
 
-async def _do_undo(msg: Message, u: Any, entry_id: int, label: str, day: dt.date) -> None:
+async def _do_undo(msg: Message, u: asyncpg.Record, entry_id: int, label: str, day: dt.date) -> None:
     entry = await db.undo_entry(u["id"], entry_id)
     if not entry:
         await msg.answer("That was already undone.")
@@ -3082,7 +3102,7 @@ async def audit_cmd(msg: Message) -> None:
 async def insight_cmd(msg: Message) -> None:
     u = await _user(msg)
     out: list[str] = []
-    tdee_offer: tuple[str, Any] | None = None
+    tdee_offer: tuple[str, InlineKeyboardMarkup] | None = None
 
     weights = await db.weight_series(u["id"], 42)
     energy = await db.daily_energy(u["id"], 42)
@@ -3342,7 +3362,8 @@ async def on_text(msg: Message) -> None:
 
 
 
-def _when_from_ops(ops: list[Any], u: Any, base: dt.datetime | None = None) -> dt.datetime:
+def _when_from_ops(ops: list[dsl.Op], u: asyncpg.Record,
+                   base: dt.datetime | None = None) -> dt.datetime:
     """Fold @date and @time ops into one UTC instant.
 
     Resolved against the user's own timezone and rollover hour, so "yesterday"
@@ -3371,7 +3392,7 @@ def _when_from_ops(ops: list[Any], u: Any, base: dt.datetime | None = None) -> d
 
 
 
-async def _apply_when(entry_id: int, ops: list[Any], u: Any) -> dt.date | None:
+async def _apply_when(entry_id: int, ops: list[dsl.Op], u: asyncpg.Record) -> dt.date | None:
     """Move a pending entry to another day or time. Returns the new local date.
 
     Only pending entries: once confirmed, log_nutrient has been written and the
@@ -3403,18 +3424,18 @@ async def _apply_when(entry_id: int, ops: list[Any], u: Any) -> dt.date | None:
 # that ignores its own answer is worse than no prompt, so a fifth prompt now
 # inherits the behaviour instead of repeating the bug.
 @consumes("supp_label")
-async def _consume_supp_label(msg: Message, u: Any, text: str, payload: dict) -> bool:
+async def _consume_supp_label(msg: Message, u: asyncpg.Record, text: str, payload: dict[str, Any]) -> bool:
     await _handle_supplement_label(msg, u, text=text)
     return True
 
 
 @consumes("fix_entry")
-async def _consume_fix(msg: Message, u: Any, text: str, payload: dict) -> bool:
+async def _consume_fix(msg: Message, u: asyncpg.Record, text: str, payload: dict[str, Any]) -> bool:
     return await _try_fix(msg, u, text)
 
 
 @consumes("profile_await")
-async def _consume_profile(msg: Message, u: Any, text: str, payload: dict) -> bool:
+async def _consume_profile(msg: Message, u: asyncpg.Record, text: str, payload: dict[str, Any]) -> bool:
     edits = _profile_edits(text)
     if not edits:
         return False   # not numbered lines, so it is a meal: let it through
@@ -3423,12 +3444,12 @@ async def _consume_profile(msg: Message, u: Any, text: str, payload: dict) -> bo
 
 
 @consumes("slot_await")
-async def _consume_slots(msg: Message, u: Any, text: str, payload: dict) -> bool:
+async def _consume_slots(msg: Message, u: asyncpg.Record, text: str, payload: dict[str, Any]) -> bool:
     return await _try_slot_lines(msg, u, text)
 
 
 @consumes("target_await")
-async def _consume_targets(msg: Message, u: Any, text: str, payload: dict) -> bool:
+async def _consume_targets(msg: Message, u: asyncpg.Record, text: str, payload: dict[str, Any]) -> bool:
     # Falls through to the meal parser when the line does not name a nutrient,
     # so "chicken 200g" is still dinner.
     return await _try_target_lines(msg, u, text)
@@ -3445,7 +3466,7 @@ def _nutrient_terms(text: str) -> list[str]:
 
 
 @consumes("why_await")
-async def _consume_why(msg: Message, u: Any, text: str, payload: dict) -> bool:
+async def _consume_why(msg: Message, u: asyncpg.Record, text: str, payload: dict[str, Any]) -> bool:
     """Answers for every nutrient named, or none.
 
     All-or-nothing on purpose: a reply where one word is a nutrient and the
@@ -3467,7 +3488,7 @@ async def _consume_why(msg: Message, u: Any, text: str, payload: dict) -> bool:
 
 
 @consumes("weight_await")
-async def _consume_weight(msg: Message, u: Any, text: str, payload: dict) -> bool:
+async def _consume_weight(msg: Message, u: asyncpg.Record, text: str, payload: dict[str, Any]) -> bool:
     try:
         value = float(text.strip().replace(",", "."))
     except ValueError:
@@ -3478,7 +3499,7 @@ async def _consume_weight(msg: Message, u: Any, text: str, payload: dict) -> boo
 
 
 @consumes("rate_await")
-async def _consume_rating(msg: Message, u: Any, text: str, payload: dict) -> bool:
+async def _consume_rating(msg: Message, u: asyncpg.Record, text: str, payload: dict[str, Any]) -> bool:
     try:
         value = float(text.strip().replace(",", "."))
     except ValueError:
@@ -3490,7 +3511,7 @@ async def _consume_rating(msg: Message, u: Any, text: str, payload: dict) -> boo
     return True
 
 
-async def _consume_awaited_reply(msg: Message, u: Any, text: str) -> bool:
+async def _consume_awaited_reply(msg: Message, u: asyncpg.Record, text: str) -> bool:
     """Route a message to whichever prompt is waiting for it. True if consumed.
 
     Newest prompt wins: if you press ✏️ and then tap /weight, the weight prompt
@@ -3510,7 +3531,7 @@ async def _consume_awaited_reply(msg: Message, u: Any, text: str) -> bool:
     return await consumer(msg, u, text, pending["payload"] or {})
 
 
-async def _try_fix(msg: Message, u: Any, text: str) -> bool:
+async def _try_fix(msg: Message, u: asyncpg.Record, text: str) -> bool:
     """Apply a correction to the pending entry the ✎ button was pressed on.
 
     Nothing consumed the `fix_entry` action before this, so ✎ printed
@@ -3651,7 +3672,7 @@ async def _try_fix(msg: Message, u: Any, text: str) -> bool:
     return True
 
 
-async def _log_one_component(msg: Message, u: Any, comp: dict,
+async def _log_one_component(msg: Message, u: asyncpg.Record, comp: dict[str, Any],
                              cmd: dsl.RepeatCommand) -> bool:
     """Log a single food at the amount you usually have of it.
 
@@ -3693,7 +3714,7 @@ async def _log_one_component(msg: Message, u: Any, comp: dict,
     return True
 
 
-async def _try_repeat(msg: Message, u: Any, cmd: dsl.RepeatCommand) -> bool:
+async def _try_repeat(msg: Message, u: asyncpg.Record, cmd: dsl.RepeatCommand) -> bool:
     """The zero-token path. Returns False if this was not a repeat after all."""
     dish = None
     if cmd.selector_kind == "index":
@@ -3845,7 +3866,9 @@ async def _try_repeat(msg: Message, u: Any, cmd: dsl.RepeatCommand) -> bool:
     return True
 
 
-async def _log_template(msg: Message, u: Any, tpl: tuple[Any, list[Any]], cmd: dsl.RepeatCommand) -> None:
+async def _log_template(msg: Message, u: asyncpg.Record,
+                        tpl: tuple[asyncpg.Record, list[asyncpg.Record]],
+                        cmd: dsl.RepeatCommand) -> None:
     t, items = tpl
     logged = []
     for item in items:
@@ -3859,7 +3882,7 @@ async def _log_template(msg: Message, u: Any, tpl: tuple[Any, list[Any]], cmd: d
 # ---------------------------------------------------------------- presenting
 
 
-async def _matched_names(components: Sequence[Any]) -> dict[int, str]:
+async def _matched_names(components: Sequence[ResolvedComponent]) -> dict[int, str]:
     """USDA descriptions for what a parse resolved to, for the confirm card."""
     ids = [c.fdc_id for c in components if getattr(c, "fdc_id", None)]
     if not ids:
@@ -3871,7 +3894,7 @@ async def _matched_names(components: Sequence[Any]) -> dict[int, str]:
 
 
 async def _present(
-    msg: Message, u: Any, parsed: llm.ParsedMeal, *, source: str,
+    msg: Message, u: asyncpg.Record, parsed: llm.ParsedMeal, *, source: str,
     photo_file_id: str | None, edit: Message | None = None,
     text: str | None = None, when: dt.datetime | None = None,
 ) -> int | None:
@@ -4011,7 +4034,7 @@ async def unknown_command(msg: Message) -> None:
 
 
 async def _handle_supplement_label(
-    msg: Message, u: Any, *, text: str | None = None
+    msg: Message, u: asyncpg.Record, *, text: str | None = None
 ) -> None:
     """Transcribe one or more panels, show them, save nothing until confirmed.
 
@@ -4222,7 +4245,7 @@ async def cb_fix(cq: CallbackQuery) -> None:
 # ------------------------------------------------------------ notifications
 
 
-async def _check_thresholds(msg: Message, u: Any) -> None:
+async def _check_thresholds(msg: Message, u: asyncpg.Record) -> None:
     """Fires immediately after a write, in addition to the scheduled sweep.
 
     'You have consumed 80% of your carbs' is only useful before the next meal,
@@ -4233,7 +4256,11 @@ async def _check_thresholds(msg: Message, u: Any) -> None:
         await msg.answer(text, parse_mode="HTML")
 
 
-async def resend_unformatted(make_request, bot: Bot, method):
+async def resend_unformatted(
+    make_request: NextRequestMiddlewareType[TelegramType],
+    bot: Bot,
+    method: TelegramMethod[TelegramType],
+) -> Response[TelegramType]:
     """Retry once without parse_mode when Telegram rejects the markup.
 
     Outbound messages are HTML, escaped with `html.escape`, which should make

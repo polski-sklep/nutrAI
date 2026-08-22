@@ -10,3 +10,4 @@ FoodData_Central_*/
 *.zip
 *.rtf
 nutrai-backups/
+.claude/worktrees/

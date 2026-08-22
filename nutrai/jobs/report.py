@@ -14,11 +14,16 @@ and measurement quality — never a raw log line — and it runs once a week.
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from .. import db
 from ..core import plan, render
+
+if TYPE_CHECKING:                      # annotation only, as in jobs/notify.py
+    from aiogram import Bot
 
 log = logging.getLogger("nutrai.report")
 
@@ -27,7 +32,7 @@ log = logging.getLogger("nutrai.report")
 MIN_DAYS_LOGGED = 10
 
 
-async def weekly_report(bot) -> None:
+async def weekly_report(bot: Bot) -> None:
     p = await db.pool()
     for u in await p.fetch("SELECT id, telegram_id, tz, day_rollover_hour FROM app_user"):
         import datetime as dt
@@ -54,7 +59,7 @@ async def weekly_report(bot) -> None:
             log.warning("weekly report send failed for %s: %s", u["telegram_id"], exc)
 
 
-def schedule(sched, bot) -> None:
+def schedule(sched: AsyncIOScheduler, bot: Bot) -> None:
     # 18:00 Europe/Warsaw. The deterministic week card follows at 20:00, so the
     # judgement arrives first and the numbers behind it are still one tap away.
     sched.add_job(weekly_report, CronTrigger(day_of_week="sun", hour=16, minute=0),

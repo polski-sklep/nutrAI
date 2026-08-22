@@ -60,7 +60,8 @@ FIELDS: dict[str, tuple[int, float]] = {
 }
 
 
-async def _get(session: aiohttp.ClientSession, url: str, **params) -> dict | None:
+async def _get(session: aiohttp.ClientSession, url: str,
+               **params: str | int) -> dict[str, Any] | None:
     try:
         async with session.get(url, params=params, timeout=TIMEOUT,
                                headers={"User-Agent": USER_AGENT}) as r:
@@ -73,7 +74,7 @@ async def _get(session: aiohttp.ClientSession, url: str, **params) -> dict | Non
         return None
 
 
-def _panel(product: dict) -> tuple[dict[int, float], list[str]]:
+def _panel(product: dict[str, Any]) -> tuple[dict[int, float], list[str]]:
     """(nutrient_id -> per 100 g, names of fields that were absent).
 
     The absences are returned rather than swallowed, because "this panel has
@@ -103,14 +104,14 @@ def _panel(product: dict) -> tuple[dict[int, float], list[str]]:
     return out, missing
 
 
-def _first_brand(brands: Any) -> str:
+def _first_brand(brands: object) -> str:
     """The product API returns a comma-joined string, search returns a list."""
     if isinstance(brands, list):
         return str(brands[0]).strip() if brands else ""
     return str(brands or "").split(",")[0].strip()
 
 
-def summarise(product: dict) -> dict[str, Any]:
+def summarise(product: dict[str, Any]) -> dict[str, Any]:
     panel, missing = _panel(product)
     return {
         "barcode": str(product.get("code") or ""),

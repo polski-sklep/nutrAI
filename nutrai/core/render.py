@@ -21,7 +21,18 @@ import datetime as dt
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from html import escape
-from typing import Any, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
+
+from ..rows import Row
+
+# Annotations only. insight, suggest, nutrition and audit all reach back into
+# render at call time, so importing them here for real would be a cycle; under
+# `from __future__ import annotations` these names never need to exist at
+# runtime.
+if TYPE_CHECKING:
+    from ..jobs.audit import Finding
+    from .insight import FatLossRate
+    from .suggest import Suggestion
 
 BAR_FULL = "█"
 BAR_EMPTY = "░"
@@ -81,6 +92,12 @@ def fmt_amount(value: float, unit: str) -> str:
 
 def confirm_card(
     dish_name: str,
+    # Deliberately Any, and the one place in this module where it is right.
+    # This is called with `nutrition.ResolvedComponent` from the parse path and
+    # with `dsl.Component` from the repeat path — two unrelated dataclasses
+    # that share no base — and the body then falls back to subscripting
+    # (`c["label"]`) for a row-shaped component. Naming any one of those three
+    # would be a claim the other two callers break.
     components: Sequence[Any],
     totals: dict[int, float],
     *,
@@ -226,7 +243,7 @@ def _emoji(nutrient_id: int) -> str:
 def logged_card(
     dish_name: str,
     meal: dict[int, float],
-    progress: Sequence[Any],
+    progress: Sequence[Row],
     *,
     top_n: int = 4,
     gaps_n: int = 3,
@@ -441,8 +458,8 @@ SLOT_ABBREV = {"breakfast": "bfast", "lunch": "lunch", "dinner": "dinner",
 
 def day_card(
     day: dt.date,
-    progress: Sequence[Any],
-    entries: Sequence[Any],
+    progress: Sequence[Row],
+    entries: Sequence[Row],
     *,
     show_all: bool = False,
     pct_measured: float | None = None,
@@ -598,7 +615,7 @@ def day_card(
     return "\n".join(lines)
 
 
-def _row(r: Any, covered: float | None = None) -> str:
+def _row(r: Row, covered: float | None = None) -> str:
     amount = float(r["amount"])
     unit = r["unit"]
     target = r["min_amount"] if r["min_amount"] is not None else r["max_amount"]
@@ -701,7 +718,7 @@ def dish_icon(name: str, slot: str | None = None) -> str:
     return SLOT_FALLBACK.get(slot or "", "•")
 
 
-def history_card(rows: Sequence[Any], span: Any, days: int,
+def history_card(rows: Sequence[Row], span: Row | None, days: int,
                  tz: str = "UTC") -> str:
     """The diary itself, newest first, grouped by day.
 
@@ -725,7 +742,7 @@ def history_card(rows: Sequence[Any], span: Any, days: int,
         return "Nothing logged yet."
 
     lines = [f"📔 <b>Your diary</b> — last {days} days", ""]
-    by_day: dict[Any, list[Any]] = {}
+    by_day: dict[dt.date, list[Row]] = {}
     for r in rows:
         by_day.setdefault(r["local_date"], []).append(r)
 
@@ -758,8 +775,8 @@ def history_card(rows: Sequence[Any], span: Any, days: int,
     return "\n".join(lines)
 
 
-def repeat_menu(dishes: Sequence[Any], templates: Sequence[Any] = (),
-                components: Sequence[Any] = ()) -> str:
+def repeat_menu(dishes: Sequence[Row], templates: Sequence[Row] = (),
+                components: Sequence[Row] = ()) -> str:
     """Ordered by the hour, so breakfast is at the top at breakfast time.
 
     No counts beside the names: "x3" invited reading the number as how many
@@ -809,7 +826,7 @@ def _title(name: str) -> str:
 # --------------------------------------------------------- notifications
 
 
-def audit_card(findings: Sequence[Any]) -> str:
+def audit_card(findings: Sequence[Finding]) -> str:
     """The daily self-check, grouped by how much it matters.
 
     Errors first because they mean a number in the log is wrong, not merely
@@ -929,7 +946,7 @@ def _pre(lines: Iterable[str]) -> str:
     return "<pre>" + "\n".join(lines) + "</pre>"
 
 
-def supplement_taken_card(rows: Sequence[Any], tz: str = "UTC") -> str:
+def supplement_taken_card(rows: Sequence[Row], tz: str = "UTC") -> str:
     """What was taken today and when.
 
     The time is the point. Magnesium at 22:00 and magnesium at 08:00 are the
@@ -950,7 +967,7 @@ def supplement_taken_card(rows: Sequence[Any], tz: str = "UTC") -> str:
     return "\n".join(lines)
 
 
-def supplement_stack_card(stack: Sequence[Any], retired: Sequence[Any] = ()) -> str:
+def supplement_stack_card(stack: Sequence[Row], retired: Sequence[Row] = ()) -> str:
     lines = ["💊 <b>Your daily stack</b>", ""]
     cadence = {"alternate": "every other day", "occasional": "occasional"}
     for i, s in enumerate(stack, start=1):
@@ -979,7 +996,8 @@ def supplement_stack_card(stack: Sequence[Any], retired: Sequence[Any] = ()) -> 
     return "\n".join(lines)
 
 
-def supplement_batch_card(parsed: Sequence[Any], names: dict, units: dict) -> str:
+def supplement_batch_card(parsed: Sequence[Mapping[str, Any]], names: dict[int, str],
+                          units: dict[int, str]) -> str:
     """Every product read, with everything that was *not* counted named.
 
     A nutrient silently missing from a panel is indistinguishable from one the
@@ -1021,7 +1039,7 @@ def supplement_batch_card(parsed: Sequence[Any], names: dict, units: dict) -> st
     return "\n".join(lines)
 
 
-def supplement_pick_card(stack: Sequence[Any], selected: Sequence[int],
+def supplement_pick_card(stack: Sequence[Row], selected: Sequence[int],
                          reason: str = "schedule") -> str:
     """The question and the count. The buttons below are the list.
 
@@ -1095,7 +1113,7 @@ class DayScore:
 
 
 def day_score(
-    progress: Sequence[Any], coverage: dict[int, float] | None = None
+    progress: Sequence[Row], coverage: dict[int, float] | None = None
 ) -> DayScore:
     """How the day is going against its floors, counted and weighted.
 
@@ -1171,7 +1189,7 @@ def day_score(
     )
 
 
-def score_line(progress: Sequence[Any], coverage: dict[int, float] | None = None) -> str:
+def score_line(progress: Sequence[Row], coverage: dict[int, float] | None = None) -> str:
     """One bar for the day, counting the thing worth counting.
 
     Deliberately not a single number in isolation. A score that hides which
@@ -1223,7 +1241,7 @@ def score_line(progress: Sequence[Any], coverage: dict[int, float] | None = None
 # --------------------------------------------------------- weekly report
 
 
-def week_card(rows: Sequence[Any], ctx: dict) -> str:
+def week_card(rows: Sequence[Row], ctx: Mapping[str, Any]) -> str:
     """The week, as the handful of facts worth acting on.
 
     Ordered by what can change next week rather than by nutrient id: the
@@ -1243,7 +1261,7 @@ def week_card(rows: Sequence[Any], ctx: dict) -> str:
         )
 
     _incomplete = set(ctx.get("incomplete") or ())
-    by_nutrient: dict[int, list[Any]] = {}
+    by_nutrient: dict[int, list[Row]] = {}
     for r in rows:
         # "Fibre reached on 0 of 6 days" must not count a day whose fibre was
         # simply not recorded. The chart still shows the day; the arithmetic
@@ -1295,7 +1313,7 @@ def week_card(rows: Sequence[Any], ctx: dict) -> str:
     # Energy against its ceiling, floors met as a fraction, ceilings crossed as
     # a count. Three numbers is the most a row can carry and still be read down
     # a column rather than across.
-    by_day: dict[Any, list[Any]] = {}
+    by_day: dict[dt.date, list[Row]] = {}
     for r in rows:
         by_day.setdefault(r["day"], []).append(r)
 
@@ -1387,7 +1405,7 @@ def week_card(rows: Sequence[Any], ctx: dict) -> str:
     return "\n".join(lines)
 
 
-def _prior_day_detail(by_day: dict, end: Any) -> list[str]:
+def _prior_day_detail(by_day: dict[dt.date, list[Row]], end: dt.date) -> list[str]:
     """Yesterday, in more detail than a chart row can hold.
 
     Yesterday specifically, not the latest day with entries: today is still
@@ -1425,7 +1443,7 @@ def _prior_day_detail(by_day: dict, end: Any) -> list[str]:
     return lines
 
 
-def weight_card(rows: Sequence[Any], tz: str = "UTC") -> str:
+def weight_card(rows: Sequence[Row], tz: str = "UTC") -> str:
     """What you last weighed, and whether there is a trend yet.
 
     Reading is the common case and the safe one: half the time the question is
@@ -1668,14 +1686,14 @@ def profile_recalc_card(working: dict[str, float], applied: int, weight: float,
     ])
 
 
-def target_list_card(rows: Sequence[Any]) -> str:
+def target_list_card(rows: Sequence[Row]) -> str:
     """Every standing target, with derived and chosen kept visibly apart."""
     if not rows:
         return "No targets set. <code>/profile</code> derives them from your details."
     mine = [r for r in rows if r["rationale"] == "manual"]
     derived = [r for r in rows if r["rationale"] != "manual"]
 
-    def fmt(r: Any) -> str:
+    def fmt(r: Row) -> str:
         lo, hi = r["min_amount"], r["max_amount"]
         if lo is not None and hi is not None:
             v = f"{float(lo):g}–{float(hi):g}"
@@ -1714,7 +1732,7 @@ def _hm(minutes: float) -> str:
     return f"{h} h {m:02d} m" if h else f"{m} min"
 
 
-def training_card(today_rows: Sequence[Any], week_rows: Sequence[Any],
+def training_card(today_rows: Sequence[Row], week_rows: Sequence[Row],
                   day: dt.date, week_start: dt.date) -> str:
     lines = ["🏋️ <b>Training</b>", ""]
 
@@ -1798,8 +1816,8 @@ SLOT_SHORT = {"fasted": "fasted", "breakfast": "breakfast",
               "evening": "evening", "bed": "bedtime"}
 
 
-def supplement_reminder_card(slot: str, rows: Sequence[Any],
-                             carried: Sequence[Any] = ()) -> str:
+def supplement_reminder_card(slot: str, rows: Sequence[Row],
+                             carried: Sequence[Row] = ()) -> str:
     """The nudge itself. Template and SQL only — invariant 4."""
     outstanding = [r for r in rows if not r["logged"]]
     lines = [f"💊 <b>{slot_name(slot)}</b>", ""]
@@ -1825,7 +1843,7 @@ def supplement_reminder_card(slot: str, rows: Sequence[Any],
     return "\n".join(lines)
 
 
-def slot_settings_card(stack: Sequence[Any], times: dict) -> str:
+def slot_settings_card(stack: Sequence[Row], times: Mapping[str, dt.time]) -> str:
     """Which supplement belongs to which moment, and when each moment is."""
     lines = ["⏰ <b>Supplement times</b>", ""]
     rows = []
@@ -1864,7 +1882,7 @@ def slot_settings_card(stack: Sequence[Any], times: dict) -> str:
     return "\n".join(lines)
 
 
-def suggest_card(suggestions: Sequence[Any], progress: Sequence[Any],
+def suggest_card(suggestions: Sequence[Suggestion], progress: Sequence[Row],
                  kcal_left: float | None) -> str:
     """Why each dish is being suggested, in the same breath as the suggestion.
 
@@ -1962,7 +1980,7 @@ def suggest_card(suggestions: Sequence[Any], progress: Sequence[Any],
     return "\n".join(lines).rstrip()
 
 
-def measured_tdee_offer(flr: Any, current_target: float | None,
+def measured_tdee_offer(flr: FatLossRate, current_target: float | None,
                         activity_now: float | None, implied: float | None) -> str:
     """What adopting the measurement would change, before you adopt it."""
     lines = [
@@ -2013,8 +2031,8 @@ def percent_split(values: Sequence[float]) -> list[int]:
     return out
 
 
-def why_card(nutrient_name: str, unit: str, day: dt.date, entries: Sequence[Any],
-             supplements: Sequence[Any], target: float | None,
+def why_card(nutrient_name: str, unit: str, day: dt.date, entries: Sequence[Row],
+             supplements: Sequence[Row], target: float | None,
              is_ceiling: bool, tz: str = "UTC") -> str:
     """Where a day's figure for one nutrient actually came from.
 
@@ -2045,8 +2063,8 @@ def why_card(nutrient_name: str, unit: str, day: dt.date, entries: Sequence[Any]
     # separately came out 2%, 2%, 1% — largest-remainder has to break the tie
     # somewhere, and identical rows with different percentages read as a bug
     # however correct the arithmetic is. Grouping is more legible anyway.
-    grouped: list[dict] = []
-    by_name: dict[str, dict] = {}
+    grouped: list[dict[str, Any]] = []
+    by_name: dict[str, dict[str, Any]] = {}
     for e in entries:
         g = by_name.get(e["name"])
         if g is None:
@@ -2097,7 +2115,7 @@ def why_card(nutrient_name: str, unit: str, day: dt.date, entries: Sequence[Any]
     return "\n".join(lines)
 
 
-def user_food_list_card(foods: Sequence[Any]) -> str:
+def user_food_list_card(foods: Sequence[Row]) -> str:
     if not foods:
         return (
             "🥫 <b>Your own foods</b>\n\n"
@@ -2119,7 +2137,7 @@ def user_food_list_card(foods: Sequence[Any]) -> str:
     return "\n".join(lines)
 
 
-def user_food_made_card(name: str, per_100g: dict, parts: Sequence[str],
+def user_food_made_card(name: str, per_100g: Mapping[int, float], parts: Sequence[str],
                         yield_g: float, *, raw_g: float | None = None,
                         pieces: int | None = None,
                         portion_unit: str = "serving") -> str:
@@ -2172,7 +2190,7 @@ def user_food_made_card(name: str, per_100g: dict, parts: Sequence[str],
     return "\n".join(lines)
 
 
-def plan_card(data: dict, cost_usd: float | None = None) -> str:
+def plan_card(data: Mapping[str, Any], cost_usd: float | None = None) -> str:
     """The weekly review. The one card in this system written by a model.
 
     It says so, because everything else here is arithmetic and the difference
@@ -2222,8 +2240,8 @@ def plan_card(data: dict, cost_usd: float | None = None) -> str:
     return "\n".join(lines)
 
 
-def morning_note(name: str | None, yesterday: Sequence[Any],
-                 coverage: dict | None = None) -> str:
+def morning_note(name: str | None, yesterday: Sequence[Row],
+                 coverage: dict[int, float] | None = None) -> str:
     """Good morning, and at most one thing to do about yesterday.
 
     Template and SQL only — invariant 4. It reads a ceiling that was crossed
@@ -2283,7 +2301,7 @@ MORNING_LEVERS: dict[str, str] = {
 }
 
 
-def off_product_card(p: dict, name: str) -> str:
+def off_product_card(p: Mapping[str, Any], name: str) -> str:
     """An OpenFoodFacts panel, shown before anything is saved.
 
     Says where the numbers came from. USDA rows are laboratory assays, a
@@ -2373,7 +2391,7 @@ def off_choices_card(results: Sequence[dict], term: str) -> str:
     return "\n".join(lines)
 
 
-def food_label_card(name: str, panel: dict, data: dict,
+def food_label_card(name: str, panel: Mapping[int, float], data: Mapping[str, Any],
                     warnings: Sequence[str] = ()) -> str:
     """A transcribed food panel, verbatim beside the reading.
 
@@ -2435,7 +2453,7 @@ def food_label_card(name: str, panel: dict, data: dict,
 PROTEIN_SERVING_MIN = 8.0
 
 
-def protein_spread(entries: Sequence[Any]) -> str | None:
+def protein_spread(entries: Sequence[Row]) -> str | None:
     """How today's protein is distributed, not just how much of it there is.
 
     There is no absorption ceiling to model — a 100 g bolus is absorbed, and

@@ -13,10 +13,12 @@ kitchen and that you have demonstrably been willing to cook.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from ..config import ENERGY_KCAL
+from ..rows import Row
 
 # A floor with less than this share of its target outstanding counts as met.
 NEARLY_MET = 0.10
@@ -45,8 +47,8 @@ class Suggestion:
 
 
 def rank(
-    snapshots: dict[int, dict],
-    progress: list[Any],
+    snapshots: Mapping[int, Mapping[str, Any]],
+    progress: Sequence[Row],
     *,
     limit: int = 3,
 ) -> list[Suggestion]:

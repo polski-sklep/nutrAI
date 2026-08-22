@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+import asyncpg
 from PIL import Image
 
 from .. import db
@@ -264,7 +265,7 @@ async def _mass_for(user_id: int, fdc_id: int, it: dict[str, Any],
 
 
 async def _candidates(it: dict[str, Any], label: str, user_id: int | None = None,
-                      dish_name: str | None = None) -> list[Any]:
+                      dish_name: str | None = None) -> list[asyncpg.Record]:
     """Search on the model's `search_terms` *and* on the user's own label.
 
     Trigram similarity punishes a descriptive query. `PARSE_SYSTEM` asks for "a
@@ -282,7 +283,7 @@ async def _candidates(it: dict[str, Any], label: str, user_id: int | None = None
     """
     queries = [q for q in (str(it.get("search_terms") or "").strip(), label.strip(),
                            (dish_name or "").strip()) if q]
-    pooled: dict[int, Any] = {}
+    pooled: dict[int, asyncpg.Record] = {}
     for q in dict.fromkeys(queries):
         for c in await db.search_foods(q, limit=5, user_id=user_id):
             best = pooled.get(c["fdc_id"])
@@ -371,7 +372,7 @@ async def resolve_items(user_id: int, items: list[dict[str, Any]],
     unresolved: list[str] = []
     weak: list[tuple[str, float]] = []
     notes: list[str] = []
-    need_model: list[tuple[dict[str, Any], list[Any]]] = []
+    need_model: list[tuple[dict[str, Any], list[asyncpg.Record]]] = []
     cost = 0.0
 
     async def _accept(label: str, fdc_id: int, it: dict[str, Any], yf: float = 1.0) -> None:
