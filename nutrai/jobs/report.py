@@ -33,7 +33,7 @@ async def weekly_report(bot) -> None:
         import datetime as dt
 
         now = dt.datetime.now(dt.timezone.utc)
-        day = db.local_date_for(now, u["tz"], u["day_rollover_hour"])
+        day = db.day_for_user(u, now)
         logged = await p.fetchval(
             """SELECT count(DISTINCT local_date) FROM log_entry
                 WHERE user_id=$1 AND status='confirmed' AND local_date > $2::date - 28""",

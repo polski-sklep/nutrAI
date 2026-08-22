@@ -75,6 +75,19 @@ _album_tasks: dict[str, asyncio.Task] = {}
 ALBUM_WAIT = 1.2
 
 
+# The two worked examples that teach the recipe syntax, kept in one place
+# because they are documentation of a grammar `_read_makes` actually parses.
+# Three different cards open this same prompt — the button offered when nothing
+# matched, `/food new`, and the reply to "what shall I call it?" — and an
+# example that drifts out of step with the parser teaches a syntax the bot then
+# refuses.
+_RECIPE_EXAMPLES = (
+    "<code>1000 ml water, 30 g salt, 100 ml white vinegar</code>\n\n"
+    "<i>Baked? End with what it made — then a slice needs no weighing:</i>\n"
+    "<code>… makes 850 g, 16 slices</code>\n\n"
+)
+
+
 def _define_button(weak: Sequence[tuple[str, float]]) -> list[InlineKeyboardButton]:
     """Offered at the moment the gap is visible, which is the only moment you
     know the database is missing something."""
@@ -95,17 +108,15 @@ async def cb_define_food(cq: CallbackQuery) -> None:
     """
     u = await db.get_or_create_user(cq.from_user.id)
     name = cq.data.split(":", 1)[1].strip()
-    await db.put_pending(u["id"], "food_await", {"name": name})
     await cq.answer()
-    await cq.message.answer(
+    await _ask(
+        cq.message, u, "food_await",
         f"🥫 Making a food called <b>{render._esc(name)}</b>.\n\n"
         "<b>What goes into it?</b> Reply with ingredients and amounts:\n"
-        "<code>1000 ml water, 30 g salt, 100 ml white vinegar</code>\n\n"
-        "<i>Baked? End with what it made — then a slice needs no weighing:</i>\n"
-        "<code>… makes 850 g, 16 slices</code>\n\n"
-        "<i>Resolved against USDA and added up — nothing estimated. Once saved "
+        + _RECIPE_EXAMPLES
+        + "<i>Resolved against USDA and added up — nothing estimated. Once saved "
         "it outranks the generic row every time you log that name.</i>",
-        parse_mode="HTML",
+        payload={"name": name},
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="✋ never mind", callback_data="foodcancel:"),
         ]]),
@@ -154,7 +165,7 @@ def _local_now(u: Any) -> dt.datetime:
 
 
 def _today(u: Any) -> dt.date:
-    return db.local_date_for(dt.datetime.now(dt.timezone.utc), u["tz"], u["day_rollover_hour"])
+    return db.day_for_user(u)
 
 
 # ---------------------------------------------------------------- commands
@@ -919,12 +930,11 @@ def _rate_value_keyboard(kind: str) -> InlineKeyboardMarkup:
 @dp.callback_query(F.data.startswith("wnew:"))
 async def cb_weight_new(cq: CallbackQuery) -> None:
     u = await db.get_or_create_user(cq.from_user.id)
-    await db.put_pending(u["id"], "weight_await", {})
     await cq.answer()
-    await cq.message.answer(
+    await _ask(
+        cq.message, u, "weight_await",
         "⚖️ <b>What do you weigh?</b>\n"
         "<i>Send the number. Same time of day, ideally before breakfast.</i>",
-        parse_mode="HTML",
     )
 
 
@@ -1058,14 +1068,14 @@ def _esc_note(text: str) -> str:
 async def cb_rating_note(cq: CallbackQuery) -> None:
     u = await db.get_or_create_user(cq.from_user.id)
     obs_id = int(cq.data.split(":", 1)[1])
-    await db.put_pending(u["id"], "rating_note", {"obs_id": obs_id})
     await cq.answer()
-    await cq.message.answer(
+    await _ask(
+        cq.message, u, "rating_note",
         "📝 <b>What was going on?</b>\n\n"
         "<i>A sentence is plenty — 'woke at 3 and could not get back down', "
         "'trained fasted', 'streaming cold'. It is the part a correlation "
         "cannot recover from the number.</i>",
-        parse_mode="HTML",
+        payload={"obs_id": obs_id},
     )
 
 
@@ -1464,12 +1474,11 @@ async def target_cmd(msg: Message) -> None:
     args = (msg.text or "").split()[1:]
 
     if not args:
-        await msg.answer(render.target_list_card(await db.standing_targets(u["id"])),
-                         parse_mode="HTML")
         # Having just read a list, the natural next message is "Alcohol 0g",
         # not "/target alcohol max 0". Third time a card has taught one format
         # and refused the obvious one; the gate is the same gate.
-        await db.put_pending(u["id"], "target_await", {})
+        await _ask(msg, u, "target_await",
+                   render.target_list_card(await db.standing_targets(u["id"])))
         return
 
     joined = " ".join(args)
@@ -1510,14 +1519,13 @@ async def profile_cmd(msg: Message) -> None:
         return
 
     data = await db.profile(u["id"])
-    await msg.answer(
+    await _ask(
+        msg, u, "profile_await",
         render.profile_card(data, _today(u)),
-        parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="🔄 recalculate targets", callback_data="precalc:"),
         ]]),
     )
-    await db.put_pending(u["id"], "profile_await", {})
 
 
 async def _recalculate_targets(msg: Message, u: Any) -> None:
@@ -1677,6 +1685,38 @@ def _supp_manage_keyboard(stack: Sequence[Any],
     return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
+async def _send_stack_card(msg: Message, u: Any, stack: Sequence[Any],
+                           retired: Sequence[Any] | None = None) -> None:
+    """The supplement stack with its manage buttons.
+
+    `stack` is passed in rather than fetched here. /stack shows everything set
+    up, while the same card reached through `/supp list` shows the day's — a
+    difference in what the screen means, which is not something a helper about
+    how it is built should decide.
+    """
+    if retired is None:
+        retired = await db.retired_supplements(u["id"])
+    await msg.answer(
+        render.supplement_stack_card(stack, retired),
+        parse_mode="HTML",
+        reply_markup=_supp_manage_keyboard(stack, retired),
+    )
+
+
+async def _send_slot_settings(msg: Message, u: Any, stack: Sequence[Any],
+                              prefix: str = "") -> None:
+    """The reminder-times card, and the wait for the reply it invites.
+
+    Four screens open this — /schedule, `/supp times`, the ⏰ button, and the
+    acknowledgement of a line that just changed one — and every one of them has
+    to register the wait as well as print the card. Printing it without opening
+    the wait sends the next "3. evening" to the meal parser, which is the exact
+    failure PROMPT_CONSUMERS exists to make impossible.
+    """
+    await _ask(msg, u, "slot_await",
+               prefix + render.slot_settings_card(stack, await db.slot_times(u["id"])))
+
+
 @dp.callback_query(F.data.startswith("suppoff:"))
 async def cb_supp_stop(cq: CallbackQuery) -> None:
     """Ask first. Stopping is reversible, but the confirmation is where the
@@ -1777,12 +1817,7 @@ async def _try_slot_lines(msg: Message, u: Any, text: str) -> bool:
             notes.append(f"⏰ {render.slot_name(slot)} at {hh:02d}:{mm:02d}")
 
     stack = await db.supplement_stack(u["id"])
-    await msg.answer(
-        "\n".join(notes) + "\n\n"
-        + render.slot_settings_card(stack, await db.slot_times(u["id"])),
-        parse_mode="HTML",
-    )
-    await db.put_pending(u["id"], "slot_await", {})
+    await _send_slot_settings(msg, u, stack, prefix="\n".join(notes) + "\n\n")
     return True
 
 
@@ -1791,7 +1826,7 @@ async def cb_slot_log(cq: CallbackQuery) -> None:
     """Log exactly the supplements in one slot, from its reminder."""
     u = await db.get_or_create_user(cq.from_user.id)
     slot = cq.data.split(":", 1)[1]
-    day = db.local_date_for(dt.datetime.now(dt.timezone.utc), u["tz"], u["day_rollover_hour"])
+    day = _today(u)
     rows = await db.supplements_in_slot(u["id"], slot, day)
     ids = [r["id"] for r in rows if not r["logged"]]
     if not ids:
@@ -2026,17 +2061,15 @@ async def food_cmd(msg: Message) -> None:
 
     if len(rest) >= 3 and rest[1].lower() in ("new", "add"):
         name = rest[2].strip()
-        await db.put_pending(u["id"], "food_await", {"name": name})
-        await msg.answer(
+        await _ask(
+            msg, u, "food_await",
             f"🥫 <b>{render._esc(name)}</b> — what goes into it?\n\n"
             "Reply with the ingredients and amounts, as you would a meal:\n"
-            "<code>1000 ml water, 30 g salt, 100 ml white vinegar</code>\n\n"
-        "<i>Baked? End with what it made — then a slice needs no weighing:</i>\n"
-        "<code>… makes 850 g, 16 slices</code>\n\n"
-            "<i>I will resolve each one against USDA, add them up, and store "
+            + _RECIPE_EXAMPLES
+            + "<i>I will resolve each one against USDA, add them up, and store "
             "the result per 100 g. Nothing is estimated — if an ingredient "
             "has no row, I will say so rather than guess around it.</i>",
-            parse_mode="HTML",
+            payload={"name": name},
         )
         return
 
@@ -2069,18 +2102,16 @@ async def _consume_food_name(msg: Message, u: Any, text: str, payload: dict) -> 
     if not name or len(name) > 60:
         return False
     await db.clear_pending(u["id"], "food_name_await")
-    await db.put_pending(u["id"], "food_await", {"name": name})
-    await msg.answer(
+    await _ask(
+        msg, u, "food_await",
         f"🥫 Making a food called <b>{render._esc(name)}</b>.\n\n"
         "<b>What goes into it?</b> Reply with ingredients and amounts:\n"
-        "<code>1000 ml water, 30 g salt, 100 ml white vinegar</code>\n\n"
-        "<i>Baked? End with what it made — then a slice needs no weighing:</i>\n"
-        "<code>… makes 850 g, 16 slices</code>\n\n"
-        "<i>Or <b>photograph the nutrition panel</b>, or send its "
+        + _RECIPE_EXAMPLES
+        + "<i>Or <b>photograph the nutrition panel</b>, or send its "
         "<b>barcode</b>. Ingredients are resolved against USDA and added "
         "up — nothing estimated; an ingredient with no row is left out and "
         "named, not guessed around.</i>",
-        parse_mode="HTML",
+        payload={"name": name},
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔎 search OpenFoodFacts",
                                   callback_data="offsearch:")],
@@ -2379,13 +2410,13 @@ async def cb_set_time(cq: CallbackQuery) -> None:
     """
     u = await db.get_or_create_user(cq.from_user.id)
     entry_id = int(cq.data.split(":", 1)[1])
-    await db.put_pending(u["id"], "time_await", {"entry_id": entry_id})
     await cq.answer()
-    await cq.message.answer(
+    await _ask(
+        cq.message, u, "time_await",
         "🕐 <b>When did you have it?</b>\n\n"
         "<code>08:30</code> · <code>yesterday 19:00</code> · "
         "<code>-2h</code> for two hours ago",
-        parse_mode="HTML",
+        payload={"entry_id": entry_id},
     )
 
 
@@ -2530,11 +2561,11 @@ async def cb_off_save(cq: CallbackQuery) -> None:
 @dp.callback_query(F.data.startswith("offname:"))
 async def cb_off_rename(cq: CallbackQuery) -> None:
     u = await db.get_or_create_user(cq.from_user.id)
-    await db.put_pending(u["id"], "off_rename", {})
     await cq.answer()
-    await cq.message.answer(
+    await _ask(
+        cq.message, u, "off_rename",
         "What should it be called? <i>The name you will actually type when "
-        "logging it — short beats accurate.</i>", parse_mode="HTML")
+        "logging it — short beats accurate.</i>")
 
 
 @consumes("off_rename")
@@ -2650,17 +2681,12 @@ async def supp_stack_cmd(msg: Message) -> None:
     """
     u = await _user(msg)
     stack = await db.supplement_stack(u["id"])
-    retired = [r for r in await db.supplement_stack(u["id"], active_only=False)
-               if not r["active"]]
+    retired = await db.retired_supplements(u["id"])
     if not stack and not retired:
         await msg.answer(
             "No supplements yet. <code>/supp</code>, then “➕ add”.", parse_mode="HTML")
         return
-    await msg.answer(
-        render.supplement_stack_card(stack, retired),
-        parse_mode="HTML",
-        reply_markup=_supp_manage_keyboard(stack, retired),
-    )
+    await _send_stack_card(msg, u, stack, retired)
 
 
 @dp.message(Command("schedule"))
@@ -2673,11 +2699,7 @@ async def supp_schedule_cmd(msg: Message) -> None:
             "No supplements to schedule yet. <code>/supp</code>, then “➕ add”.",
             parse_mode="HTML")
         return
-    await msg.answer(
-        render.slot_settings_card(stack, await db.slot_times(u["id"])),
-        parse_mode="HTML",
-    )
-    await db.put_pending(u["id"], "slot_await", {})
+    await _send_slot_settings(msg, u, stack)
 
 
 @dp.message(Command("supp", "supplements"))
@@ -2699,12 +2721,12 @@ async def supp(msg: Message) -> None:
     stack = await db.supplement_stack(u["id"], on_day=day)
 
     if sub.startswith("add"):
-        await db.put_pending(u["id"], "supp_label", {"awaiting": True})
-        await msg.answer(
+        await _ask(
+            msg, u, "supp_label",
             "📸 Send a photo of the supplement's nutrition panel.\n\n"
             "<i>Get the whole panel in frame and in focus. I transcribe what is "
             "printed — I will not fill in what I think the product contains.</i>",
-            parse_mode="HTML",
+            payload={"awaiting": True},
         )
         return
 
@@ -2724,21 +2746,11 @@ async def supp(msg: Message) -> None:
         return
 
     if sub.startswith(("time", "when")):
-        await msg.answer(
-            render.slot_settings_card(stack, await db.slot_times(u["id"])),
-            parse_mode="HTML",
-        )
-        await db.put_pending(u["id"], "slot_await", {})
+        await _send_slot_settings(msg, u, stack)
         return
 
     if sub.startswith("list"):
-        retired = [r for r in await db.supplement_stack(u["id"], active_only=False)
-                   if not r["active"]]
-        await msg.answer(
-            render.supplement_stack_card(stack, retired),
-            parse_mode="HTML",
-            reply_markup=_supp_manage_keyboard(stack, retired),
-        )
+        await _send_stack_card(msg, u, stack)
         return
 
     if sub.startswith(("skip", "clear", "none")):
@@ -2833,38 +2845,27 @@ def _supp_keyboard(action_id: int, stack: list[Any], selected: list[int]) -> Inl
 async def cb_supp_manage(cq: CallbackQuery) -> None:
     u = await db.get_or_create_user(cq.from_user.id)
     stack = await db.supplement_stack(u["id"])
-    retired = [r for r in await db.supplement_stack(u["id"], active_only=False)
-               if not r["active"]]
     await cq.answer()
-    await cq.message.answer(
-        render.supplement_stack_card(stack, retired),
-        parse_mode="HTML",
-        reply_markup=_supp_manage_keyboard(stack, retired),
-    )
+    await _send_stack_card(cq.message, u, stack)
 
 
 @dp.callback_query(F.data.startswith("suptimes:"))
 async def cb_supp_times(cq: CallbackQuery) -> None:
     u = await db.get_or_create_user(cq.from_user.id)
     await cq.answer()
-    await cq.message.answer(
-        render.slot_settings_card(await db.supplement_stack(u["id"]),
-                                  await db.slot_times(u["id"])),
-        parse_mode="HTML",
-    )
-    await db.put_pending(u["id"], "slot_await", {})
+    await _send_slot_settings(cq.message, u, await db.supplement_stack(u["id"]))
 
 
 @dp.callback_query(F.data.startswith("supadd:"))
 async def cb_supp_add(cq: CallbackQuery) -> None:
     u = await db.get_or_create_user(cq.from_user.id)
-    await db.put_pending(u["id"], "supp_label", {"awaiting": True})
     await cq.answer()
-    await cq.message.answer(
+    await _ask(
+        cq.message, u, "supp_label",
         "📸 Send a photo of the label, or paste the product details as text.\n\n"
         "<i>I transcribe what is stated — I will not fill in what I think the "
         "product contains.</i>",
-        parse_mode="HTML",
+        payload={"awaiting": True},
     )
 
 
@@ -3359,7 +3360,7 @@ def _when_from_ops(ops: list[Any], u: Any, base: dt.datetime | None = None) -> d
 
     tz = zoneinfo.ZoneInfo(u["tz"])
     now = (base or dt.datetime.now(dt.timezone.utc)).astimezone(tz)
-    day = db.local_date_for(now, u["tz"], u["day_rollover_hour"])
+    day = db.day_for_user(u, now)
     hour, minute = now.hour, now.minute
 
     for op in ops:
@@ -3388,7 +3389,7 @@ async def _apply_when(entry_id: int, ops: list[Any], u: Any) -> dt.date | None:
     if not any(isinstance(o, (dsl.SetDate, dsl.SetTime)) for o in ops):
         return None
     when = _when_from_ops(ops, u)
-    day = db.local_date_for(when, u["tz"], u["day_rollover_hour"])
+    day = db.day_for_user(u, when)
     p = await db.pool()
     updated = await p.fetchval(
         """UPDATE log_entry SET logged_at = $2, local_date = $3
