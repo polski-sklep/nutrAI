@@ -3303,3 +3303,66 @@ def test_day_energy_sigma_combines_in_quadrature_not_linearly(database_url):
         await p.execute("DELETE FROM log_entry WHERE id = $1", entry)
 
     run(check())
+
+
+@pytest.mark.integration
+def test_a_companion_is_offered_and_adds_at_the_mass_you_had(database_url):
+    """Cornflakes alone and cornflakes with blueberries are one dish in your
+    head and two rows here.
+
+    The information was already stored — a dish containing what you just logged
+    plus something else is a record of the two going together — and there was
+    no route from the first to the second short of retyping it.
+    """
+    from nutrai import db
+
+    async def check() -> None:
+        uid = await _reset()
+        p = await db.pool()
+        base, extra = await p.fetch(
+            "SELECT fdc_id FROM food_nutrient WHERE nutrient_id = 1008 AND amount > 50 LIMIT 2")
+        base_id, extra_id = base["fdc_id"], extra["fdc_id"]
+
+        dish = await p.fetchval(
+            """INSERT INTO dish (user_id, slug, name, times_logged)
+               VALUES ($1,'probe-combo','probe combo',3) RETURNING id""", uid)
+        for i, (fdc, label, grams) in enumerate(
+                [(base_id, "base", 60.0), (extra_id, "berries", 30.0)]):
+            await p.execute(
+                """INSERT INTO dish_component
+                     (dish_id, position, fdc_id, label, grams, grams_source)
+                   VALUES ($1,$2,$3,$4,$5,'stated')""", dish, i, fdc, label, grams)
+
+        # Logging the base alone offers the berries, not the base again.
+        offered = await db.companions(uid, [base_id])
+        assert [int(c["fdc_id"]) for c in offered] == [extra_id]
+        assert float(offered[0]["grams"]) == 30.0
+        assert offered[0]["grams_source"] == "stated", (
+            "provenance must ride along, or a suggestion launders a guess "
+            "into a measurement")
+
+        # Adding it lands on the pending entry at that mass.
+        entry = await p.fetchval(
+            """INSERT INTO log_entry (user_id, local_date, name, source, status)
+               VALUES ($1, current_date, 'probe', 'text', 'pending') RETURNING id""", uid)
+        await p.execute(
+            """INSERT INTO log_component
+                 (entry_id, position, fdc_id, label, grams, grams_source)
+               VALUES ($1,0,$2,'base',60,'stated')""", entry, base_id)
+        await db.add_component_to_entry(
+            entry, extra_id, "berries", 30.0, grams_source="stated")
+        _e, comps = await db.entry_with_components(entry)
+        assert [c["label"] for c in comps] == ["base", "berries"]
+        assert float(comps[1]["grams_sigma"]) > 0
+
+        # A confirmed entry is a snapshot and must not gain components.
+        await p.execute("UPDATE log_entry SET status='confirmed' WHERE id=$1", entry)
+        await db.add_component_to_entry(
+            entry, extra_id, "berries again", 99.0, grams_source="stated")
+        _e, after = await db.entry_with_components(entry)
+        assert len(after) == 2, "a confirmed entry was edited behind its snapshot"
+
+        await p.execute("DELETE FROM log_entry WHERE id = $1", entry)
+        await p.execute("DELETE FROM dish WHERE id = $1", dish)
+
+    run(check())

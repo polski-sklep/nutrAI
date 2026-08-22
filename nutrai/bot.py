@@ -140,7 +140,8 @@ async def cb_define_food(cq: CallbackQuery) -> None:
 
 
 def kb_confirm(entry_id: int,
-               weak: Sequence[tuple[str, float]] = ()) -> InlineKeyboardMarkup:
+               weak: Sequence[tuple[str, float]] = (),
+               companions: Sequence[asyncpg.Record] = ()) -> InlineKeyboardMarkup:
     rows = [[
         InlineKeyboardButton(text="✅ log it", callback_data=f"ok:{entry_id}"),
         InlineKeyboardButton(text="🕐 time", callback_data=f"when:{entry_id}"),
@@ -155,6 +156,18 @@ def kb_confirm(entry_id: int,
         rows.append([InlineKeyboardButton(
             text=f"🥫 define {render._short_note(label)[:18]} yourself",
             callback_data=f"deffood:{label[:40]}")])
+    # What you have had with this before. Offered here because this is the
+    # moment the meal is still editable and still in front of you — afterwards
+    # it means undoing a confirmed entry and typing the whole thing again.
+    #
+    # The mass rides on the button rather than being asked for: it is the
+    # median of what you actually had, and a companion that has to be weighed
+    # before it can be added is one you will not add.
+    for c in companions[:3]:
+        rows.append([InlineKeyboardButton(
+            text=f"➕ {render._short_note(c['label'])[:22]} "
+                 f"{float(c['grams']):,.0f} g",
+            callback_data=f"addc:{entry_id}:{c['fdc_id']}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -4005,7 +4018,10 @@ async def _present(
         matched=await _matched_names(res.components),
         weak=res.weak_matches,
     )
-    kb = kb_confirm(entry_id, res.weak_matches)
+    kb = kb_confirm(
+        entry_id, res.weak_matches,
+        await db.companions(u["id"], [c.fdc_id for c in res.components]),
+    )
     if edit:
         await edit.edit_text(text, parse_mode="HTML", reply_markup=kb)
     else:
@@ -4155,6 +4171,58 @@ async def cb_supp_no(cq: CallbackQuery) -> None:
 
 
 # ---------------------------------------------------------------- callbacks
+
+
+@dp.callback_query(F.data.startswith("addc:"))
+async def cb_add_companion(cq: CallbackQuery) -> None:
+    """Add something you have had with this before, at the mass you had.
+
+    Still a pending entry and still unconfirmed afterwards — this changes what
+    the card says, not what is logged. Invariant 5 is untouched: the button
+    edits a proposal.
+    """
+    _k, eid, fdc = cq.data.split(":")
+    entry_id, fdc_id = int(eid), int(fdc)
+    u = await db.get_or_create_user(cq.from_user.id)
+
+    entry, comps = await db.entry_with_components(entry_id)
+    if not entry or entry["status"] != "pending":
+        await cq.answer("that card is already dealt with")
+        return
+    have = [c["fdc_id"] for c in comps]
+    match = next(
+        (c for c in await db.companions(u["id"], have, limit=8)
+         if int(c["fdc_id"]) == fdc_id), None)
+    if not match:
+        await cq.answer("no longer offered")
+        return
+
+    await db.add_component_to_entry(
+        entry_id, fdc_id, match["label"], float(match["grams"]),
+        grams_source=match["grams_source"], state=match["state"],
+        yield_factor=float(match["yield_factor"]),
+    )
+    await cq.answer(f"added {match['label']}")
+
+    entry, comps = await db.entry_with_components(entry_id)
+    profs = await db.profiles_for([c["fdc_id"] for c in comps])
+    resolved = [
+        ResolvedComponent(
+            c["label"], c["fdc_id"], float(c["grams"]), float(c["yield_factor"]),
+            float(c["grams_sigma"] or 0), c["grams_source"],
+        )
+        for c in comps
+    ]
+    await cq.message.edit_text(
+        render.confirm_card(entry["name"], resolved,
+                            total_nutrients(resolved, profs),
+                            confidence=None, warnings=[]),
+        parse_mode="HTML",
+        reply_markup=kb_confirm(
+            entry_id, (),
+            await db.companions(u["id"], [c["fdc_id"] for c in comps]),
+        ),
+    )
 
 
 @dp.callback_query(F.data.startswith("ok:"))

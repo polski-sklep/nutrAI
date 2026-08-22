@@ -9,6 +9,7 @@ from typing import Any, Iterable, Sequence
 import asyncpg
 
 from .config import AUTO_MATCH_SIMILARITY, CORE_NUTRIENTS, settings
+from .core.estimate import sigma_for
 from .core.nutrition import ResolvedComponent, normalise_energy, total_nutrients
 
 _pool: asyncpg.Pool | None = None
@@ -1832,6 +1833,94 @@ async def mark_reminder_sent(user_id: int, slot: str, day: dt.date) -> bool:
         user_id, slot, day,
     )
     return result.endswith(" 1")
+
+
+async def add_component_to_entry(entry_id: int, fdc_id: int, label: str,
+                                 grams: float, *, grams_source: str,
+                                 state: str = "as_logged",
+                                 yield_factor: float = 1.0) -> None:
+    """Append one component to a pending entry.
+
+    Pending only. A confirmed entry's `log_nutrient` rows are the snapshot it
+    was scored on, and adding a component after the fact would leave the
+    components and the snapshot describing different meals — invariant 2. To
+    change a confirmed entry, undo it and log it again.
+
+    Sigma comes from the provenance, not from the caller, so a companion added
+    at a stated mass is treated as stated and one carried over from an estimate
+    stays uncertain.
+    """
+    p = await pool()
+    async with p.acquire() as con, con.transaction():
+        status = await con.fetchval(
+            "SELECT status FROM log_entry WHERE id = $1 FOR UPDATE", entry_id)
+        if status != "pending":
+            return
+        pos = await con.fetchval(
+            "SELECT COALESCE(max(position), -1) + 1 FROM log_component WHERE entry_id = $1",
+            entry_id)
+        await con.execute(
+            """INSERT INTO log_component
+                 (entry_id, position, fdc_id, label, grams, yield_factor,
+                  grams_source, grams_sigma)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8)""",
+            entry_id, pos, fdc_id, label, grams, yield_factor, grams_source,
+            sigma_for(grams, grams_source),
+        )
+        await con.execute(
+            """UPDATE log_entry SET total_grams = (
+                   SELECT sum(grams) FROM log_component WHERE entry_id = $1)
+                WHERE id = $1""", entry_id)
+
+
+async def companions(user_id: int, fdc_ids: Sequence[int],
+                     limit: int = 4) -> list[asyncpg.Record]:
+    """What you have eaten *alongside* these foods, and how much of it.
+
+    Cornflakes on their own and cornflakes with blueberries are one dish in
+    your head and two rows here, so logging the first offers no route to the
+    second short of retyping it. The information is already stored: every dish
+    is a set of components, and a dish containing what you just logged plus
+    something else is a record of the two going together.
+
+    Matched on `fdc_id` rather than on the dish name, so it works from the
+    ingredient up: 'Nestle corn flakes' finds the blueberries whether the dish
+    was called 'cornflakes with blueberries' or 'breakfast'.
+
+    Grams are the median across the dishes it appeared in, and the provenance
+    comes with it — a companion you weighed every time is added as `stated`,
+    one you eyeballed stays an estimate. Without that a suggestion would
+    launder a guess into a measurement, which is invariant 7's whole concern.
+    """
+    ids = [int(i) for i in fdc_ids]
+    if not ids:
+        return []
+    p = await pool()
+    return await p.fetch(
+        """WITH shared AS (
+               SELECT DISTINCT dc.dish_id
+                 FROM dish_component dc
+                 JOIN dish d ON d.id = dc.dish_id
+                WHERE d.user_id = $1 AND NOT d.archived
+                  AND dc.fdc_id = ANY($2::int[])
+           )
+           SELECT dc.fdc_id,
+                  mode() WITHIN GROUP (ORDER BY dc.label)        AS label,
+                  percentile_cont(0.5) WITHIN GROUP (ORDER BY dc.grams) AS grams,
+                  mode() WITHIN GROUP (ORDER BY dc.grams_source) AS grams_source,
+                  mode() WITHIN GROUP (ORDER BY dc.state)        AS state,
+                  percentile_cont(0.5) WITHIN GROUP (ORDER BY dc.yield_factor) AS yield_factor,
+                  count(DISTINCT dc.dish_id)                     AS dishes,
+                  sum(d.times_logged)                            AS times
+             FROM dish_component dc
+             JOIN shared sh ON sh.dish_id = dc.dish_id
+             JOIN dish d ON d.id = dc.dish_id
+            WHERE NOT (dc.fdc_id = ANY($2::int[]))
+         GROUP BY dc.fdc_id
+         ORDER BY sum(d.times_logged) DESC, count(DISTINCT dc.dish_id) DESC
+            LIMIT $3""",
+        user_id, ids, limit,
+    )
 
 
 async def dish_snapshots(user_id: int) -> dict[int, dict]:
