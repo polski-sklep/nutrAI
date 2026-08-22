@@ -20,7 +20,7 @@ import datetime as dt
 
 import asyncpg
 
-from nutrai.config import CARB, DATABASE_URL, ENERGY_KCAL, FAT, PROTEIN, SODIUM
+from nutrai.config import DATABASE_URL
 from nutrai.core.profile import derive_targets
 
 async def main(a: argparse.Namespace) -> None:
