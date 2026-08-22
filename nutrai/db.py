@@ -468,7 +468,13 @@ async def confirmed_entries_on(user_id: int, day: dt.date) -> list[asyncpg.Recor
 
 
 async def undo_entry(user_id: int, entry_id: int) -> asyncpg.Record | None:
-    """Discard one confirmed entry by id, and correct its dish's counter."""
+    """Discard one confirmed entry by id, and correct its dish's counter.
+
+    Discarded, never deleted. `log_nutrient` is a snapshot and invariant 2 says
+    it is never rewritten — every rollup already filters on status='confirmed',
+    so flipping the status removes it from the arithmetic while leaving the
+    record of what was logged and unlogged intact.
+    """
     p = await pool()
     async with p.acquire() as con, con.transaction():
         entry = await con.fetchrow(
@@ -479,45 +485,6 @@ async def undo_entry(user_id: int, entry_id: int) -> asyncpg.Record | None:
         if not entry:
             return None
         await con.execute("UPDATE log_entry SET status = 'discarded' WHERE id = $1", entry_id)
-        if entry["dish_id"]:
-            await con.execute(
-                """UPDATE dish d
-                      SET times_logged = GREATEST(d.times_logged - 1, 0),
-                          last_logged_at = (
-                              SELECT max(e.logged_at) FROM log_entry e
-                               WHERE e.dish_id = d.id AND e.status = 'confirmed')
-                    WHERE d.id = $1""",
-                entry["dish_id"],
-            )
-        return entry
-
-
-async def undo_last_entry(user_id: int, day: dt.date) -> asyncpg.Record | None:
-    """Discard the most recent confirmed entry of a day. Returns it, or None.
-
-    Discarded, never deleted. `log_nutrient` is a snapshot and invariant 2 says
-    it is never rewritten — every rollup already filters on status='confirmed',
-    so flipping the status removes it from the arithmetic while leaving the
-    record of what was logged and unlogged intact.
-
-    Scoped to one day because "undo" means the thing you just did. A bare /undo
-    reaching back into last week to silently remove a meal would be a worse
-    failure than the one it was trying to fix.
-    """
-    p = await pool()
-    async with p.acquire() as con, con.transaction():
-        entry = await con.fetchrow(
-            """SELECT * FROM log_entry
-                WHERE user_id = $1 AND local_date = $2 AND status = 'confirmed'
-             ORDER BY logged_at DESC, id DESC LIMIT 1
-             FOR UPDATE""",
-            user_id, day,
-        )
-        if not entry:
-            return None
-        await con.execute(
-            "UPDATE log_entry SET status = 'discarded' WHERE id = $1", entry["id"]
-        )
         if entry["dish_id"]:
             # times_logged gates the no-confirmation repeat path, so leaving it
             # inflated would let an undone dish log instantly next time.
@@ -922,14 +889,6 @@ async def incomplete_days(user_id: int, days: int = 90) -> list[asyncpg.Record]:
          ORDER BY local_date DESC""",
         user_id, days,
     )
-
-
-async def day_is_complete(user_id: int, day: dt.date) -> bool:
-    p = await pool()
-    row = await p.fetchrow(
-        "SELECT complete FROM day_quality WHERE user_id = $1 AND local_date = $2",
-        user_id, day)
-    return True if row is None else bool(row["complete"])
 
 
 async def daily_energy(user_id: int, days: int = 42) -> list[float]:

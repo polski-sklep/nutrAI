@@ -1895,7 +1895,6 @@ def suggest_card(suggestions: Sequence[Any], progress: Sequence[Any],
     and an oracle.
     """
     names = {r["nutrient_id"]: _short(r["nutrient_name"]) for r in progress}
-    units = {r["nutrient_id"]: r["unit"] for r in progress}
 
     gaps = []
     for r in progress:

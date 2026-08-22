@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import csv
-import os
 import sys
 from pathlib import Path
 from typing import Iterator

@@ -40,8 +40,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Literal
 
-SLOTS = {"breakfast", "lunch", "dinner", "snack", "brunch", "supper", "drink"}
-
 _NUM = r"\d+(?:[.,]\d+)?"
 _UNIT = r"(?:g|gram|grams|gr|ml|kg|l)?"
 
