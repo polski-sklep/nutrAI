@@ -1214,33 +1214,6 @@ def score_line(progress: Sequence[Any], coverage: dict[int, float] | None = None
     return "\n".join(out)
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# ------------------------------------------------------------- day score
-
-
-
-
-
-
 # --------------------------------------------------------- weekly report
 
 

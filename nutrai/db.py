@@ -1676,8 +1676,9 @@ async def delete_activity(user_id: int, activity_id: int) -> bool:
     A hard delete rather than a status column: `activity` is an append-only
     feed from another system, and a session that should not be there is a bad
     forward rather than a decision worth keeping a record of. Note the workout
-    bot can re-post it — deduplication keys on (user, date, kind, minutes,
-    intensity), and after a delete there is nothing left to match.
+    bot can re-post it — deduplication keys on `external_id`, or on (user, date,
+    kind, minutes, intensity) where the client sends none, and after a delete
+    there is nothing left for either to match.
     """
     p = await pool()
     result = await p.execute(

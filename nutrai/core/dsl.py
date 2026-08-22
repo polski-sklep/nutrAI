@@ -149,14 +149,14 @@ def _f(tok: str) -> float:
     return float(tok.replace(",", "."))
 
 
+# "x1.5" mistyped as "x1.5.2" is still an attempt at a scale factor.
+SIGIL_NUM = re.compile(r"^[x*×]\d", re.I)
+
 # Words that say "this is a change to that dish" rather than "this is a food".
 #
 # Deliberately only connectives and comparatives. A food word must never appear
 # here: the test is whether the phrase is *about* an existing dish, and any
 # ingredient name added to this set would make its own dish unloggable.
-# "x1.5" mistyped as "x1.5.2" is still an attempt at a scale factor.
-SIGIL_NUM = re.compile(r"^[x*×]\d", re.I)
-
 MODIFIER_WORDS = frozenset({
     "with", "without", "no", "not", "minus", "plus", "extra", "more", "less",
     "instead", "swap", "sub", "skip", "hold", "add", "and", "but", "only",

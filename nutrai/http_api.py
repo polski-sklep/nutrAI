@@ -71,8 +71,9 @@ async def health(request: web.Request) -> web.Response:
 async def post_activity(request: web.Request) -> web.Response:
     """Append one training session.
 
-    Append-only and idempotent per (user, date, kind, minutes): re-posting the
-    same session does not double it, because a workout bot that retries on a
+    Append-only and idempotent — on `external_id` where the client sends one,
+    otherwise on (user, date, kind, minutes, intensity): re-posting the same
+    session does not double it, because a workout bot that retries on a
     timeout is a workout bot that will eventually retry on a success.
     """
     if not _authorised(request):
