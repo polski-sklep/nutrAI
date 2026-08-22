@@ -642,8 +642,6 @@ def _nutrient_menu() -> str:
     keeps a transcription from becoming a guess. An id it was not given is an id
     it cannot return, so "vitamin B6" cannot quietly land on B12's row.
     """
-    from ..config import CORE_NUTRIENTS
-
     names = {
         1008: "Energy (kcal)", 1003: "Protein (g)", 1004: "Fat (g)", 1005: "Carbohydrate (g)",
         1079: "Fibre (g)", 2000: "Sugars (g)", 1258: "Saturated fat (g)", 1093: "Sodium (mg)",
@@ -662,7 +660,6 @@ def _nutrient_menu() -> str:
         1176: "Biotin (ug)", 1098: "Copper (mg)", 1101: "Manganese (mg)",
         1103: "Selenium (ug)", 1100: "Iodine (ug)", 1091: "Phosphorus (mg)",
     }
-    del CORE_NUTRIENTS
     return "\n".join(f"  {nid} = {label}" for nid, label in sorted(names.items()))
 
 

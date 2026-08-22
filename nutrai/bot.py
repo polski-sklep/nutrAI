@@ -3554,11 +3554,11 @@ async def _try_fix(msg: Message, u: Any, text: str) -> bool:
         await db.clear_pending(u["id"], "fix_entry")
         entry, comps = await db.entry_with_components(entry_id)
         profs = await db.profiles_for([c["fdc_id"] for c in comps])
-        from .core.nutrition import ResolvedComponent as _RC
-
         resolved = [
-            _RC(c["label"], c["fdc_id"], float(c["grams"]), float(c["yield_factor"]),
-                float(c["grams_sigma"] or 0), c["grams_source"])
+            ResolvedComponent(
+                c["label"], c["fdc_id"], float(c["grams"]), float(c["yield_factor"]),
+                float(c["grams_sigma"] or 0), c["grams_source"],
+            )
             for c in comps
         ]
         await msg.answer(
