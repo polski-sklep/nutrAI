@@ -157,3 +157,30 @@ def test_stopword_labels_are_never_resolved_to_a_food():
     # Short real foods must survive: length alone is not the test.
     for food in ("egg", "ham", "oil", "rye", "cod", "tea", "rice", "jam"):
         assert not is_non_food(food), food
+
+
+def test_an_unmeasured_nutrient_is_not_reported_to_the_planner_as_zero():
+    """The evidence pack's medians table must not zero-fill a missing median.
+
+    `window_medians` returns a row only for a nutrient something logged in the
+    window actually reports. Defaulting the miss to 0.0 turned "nothing you ate
+    carries a selenium figure" into "you got no selenium", and the status column
+    read "under by 55" — the phantom-deficiency failure invariant 6 exists to
+    prevent, arriving in the one artefact a model draws conclusions from.
+    """
+    from nutrai.core.plan import _median_row
+
+    absent = _median_row(1103, "Selenium, Se", "µg", None, None, 55.0, None)
+    assert "no data" in absent
+    assert "under by" not in absent
+    # The median columns say nothing rather than saying nought.
+    assert "0.0" not in absent
+
+    # A real zero is still a real zero, and still reads as a shortfall.
+    measured = _median_row(1103, "Selenium, Se", "µg", 0.0, 0.0, 55.0, None)
+    assert "under by 55" in measured
+
+    # And an ordinary in-range figure is untouched.
+    ok = _median_row(1003, "Protein", "g", 142.0, 138.0, 130.0, None)
+    assert ok.endswith("| ok")
+    assert "142.0" in ok and "138.0" in ok

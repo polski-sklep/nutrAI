@@ -21,6 +21,7 @@ depended on a model would share the failure modes of the thing it audits.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import re
 from dataclasses import dataclass
 
@@ -28,6 +29,8 @@ from .. import db
 from ..config import CARB, ENERGY_KCAL, FIBER
 from ..core.nutrition import ENERGY_FALLBACKS
 from ..llm.parse import INVERTING_TERMS
+
+log = logging.getLogger("nutrai.audit")
 
 # Fibre is carbohydrate-by-difference minus the digestible part, so a food whose
 # fibre exceeds this share of its carbohydrate is either a bran product or the
@@ -275,6 +278,9 @@ async def audit_and_report(bot) -> None:
                 u["telegram_id"], render.audit_card(findings), parse_mode="HTML"
             )
         except Exception as exc:  # a blocked bot must not kill the job
-            log_exc = getattr(bot, "_log", None)
-            if log_exc:
-                log_exc.warning("audit failed for %s: %s", u["telegram_id"], exc)
+            # A module logger, like every other job here. This used to look for
+            # a `_log` attribute on the bot, which nothing sets — so the one
+            # signal that the daily audit could not be delivered was itself
+            # swallowed, and a job that silently stopped reporting looked
+            # exactly like a job with nothing to report.
+            log.warning("audit failed for %s: %s", u["telegram_id"], exc)
