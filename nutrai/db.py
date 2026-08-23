@@ -1487,6 +1487,45 @@ async def week_rows(user_id: int, end_day: dt.date, days: int = 7) -> list[async
     )
 
 
+async def nutrient_drivers(user_id: int, start: dt.date, end: dt.date,
+                           nutrient_id: int, limit: int = 3) -> list[asyncpg.Record]:
+    """Which foods actually supplied a nutrient over a window.
+
+    A week card that says "sodium 215%" names a number you cannot act on. The
+    log already knows the answer — sodium is not an abstraction, it is pickle
+    juice, pierogi and rye bread — and naming them turns a verdict into a
+    decision about specific foods.
+
+    `total` is what it contributed across the window; `per_serving` is the
+    median of what one logging of it contributes, which is the figure that
+    tells you whether dropping it once would matter. Days marked incomplete
+    are excluded, as everywhere else that draws a conclusion.
+    """
+    p = await pool()
+    return await p.fetch(
+        """SELECT f.description AS name,
+                  sum(c.grams * c.yield_factor / 100.0 * fn.amount)  AS total,
+                  percentile_cont(0.5) WITHIN GROUP (
+                      ORDER BY c.grams * c.yield_factor / 100.0 * fn.amount) AS per_serving,
+                  count(DISTINCT e.local_date)                       AS days
+             FROM log_entry e
+             JOIN log_component c ON c.entry_id = e.id
+             JOIN food f ON f.fdc_id = c.fdc_id
+             JOIN food_nutrient fn ON fn.fdc_id = c.fdc_id
+             JOIN v_nutrient_canonical vc ON vc.id = fn.nutrient_id
+            WHERE e.user_id = $1 AND e.status = 'confirmed'
+              AND e.local_date BETWEEN $2 AND $3
+              AND vc.canonical_id = $4
+              AND NOT EXISTS (SELECT 1 FROM day_quality q
+                               WHERE q.user_id = e.user_id
+                                 AND q.local_date = e.local_date AND NOT q.complete)
+         GROUP BY f.description
+           HAVING sum(c.grams * c.yield_factor / 100.0 * fn.amount) > 0
+         ORDER BY 2 DESC LIMIT $5""",
+        user_id, start, end, nutrient_id, limit,
+    )
+
+
 async def week_context(user_id: int, end_day: dt.date, days: int = 7) -> dict[str, Any]:
     """The non-nutrient facts a weekly report needs."""
     p = await pool()

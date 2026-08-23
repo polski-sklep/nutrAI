@@ -59,6 +59,32 @@ def bar(pct: float, width: int = 10) -> str:
     return BAR_FULL * filled + BAR_EMPTY * (width - filled)
 
 
+def food_short(description: str, limit: int = 30) -> str:
+    """A USDA description shortened without losing what distinguishes it.
+
+    `_short` cuts at the first comma, which is right for a nutrient column
+    ("Sodium, Na") and wrong for a food: "Egg, whole, cooked, fried" and "Egg,
+    whole, raw" both become "Egg", so a list naming the three biggest sources
+    of your cholesterol showed "Egg" twice and told you nothing. USDA puts the
+    genus first and the distinguishing part after it, so the qualifiers are
+    exactly the wrong thing to drop.
+
+    Keeps whole comma-separated clauses up to `limit`, and always at least two
+    where there are two.
+    """
+    parts = [p.strip() for p in (description or "").split(",") if p.strip()]
+    if not parts:
+        return ""
+    out = parts[0]
+    for part in parts[1:]:
+        if len(out) + len(part) + 2 > limit and out != parts[0]:
+            break
+        out = f"{out}, {part}"
+        if len(out) >= limit:
+            break
+    return out if len(out) <= limit + 12 else out[:limit + 11] + "…"
+
+
 def fmt_usd(usd: float) -> str:
     """Money as money. Cents were being printed as "104.4¢", which is a unit
     nobody quotes a monthly bill in and reads as a typo beside every other
@@ -1401,6 +1427,30 @@ def week_card(rows: Sequence[Row], ctx: Mapping[str, Any]) -> str:
 
     if ctx.get("cents") is not None:
         lines.append(f"   • 💸 {fmt_usd(float(ctx['cents']) / 100)}")
+
+    # Which foods, not which nutrients.
+    #
+    # "Sodium 215%" names a number nobody can act on. Sodium is not an
+    # abstraction — it is pickle juice, rye bread and cornflakes — and the log
+    # already knows which, so the card can turn a verdict into a decision about
+    # specific things you ate. Ceilings get what supplied them, floors get what
+    # already works: the two questions are "what would I drop" and "what would
+    # I have more of", and they have different answers.
+    drivers = ctx.get("drivers") or {}
+    if drivers:
+        lines += ["", "🔧 <b>What would move it</b>"]
+        for nid, d in drivers.items():
+            rows, unit, is_ceiling = d["rows"], d["unit"], d["is_ceiling"]
+            if not rows:
+                continue
+            verb = "mostly from" if is_ceiling else "your best sources"
+            named = ", ".join(
+                f"{_esc(food_short(r['name']))} "
+                f"({fmt_amount(float(r['per_serving']), unit)}"
+                + (f" × {r['days']}d)" if r["days"] > 1 else ")")
+                for r in rows)
+            lines.append(f"   • {_emoji(nid)} <b>{_esc(_short(d['label']))}</b> "
+                         f"— {verb}: {named}")
 
     return "\n".join(lines)
 

@@ -796,10 +796,49 @@ async def week(msg: Message) -> None:
     """The last seven days, on demand. Sent unprompted on Sunday evening."""
     u = await _user(msg)
     day = _today(u)
-    await msg.answer(
-        render.week_card(await db.week_rows(u["id"], day), await db.week_context(u["id"], day)),
-        parse_mode="HTML",
-    )
+    rows = await db.week_rows(u["id"], day)
+    ctx = dict(await db.week_context(u["id"], day))
+    ctx["drivers"] = await _week_drivers(u["id"], rows, ctx)
+    await msg.answer(render.week_card(rows, ctx), parse_mode="HTML")
+
+
+async def _week_drivers(user_id: int, rows: Sequence[asyncpg.Record],
+                        ctx: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    """The foods behind the two worst ceilings and the two worst floors.
+
+    Four queries, chosen from what actually went wrong rather than from a fixed
+    list — a card that always explains sodium is useless in a week when sodium
+    was fine.
+    """
+    worst_over: dict[int, float] = {}
+    worst_under: dict[int, float] = {}
+    meta: dict[int, tuple[str, str]] = {}
+    for r in rows:
+        nid = r["nutrient_id"]
+        meta[nid] = (r["nutrient_name"], r["unit"])
+        amount = float(r["amount"])
+        if r["max_amount"] and float(r["max_amount"]) > 0:
+            share = amount / float(r["max_amount"])
+            if share > 1:
+                worst_over[nid] = max(worst_over.get(nid, 0), share)
+        if r["min_amount"] and float(r["min_amount"]) > 0:
+            share = amount / float(r["min_amount"])
+            if share < 1:
+                worst_under[nid] = max(worst_under.get(nid, 0), 1 - share)
+
+    picked = ([(nid, True) for nid, _s in
+               sorted(worst_over.items(), key=lambda kv: -kv[1])[:2]]
+              + [(nid, False) for nid, _s in
+                 sorted(worst_under.items(), key=lambda kv: -kv[1])[:2]])
+    out: dict[int, dict[str, Any]] = {}
+    for nid, is_ceiling in picked:
+        name, unit = meta[nid]
+        out[nid] = {
+            "label": name, "unit": unit, "is_ceiling": is_ceiling,
+            "rows": await db.nutrient_drivers(
+                user_id, ctx["start"], ctx["end"], nid, limit=3),
+        }
+    return out
 
 
 @dp.message(Command("spend"))

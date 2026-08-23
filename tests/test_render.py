@@ -938,3 +938,22 @@ def test_a_range_is_never_averaged_into_a_figure():
     assert "A range is not a figure" in FOOD_LABEL_SYSTEM
     assert "never its midpoint" in FOOD_LABEL_SYSTEM
     assert "not a product's own nutrition panel" in FOOD_LABEL_SYSTEM
+
+
+def test_food_short_keeps_what_distinguishes_a_food():
+    """"Egg, whole, cooked, fried" and "Egg, whole, raw" both became "Egg".
+
+    `_short` cuts at the first comma, which is right for "Sodium, Na" and
+    wrong for a food — USDA puts the genus first and the distinguishing part
+    after it, so the qualifiers are exactly the wrong thing to drop. A list of
+    the three biggest sources of cholesterol showed "Egg" twice.
+    """
+    from nutrai.core.render import food_short
+
+    assert food_short("Egg, whole, cooked, fried") != food_short("Egg, whole, raw")
+    assert food_short("Bread, rye") == "Bread, rye"
+    assert food_short("Pickle juice") == "Pickle juice"
+    # Long ones still get cut, but on a clause boundary rather than mid-word.
+    long = food_short("Fish, tuna, light, canned in oil, drained solids")
+    assert long.startswith("Fish, tuna") and not long.endswith(",")
+    assert len(long) <= 42
