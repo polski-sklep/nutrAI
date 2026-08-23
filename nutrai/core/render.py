@@ -59,6 +59,10 @@ def bar(pct: float, width: int = 10) -> str:
     return BAR_FULL * filled + BAR_EMPTY * (width - filled)
 
 
+# Telegram rejects a message longer than this outright.
+TELEGRAM_LIMIT = 4096
+
+
 def food_short(description: str, limit: int = 30) -> str:
     """A USDA description shortened without losing what distinguishes it.
 
@@ -1379,7 +1383,7 @@ def week_card(rows: Sequence[Row], ctx: Mapping[str, Any]) -> str:
 
     if over:
         lines += ["", "⚠️ <b>Over the ceiling</b>"]
-        for n_over, nid, name, worst in sorted(over, reverse=True)[:4]:
+        for n_over, nid, name, worst in sorted(over, reverse=True)[:6]:
             lines.append(
                 f"   • {_emoji(nid)} {_esc(name)} — {n_over} of {n_scored} days, "
                 f"worst {worst * 100:.0f}%"
@@ -1387,7 +1391,7 @@ def week_card(rows: Sequence[Row], ctx: Mapping[str, Any]) -> str:
 
     if under:
         lines += ["", "🎯 <b>Floors you kept missing</b>"]
-        for _rate, nid, name, n_met, typical in sorted(under)[:4]:
+        for _rate, nid, name, n_met, typical in sorted(under)[:6]:
             lines.append(
                 f"   • {_emoji(nid)} {_esc(name)} — reached on {n_met} of {n_scored} days "
                 f"<i>(typical {_esc(typical)})</i>"
@@ -1438,7 +1442,8 @@ def week_card(rows: Sequence[Row], ctx: Mapping[str, Any]) -> str:
     # I have more of", and they have different answers.
     drivers = ctx.get("drivers") or {}
     if drivers:
-        lines += ["", "🔧 <b>What would move it</b>"]
+        budget = TELEGRAM_LIMIT - len("\n".join(lines)) - 260
+        block, dropped = [], 0
         for nid, d in drivers.items():
             rows, unit, is_ceiling = d["rows"], d["unit"], d["is_ceiling"]
             if not rows:
@@ -1449,8 +1454,18 @@ def week_card(rows: Sequence[Row], ctx: Mapping[str, Any]) -> str:
                 f"({fmt_amount(float(r['per_serving']), unit)}"
                 + (f" × {r['days']}d)" if r["days"] > 1 else ")")
                 for r in rows)
-            lines.append(f"   • {_emoji(nid)} <b>{_esc(_short(d['label']))}</b> "
-                         f"— {verb}: {named}")
+            line = (f"   • {_emoji(nid)} <b>{_esc(_short(d['label']))}</b> "
+                    f"— {verb}: {named}")
+            if dropped or len(line) + 1 > budget:
+                dropped += 1
+                continue
+            block.append(line)
+            budget -= len(line) + 1
+        if block:
+            lines += ["", "🔧 <b>What would move it</b>"] + block
+            if dropped:
+                lines.append(f"   <i>{dropped} more off target — "
+                             f"<code>/why &lt;nutrient&gt;</code> for any of them.</i>")
 
     return "\n".join(lines)
 

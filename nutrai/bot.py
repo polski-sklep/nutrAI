@@ -810,26 +810,41 @@ async def _week_drivers(user_id: int, rows: Sequence[asyncpg.Record],
     list — a card that always explains sodium is useless in a week when sodium
     was fine.
     """
-    worst_over: dict[int, float] = {}
-    worst_under: dict[int, float] = {}
+    days_over: dict[int, int] = {}
+    days_under: dict[int, int] = {}
+    seen: dict[int, int] = {}
     meta: dict[int, tuple[str, str]] = {}
+    incomplete = set(ctx.get("incomplete") or ())
     for r in rows:
+        if r["day"] in incomplete:
+            continue
         nid = r["nutrient_id"]
         meta[nid] = (r["nutrient_name"], r["unit"])
+        seen[nid] = seen.get(nid, 0) + 1
         amount = float(r["amount"])
-        if r["max_amount"] and float(r["max_amount"]) > 0:
-            share = amount / float(r["max_amount"])
-            if share > 1:
-                worst_over[nid] = max(worst_over.get(nid, 0), share)
-        if r["min_amount"] and float(r["min_amount"]) > 0:
-            share = amount / float(r["min_amount"])
-            if share < 1:
-                worst_under[nid] = max(worst_under.get(nid, 0), 1 - share)
+        if r["max_amount"] and float(r["max_amount"]) > 0 \
+                and amount > float(r["max_amount"]):
+            days_over[nid] = days_over.get(nid, 0) + 1
+        if r["min_amount"] and float(r["min_amount"]) > 0 \
+                and amount < float(r["min_amount"]):
+            days_under[nid] = days_under.get(nid, 0) + 1
 
-    picked = ([(nid, True) for nid, _s in
-               sorted(worst_over.items(), key=lambda kv: -kv[1])[:2]]
-              + [(nid, False) for nid, _s in
-                 sorted(worst_under.items(), key=lambda kv: -kv[1])[:2]])
+    # Wrong on most of the logged days, or it is not a pattern yet.
+    def _habitual(counts: dict[int, int]) -> list[int]:
+        return [nid for nid, n in sorted(counts.items(), key=lambda kv: -kv[1])
+                if n / max(seen.get(nid, 1), 1) > 0.5]
+
+    worst_over = {nid: days_over[nid] for nid in _habitual(days_over)}
+    worst_under = {nid: days_under[nid] for nid in _habitual(days_under)}
+
+    overs = [nid for nid, _s in sorted(worst_over.items(), key=lambda kv: -kv[1])]
+    unders = [nid for nid, _s in sorted(worst_under.items(), key=lambda kv: -kv[1])]
+    picked: list[tuple[int, bool]] = []
+    for i in range(max(len(overs), len(unders))):
+        if i < len(overs):
+            picked.append((overs[i], True))
+        if i < len(unders):
+            picked.append((unders[i], False))
     out: dict[int, dict[str, Any]] = {}
     for nid, is_ceiling in picked:
         name, unit = meta[nid]

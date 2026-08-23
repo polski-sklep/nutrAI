@@ -957,3 +957,48 @@ def test_food_short_keeps_what_distinguishes_a_food():
     long = food_short("Fish, tuna, light, canned in oil, drained solids")
     assert long.startswith("Fish, tuna") and not long.endswith(",")
     assert len(long) <= 42
+
+
+def _driver_ctx(n_nutrients=40, foods_per=3):
+    """A week where a great many things went wrong, with long food names."""
+    rows, drivers = [], {}
+    for k in range(n_nutrients):
+        nid = 1000 + k
+        for d in range(7):
+            rows.append(dict(day=dt.date(2026, 8, 16) + dt.timedelta(days=d),
+                             nutrient_id=nid, nutrient_name=f"Nutrient number {k}",
+                             unit="mg", amount=500.0, min_amount=900.0, max_amount=None))
+        drivers[nid] = {
+            "label": f"Nutrient number {k}", "unit": "mg", "is_ceiling": False,
+            "rows": [dict(name="Corn, sweet, yellow, canned, whole kernel, drained solids",
+                          per_serving=123.0, days=5, total=600.0)
+                     for _ in range(foods_per)],
+        }
+    ctx = dict(start=dt.date(2026, 8, 16), end=dt.date(2026, 8, 22), meals=91,
+               pct_measured=70, weights=[], drivers=drivers)
+    return rows, ctx
+
+
+def test_the_week_card_cannot_exceed_what_telegram_accepts():
+    """Telegram rejects a message over 4,096 characters outright.
+
+    A rejected week card is worse than a short one: `resend_unformatted`
+    catches it and sends the whole thing as plain text, so the aligned chart
+    that is the point of the card arrives with its columns collapsed.
+    """
+    from nutrai.core.render import TELEGRAM_LIMIT, week_card
+
+    rows, ctx = _driver_ctx()
+    out = week_card(rows, ctx)
+    assert len(out) <= TELEGRAM_LIMIT, len(out)
+    # And it says what it could not fit, rather than stopping in silence.
+    assert "more off target" in out
+
+
+def test_a_week_that_fits_says_nothing_about_being_trimmed():
+    from nutrai.core.render import week_card
+
+    rows, ctx = _driver_ctx(n_nutrients=2)
+    out = week_card(rows, ctx)
+    assert "more off target" not in out
+    assert out.count("your best sources") == 2
