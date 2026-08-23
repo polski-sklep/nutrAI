@@ -293,6 +293,28 @@ async def top_dishes(user_id: int, limit: int = 8, *, tz: str = "UTC",
     )
 
 
+async def sync_dish_to_entry(dish_id: int, entry_id: int) -> None:
+    """Make the dish match the entry that was just confirmed.
+
+    The dish is a memory of what you actually ate, so it is written at the one
+    moment that becomes true. Before this, `upsert_dish` wrote it at parse
+    time and a discarded meal could leave the dish describing a plate nobody
+    agreed to.
+    """
+    p = await pool()
+    async with p.acquire() as con, con.transaction():
+        await con.execute("DELETE FROM dish_component WHERE dish_id = $1", dish_id)
+        await con.execute(
+            """INSERT INTO dish_component
+                 (dish_id, position, fdc_id, label, grams, yield_factor, grams_source)
+               SELECT $1, c.position, c.fdc_id, c.label, c.grams, c.yield_factor,
+                      c.grams_source
+                 FROM log_component c WHERE c.entry_id = $2
+             ORDER BY c.position""",
+            dish_id, entry_id,
+        )
+
+
 async def dish_by_name(user_id: int, text: str,
                        min_sim: float = 0.9) -> asyncpg.Record | None:
     """A whole message that is simply the name of a dish you have.
@@ -359,7 +381,23 @@ async def template_by_slug(user_id: int, slug: str) -> tuple[asyncpg.Record, lis
 async def upsert_dish(
     user_id: int, slug: str, name: str, slot: str | None, components: list[ResolvedComponent],
     labels_state: list[tuple[str, float]] | None = None,
+    replace_components: bool = True,
 ) -> int:
+    """Create or update the dish behind an entry.
+
+    `replace_components=False` writes components only when the dish is new.
+
+    A parse is a proposal, and this runs before anybody has accepted it. With
+    the components rewritten unconditionally, a meal typed and then *discarded*
+    still replaced the dish it collided with by slug: "pastel de choclo"
+    parsed as one 400 g item overwrote a twelve-component dish, the entry was
+    thrown away, and the dish stayed wrecked. Nothing recorded that it had
+    happened, because nothing had gone wrong from the entry's point of view.
+
+    A confirmed entry does update the dish — `sync_dish_to_entry` below, called
+    from the confirm handler, which is the only place a proposal becomes a
+    record.
+    """
     p = await pool()
     async with p.acquire() as con, con.transaction():
         dish_id = await con.fetchval(
@@ -370,6 +408,9 @@ async def upsert_dish(
                RETURNING id""",
             user_id, slug, name, slot,
         )
+        if not replace_components and await con.fetchval(
+                "SELECT 1 FROM dish_component WHERE dish_id = $1 LIMIT 1", dish_id):
+            return dish_id
         await con.execute("DELETE FROM dish_component WHERE dish_id = $1", dish_id)
         await con.executemany(
             """INSERT INTO dish_component

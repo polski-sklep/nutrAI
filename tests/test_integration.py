@@ -3416,3 +3416,46 @@ def test_a_message_that_is_a_dish_name_repeats_it(harness):
         await p.execute("DELETE FROM dish WHERE id = $1", dish)
 
     run(scenario())
+
+
+@pytest.mark.integration
+def test_a_discarded_parse_cannot_overwrite_an_existing_dish(harness):
+    """A meal typed and thrown away destroyed a dish it collided with by slug.
+
+    `_present` wrote the dish before anyone accepted the parse, and the write
+    deleted the existing components first. A twelve-component Pastel de Choclo
+    became one 400 g item because a parse of the same name was produced and
+    then discarded — nothing recorded it, because from the entry's point of
+    view nothing had gone wrong.
+    """
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+        from nutrai.bot import dp
+
+        p = await db.pool()
+        a, b = await p.fetch(
+            "SELECT fdc_id FROM food_nutrient WHERE nutrient_id = 1008 AND amount > 50 LIMIT 2")
+        dish = await p.fetchval(
+            """INSERT INTO dish (user_id, slug, name, default_slot)
+               VALUES ($1,'mince-and-rice','Mince and rice','dinner') RETURNING id""", uid)
+        for i, fdc in enumerate((a["fdc_id"], b["fdc_id"])):
+            await p.execute(
+                """INSERT INTO dish_component
+                     (dish_id, position, fdc_id, label, grams, grams_source)
+                   VALUES ($1,$2,$3,$4,120,'stated')""", dish, i, fdc, f"curated{i}")
+
+        # The stub parses any text into its own MEAL, whose slug collides.
+        harness.sent.clear()
+        await harness.feed("250 g minced beef, 164 g rice, a splash of olive oil")
+        card = harness.sent.last()
+        await harness.press(f"no:{_confirm_id(card)}", card.message_id)
+
+        rows = await db.dish_components(dish)
+        assert [r["label"] for r in rows] == ["curated0", "curated1"], (
+            "a discarded parse rewrote the dish")
+        assert all(r["grams_source"] == "stated" for r in rows)
+
+        await p.execute("DELETE FROM dish WHERE id = $1", dish)
+
+    run(scenario())

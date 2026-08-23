@@ -3992,7 +3992,10 @@ async def _present(
     # backdated entry it is the clock of the meal, not of the typing.
     slot = dsl.slot_for_hour((when or _local_now(u)).hour, parsed.slot)
     dish_name = render._title(parsed.dish_name)
-    dish_id = await db.upsert_dish(u["id"], slug, dish_name, slot, res.components)
+    # A parse is a proposal. It must not rewrite the dish it collides with
+    # by slug until somebody accepts it — see upsert_dish.
+    dish_id = await db.upsert_dish(u["id"], slug, dish_name, slot, res.components,
+                                   replace_components=False)
 
     entry_id = await db.create_pending_entry(
         u["id"], dish_name, res.components, source=source, slot=slot,
@@ -4258,6 +4261,12 @@ async def cb_ok(cq: CallbackQuery) -> None:
 
     entry, _comps = await db.entry_with_components(entry_id)
     u = await db.get_or_create_user(cq.from_user.id)
+
+    # Now the dish may learn from it. This is the moment a proposal becomes a
+    # record, and the only place the dish is allowed to change — a parse that
+    # was discarded leaves it as it was.
+    if entry["dish_id"]:
+        await db.sync_dish_to_entry(int(entry["dish_id"]), entry_id)
 
     # A supplement named in the meal you just logged is a supplement you took.
     # "Protein shake with creatine" should not need ticking twice, and the
