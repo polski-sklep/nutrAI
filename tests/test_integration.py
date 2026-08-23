@@ -3459,3 +3459,49 @@ def test_a_discarded_parse_cannot_overwrite_an_existing_dish(harness):
         await p.execute("DELETE FROM dish WHERE id = $1", dish)
 
     run(scenario())
+
+
+@pytest.mark.integration
+def test_your_own_food_beats_a_generic_row(database_url):
+    """A food defined from a packet lost to a national average of a different food.
+
+    `_candidates` searches the model's `search_terms` as well as the user's
+    words and ranks by the best score any query achieved. The model's phrase
+    describes what it believes the food to be, so it matches a generic row
+    almost exactly — a Devolay defined an hour earlier scored 0.84 against the
+    user's own label and still lost to `Chicken or turkey cordon bleu`, which
+    was then auto-matched and cached as an alias.
+    """
+    from nutrai import db
+    from nutrai.config import AUTO_MATCH_SIMILARITY
+
+    async def check() -> None:
+        p = await db.pool()
+        uid = await p.fetchval("SELECT id FROM app_user WHERE telegram_id = $1", CHAT_ID)
+        fdc = await db.create_user_food(
+            uid, "zzprobe cutlet (breaded stuffed thing)",
+            {1008: 264.0, 1003: 11.8, 1004: 18.5, 1005: 13.0})
+
+        cands = await db.search_foods(
+            "zzprobe cutlet (breaded stuffed thing)", limit=8, user_id=uid)
+        own = [c for c in cands if c["precedence"] == 0]
+        assert own, "the user's own food is not even a candidate"
+        assert float(own[0]["sim"]) >= AUTO_MATCH_SIMILARITY
+
+        # precedence 0 is user_product and nothing else — the whole rule rests
+        # on that, so it is asserted rather than assumed.
+        kinds = await p.fetch(
+            "SELECT DISTINCT data_type FROM food WHERE precedence = 0")
+        assert [k["data_type"] for k in kinds] == ["user_product"]
+
+        import inspect
+
+        from nutrai.llm import parse
+        src = inspect.getsource(parse.resolve_items)
+        assert 'c["precedence"] == 0' in src, "own-food preference is gone"
+
+        await p.execute("DELETE FROM food_nutrient WHERE fdc_id = $1", fdc)
+        await p.execute("DELETE FROM food_alias WHERE fdc_id = $1", fdc)
+        await p.execute("DELETE FROM food WHERE fdc_id = $1", fdc)
+
+    run(check())

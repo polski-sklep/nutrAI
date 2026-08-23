@@ -421,6 +421,29 @@ async def resolve_items(user_id: int, items: list[dict[str, Any]],
         # it scores. It drops to the model instead of being taken on trust —
         # tier 3 costs a fraction of a penny and can read the word "meatless".
         asked_for = f"{label} {it.get('search_terms') or ''}"
+
+        # Your own food beats a generic row, whatever the pooling says.
+        #
+        # `_candidates` searches on the model's `search_terms` as well as on
+        # your words, and ranks by the best score any query achieved. The
+        # model's phrase describes what it thinks the food is, so it matches a
+        # generic row almost exactly — "chicken cordon bleu" scoring against
+        # `Chicken or turkey cordon bleu` beat the Devolay you had defined
+        # yourself an hour earlier at 0.84, and the parse auto-matched the
+        # wrong one without ever asking anything.
+        #
+        # precedence 0 is `user_product` and nothing else. A row you wrote from
+        # a packet in your hand is not a candidate to be weighed against a
+        # national average of a food you did not eat; it is the answer.
+        own = next((c for c in cands
+                    if c["precedence"] == 0
+                    and float(c["sim"] or 0) >= AUTO_MATCH_SIMILARITY), None)
+        if own is not None and not inverts_meaning(asked_for, own["description"]):
+            await _accept(label, own["fdc_id"], it)
+            await db.upsert_alias(user_id, label, own["fdc_id"],
+                                  float(it.get("grams", 0) or 0))
+            continue
+
         if (
             cands
             and float(cands[0]["sim"] or 0) >= AUTO_MATCH_SIMILARITY
