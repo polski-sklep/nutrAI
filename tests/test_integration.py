@@ -3366,3 +3366,53 @@ def test_a_companion_is_offered_and_adds_at_the_mass_you_had(database_url):
         await p.execute("DELETE FROM dish WHERE id = $1", dish)
 
     run(check())
+
+
+@pytest.mark.integration
+def test_a_message_that_is_a_dish_name_repeats_it(harness):
+    """"pastel de choclo" reached the parser and came back as ground beef.
+
+    The repeat grammar read it as selector "pastel" plus two modifiers nobody
+    could read, so a dish already in the database was parsed as a novel meal —
+    at 40% confidence, 912 kcal, and one component. The name is the most
+    natural thing to type and was the one spelling that did not work.
+    """
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+        from nutrai.bot import dp
+
+        p = await db.pool()
+        fdc = await p.fetchval(
+            "SELECT fdc_id FROM food_nutrient WHERE nutrient_id = 1008 AND amount > 50 LIMIT 1")
+        dish = await p.fetchval(
+            """INSERT INTO dish (user_id, slug, name, default_slot, times_logged)
+               VALUES ($1,'probe-stew','Probe Stew','dinner',2) RETURNING id""", uid)
+        await p.execute(
+            """INSERT INTO dish_component
+                 (dish_id, position, fdc_id, label, grams, grams_source)
+               VALUES ($1,0,$2,'probe',150,'stated')""", dish, fdc)
+
+        harness.sent.clear()
+        harness.llm.calls.clear()
+        await harness.feed("probe stew")
+
+        assert any("Probe Stew" in t for t in harness.sent.texts()), harness.sent.texts()
+        # The whole point: it costs nothing.
+        assert not harness.llm.calls, f"a model was called: {harness.llm.calls}"
+        logged = await p.fetchval(
+            """SELECT count(*) FROM log_entry
+                WHERE user_id = $1 AND dish_id = $2 AND status = 'confirmed'""",
+            uid, dish)
+        assert logged == 1, "an unmodified repeat of a confirmed dish should log"
+
+        # A name plus an instruction is not the same message and must not be
+        # silently stripped down to the dish.
+        harness.sent.clear()
+        harness.llm.calls.clear()
+        await harness.feed("probe stew with extra potato")
+        assert harness.llm.calls, "a modified dish was logged as the plain one"
+
+        await p.execute("DELETE FROM dish WHERE id = $1", dish)
+
+    run(scenario())

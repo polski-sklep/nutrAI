@@ -583,6 +583,12 @@ async def _backdate(msg: Message, u: asyncpg.Record, text: str, day: dt.date) ->
         await msg.answer("That was only a time — tell me what you ate too.")
         return
 
+    # Same lookup as the live path. Putting yesterday's dinner into yesterday
+    # is the commonest reason to be here at all, and it was the one route that
+    # never consulted the dishes.
+    if await _repeat_named_dish(msg, u, text, on_day=day):
+        return
+
     note = await msg.answer("🍽 digesting…")
     try:
         parsed = await llm.parse_text(text, user_id=u["id"])
@@ -3366,6 +3372,9 @@ async def on_text(msg: Message) -> None:
     if await _consume_awaited_reply(msg, u, text):
         return
 
+    if await _repeat_named_dish(msg, u, text):
+        return
+
     cmd = dsl.parse(text)
     if cmd and await _try_repeat(msg, u, cmd):
         return
@@ -3730,6 +3739,22 @@ async def _log_one_component(msg: Message, u: asyncpg.Record, comp: dict[str, An
         reply_markup=kb_confirm(entry_id),
     )
     return True
+
+
+async def _repeat_named_dish(msg: Message, u: asyncpg.Record, text: str,
+                             on_day: dt.date | None = None) -> bool:
+    """Log a dish the message names outright. False if it names none.
+
+    Routed through `_try_repeat` rather than logging here, so provenance, the
+    portion prior and the confirm gate are the same ones every other repeat
+    gets.
+    """
+    dish = await db.dish_by_name(u["id"], text)
+    if not dish:
+        return False
+    ops: list[Any] = [dsl.SetDate(iso=on_day.isoformat())] if on_day else []
+    return await _try_repeat(
+        msg, u, dsl.RepeatCommand(selector=dish["slug"], selector_kind="slug", ops=ops))
 
 
 async def _try_repeat(msg: Message, u: asyncpg.Record, cmd: dsl.RepeatCommand) -> bool:

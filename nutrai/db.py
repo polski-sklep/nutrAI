@@ -293,6 +293,33 @@ async def top_dishes(user_id: int, limit: int = 8, *, tz: str = "UTC",
     )
 
 
+async def dish_by_name(user_id: int, text: str,
+                       min_sim: float = 0.9) -> asyncpg.Record | None:
+    """A whole message that is simply the name of a dish you have.
+
+    `dish_by_slug` is given the first token of a repeat command — "3", "b",
+    "pastel" — and matches names loosely on top of that. Typed on its own,
+    "pastel de choclo" never reached it: the grammar took "pastel" as the
+    selector and the rest as modifiers nobody could read, so a stored dish went
+    to the parser as a novel meal and came back as 400 g of ground beef.
+
+    Strict on purpose. "pastel de choclo" scores 1.00 and is unambiguous;
+    "pastel de choclo with extra corn" scores 0.53 and carries an instruction
+    this path would silently drop, so it is left to the parser. The threshold
+    is what separates "this is that dish" from "this is about that dish".
+    """
+    if not text or not text.strip():
+        return None
+    p = await pool()
+    return await p.fetchrow(
+        """SELECT * FROM dish
+            WHERE user_id = $1 AND NOT archived
+              AND (slug = lower(replace($2, ' ', '-')) OR similarity(name, $2) >= $3)
+         ORDER BY similarity(name, $2) DESC LIMIT 1""",
+        user_id, text.strip(), min_sim,
+    )
+
+
 async def dish_by_slug(user_id: int, slug: str) -> asyncpg.Record | None:
     p = await pool()
     return await p.fetchrow(
