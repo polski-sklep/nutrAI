@@ -266,25 +266,3 @@ def summarise(findings: list[Finding]) -> dict[str, int]:
     for f in findings:
         out[f.severity] = out.get(f.severity, 0) + 1
     return out
-
-
-async def audit_and_report(bot: Bot) -> None:
-    """Daily job. Silent when there is nothing to say."""
-    p = await db.pool()
-    for u in await p.fetch("SELECT id, telegram_id FROM app_user"):
-        findings = await audit_user(u["id"], days=1)
-        if not any(f.severity in ("error", "warn") for f in findings):
-            continue
-        from ..core import render
-
-        try:
-            await bot.send_message(
-                u["telegram_id"], render.audit_card(findings), parse_mode="HTML"
-            )
-        except Exception as exc:  # a blocked bot must not kill the job
-            # A module logger, like every other job here. This used to look for
-            # a `_log` attribute on the bot, which nothing sets — so the one
-            # signal that the daily audit could not be delivered was itself
-            # swallowed, and a job that silently stopped reporting looked
-            # exactly like a job with nothing to report.
-            log.warning("audit failed for %s: %s", u["telegram_id"], exc)

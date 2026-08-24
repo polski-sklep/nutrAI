@@ -291,17 +291,15 @@ def start_scheduler(bot: Bot) -> AsyncIOScheduler:
                   id="morning_notes")
     # 21:00 Europe/Warsaw. Move this to a per-user job once there is more than
     # one user; a single cron is honest for a single-user deployment.
-    # No 19:00 day card. It printed exactly what /today prints, unasked, at an
-    # hour when the day is not over — the same objection that removed the
-    # threshold rules, applied to the card those rules were fragments of.
+    # Nothing analytical arrives unasked. The threshold rules went first, then
+    # the 19:00 day card, and the daily match check last — a wall of database
+    # diagnostics in the evening, about matching rather than about eating, and
+    # mostly concerning foods logged days before. `/audit` says the same thing
+    # at the moment somebody wants to know it.
     #
-    # In the evening, so a bad match is flagged while the day is still in mind
-    # and the entry is still easy to recognise.
-    from .audit import audit_and_report
-
-    sched.add_job(audit_and_report, CronTrigger(hour=19, minute=5), args=[bot], id="audit")
-    # Sunday 20:00 Europe/Warsaw, after the day's summary and the audit, when
-    # the week is as complete as it is going to get.
+    # What still arrives unbidden earns it by being short and timely: the
+    # morning note, supplement reminders at their slots, the Sunday report.
+    # Sunday evening, when the week is as complete as it is going to get.
     sched.add_job(
         weekly_summary, CronTrigger(day_of_week="sun", hour=18, minute=0),
         args=[bot], id="weekly",

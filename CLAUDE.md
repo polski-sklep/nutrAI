@@ -359,9 +359,17 @@ arithmetic the user can do, arriving unasked, on a day that is not over. A
 tracker that interrupts is one you mute, and the muting takes the useful
 messages with it.
 
-What still arrives unbidden, and should: the morning note (07:30), supplement
-reminders at their scheduled slots, and the Sunday report. Everything else is
-pull — `/today`, `/next`, `/week`, `/last`.
+The 19:00 day card and the daily match check went the same way, for the same
+reason. The match check is worth a second note: it was a wall of database
+diagnostics arriving in the evening, about *matching* rather than about eating,
+and mostly concerning foods logged days earlier — a class of message with no
+moment it needs to be read. `/audit` runs exactly the same checks over the last
+seven days, when somebody wants to know.
+
+What still arrives unbidden earns it by being short and timely: the morning
+note (07:30), supplement reminders at their scheduled slots, and the Sunday
+report. Everything else is pull — `/today`, `/week`, `/next`, `/last`,
+`/audit`. If you are about to schedule something, that list is the bar.
 
 ## Days that do not count
 
