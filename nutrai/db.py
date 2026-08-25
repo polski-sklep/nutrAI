@@ -467,11 +467,60 @@ async def _write_components(con: Any, entry_id: int,
     )
 
 
+async def record_resolution_events(
+        user_id: int, events: list[dict[str, Any]]) -> list[int]:
+    """What the resolver was asked, what it found, and what it took.
+
+    Written at resolve time, not at confirm time, and that is the whole point.
+    A component row only exists for something that resolved *and* was written;
+    the resolutions worth reading are the ones that produced neither — the item
+    that matched nothing, the card you discarded, the parse that named a food
+    USDA has no word for. Deferring this to the write path would record only
+    the successes and call it provenance.
+
+    So `entry_id` is NULL here and filled in later by `create_pending_entry` if
+    an entry happens. A row that keeps its NULL is not an incomplete record, it
+    is the failure, kept.
+    """
+    if not events:
+        return []
+    p = await pool()
+    rows = await p.fetch(
+        """INSERT INTO resolution_event
+             (user_id, position, label, queries, candidates,
+              chosen_fdc_id, match_tier)
+           SELECT $1, x.position, x.label, x.queries, x.candidates,
+                  x.chosen_fdc_id, x.match_tier
+             FROM jsonb_to_recordset($2::jsonb) AS x(
+                    position smallint, label text, queries jsonb,
+                    candidates jsonb, chosen_fdc_id integer, match_tier text)
+           RETURNING id""",
+        user_id, json.dumps(events))
+    return [r["id"] for r in rows]
+
+
+async def link_resolution_events(event_ids: list[int], entry_id: int) -> None:
+    """Attach already-written events to an entry that existed before them.
+
+    The `/fix` path resolves new ingredients into an entry that is already on
+    disk, so there is no create call to hang them off. Separate from the write
+    so the write can stay unconditional: an event is recorded whether or not it
+    ever finds an entry to belong to.
+    """
+    if not event_ids:
+        return
+    p = await pool()
+    await p.execute(
+        "UPDATE resolution_event SET entry_id = $1 WHERE id = ANY($2::bigint[])",
+        entry_id, event_ids)
+
+
 async def create_pending_entry(
     user_id: int, name: str, components: list[ResolvedComponent], *, source: str,
     slot: str | None, confidence: float | None, model: str | None, parse: dict | None,
     photo_file_id: str | None, dish_id: int | None, when: dt.datetime | None = None,
     tz: str = "Europe/Warsaw", rollover_hour: int = 4, grams_sources: list[str] | None = None,
+    resolution_event_ids: list[int] | None = None,
 ) -> int:
     """Write the entry as `pending`. Nothing counts until a human presses yes.
 
@@ -492,6 +541,13 @@ async def create_pending_entry(
             json.dumps(parse) if parse else None, photo_file_id,
         )
         await _write_components(con, entry_id, components, grams_sources)
+        if resolution_event_ids:
+            # In the same transaction as the entry: an entry whose resolution
+            # points at nothing, or events pointing at an entry that rolled
+            # back, are both worse than the unlinked row we already tolerate.
+            await con.execute(
+                "UPDATE resolution_event SET entry_id = $1 WHERE id = ANY($2::bigint[])",
+                entry_id, resolution_event_ids)
     return entry_id
 
 

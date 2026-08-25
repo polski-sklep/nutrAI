@@ -3692,6 +3692,7 @@ async def _try_fix(msg: Message, u: asyncpg.Record, text: str) -> bool:
     ]
     before_g = sum(c.grams for c in current)
     new_comps, to_add = dsl.apply(current, ops)
+    added_events: list[int] = []
     after_g = sum(c.grams for c in new_comps)
 
     # A correction that changes the plate several times over is almost always
@@ -3723,6 +3724,7 @@ async def _try_fix(msg: Message, u: asyncpg.Record, text: str) -> bool:
               "grams": add.grams or 100, "grams_source": "stated",
               "state": "unknown", "confidence": 0.7}],
         )
+        added_events += res.event_ids
         for c in res.components:
             new_comps.append(
                 dsl.Component(c.label, c.fdc_id, c.grams, yield_factor=c.yield_factor,
@@ -3744,6 +3746,11 @@ async def _try_fix(msg: Message, u: asyncpg.Record, text: str) -> bool:
         return True
 
     await db.replace_components(entry_id, resolved)
+    # `replace_components` DELETEs the component rows, taking their match_tier
+    # and similarity snapshots with them — which is precisely why the candidate
+    # lists live in their own table (sql/030) and why a fix has to attach the
+    # new ones rather than assume a create call will.
+    await db.link_resolution_events(added_events, entry_id)
     await db.clear_pending(u["id"], "fix_entry")
 
     profs = await db.profiles_for([c.fdc_id for c in resolved])
@@ -3925,6 +3932,7 @@ async def _try_repeat(msg: Message, u: asyncpg.Record, cmd: dsl.RepeatCommand) -
             )
 
     new_comps, unresolved = dsl.apply(comps, ops)
+    added_events: list[int] = []
 
     for add in unresolved:
         alias = await db.resolve_alias(u["id"], add.label)
@@ -3938,6 +3946,7 @@ async def _try_repeat(msg: Message, u: asyncpg.Record, cmd: dsl.RepeatCommand) -
                   "grams": add.grams or 100, "grams_source": "stated", "state": "unknown",
                   "confidence": 0.7}],
             )
+            added_events += res.event_ids
             for c in res.components:
                 new_comps.append(dsl.Component(c.label, c.fdc_id, c.grams,
                                                yield_factor=c.yield_factor,
@@ -3961,6 +3970,7 @@ async def _try_repeat(msg: Message, u: asyncpg.Record, cmd: dsl.RepeatCommand) -
         model=model_used, parse={"ops": [str(o) for o in ops]}, photo_file_id=None,
         dish_id=dish["id"], when=when, tz=u["tz"], rollover_hour=u["day_rollover_hour"],
         grams_sources=[c.grams_source for c in new_comps if c.fdc_id],
+        resolution_event_ids=added_events,
     )
 
     # An unmodified repeat of a dish you have confirmed before is not a claim
@@ -4064,6 +4074,10 @@ async def _present(
         parse={**(parsed.raw or {}), "_weak": [w[0] for w in res.weak_matches]},
             photo_file_id=photo_file_id, dish_id=None, tz=u["tz"],
             rollover_hour=u["day_rollover_hour"],
+            # Linked even though the entry is discarded a line later. This is
+            # the meal where nothing matched, so it is the one whose candidate
+            # lists someone will want to read.
+            resolution_event_ids=res.event_ids,
         )
         await db.discard_entry(entry_id)
 
@@ -4104,7 +4118,7 @@ async def _present(
         parse={**(parsed.raw or {}), "_weak": [w[0] for w in res.weak_matches]},
         photo_file_id=photo_file_id, dish_id=dish_id, tz=u["tz"],
         rollover_hour=u["day_rollover_hour"], grams_sources=res.grams_sources,
-        when=when,
+        when=when, resolution_event_ids=res.event_ids,
     )
 
     warnings = list(verdict.warnings)

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import json
 import os
 import re
 import subprocess
@@ -3542,3 +3543,95 @@ def test_a_short_query_reaches_a_long_usda_name(database_url):
         assert not wrong, wrong
 
     run(check())
+
+
+def test_a_resolution_that_matches_nothing_is_still_recorded(harness):
+    """The failures are the reason the table exists, and they leave no entry.
+
+    sql/030 created `resolution_event` and nothing ever wrote to it, so on
+    25 Aug a card claiming the database held nothing like "pancetta/guanciale"
+    had to be diagnosed by re-running the resolver by hand. A component row
+    only exists for something that resolved; an item that matched nothing
+    leaves none, which is precisely the case worth reading back.
+
+    So the write happens at resolve time with `entry_id` NULL, and a row that
+    keeps its NULL is the record of a failure rather than an incomplete one.
+    """
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+        from nutrai.llm import parse as llm
+
+        p = await db.pool()
+        await p.execute("DELETE FROM resolution_event WHERE user_id=$1", uid)
+
+        res = await llm.resolve_items(uid, [
+            # USDA carries neither word. Not a weak match — no candidates.
+            {"label": "guanciale", "search_terms": "guanciale",
+             "grams": 40, "grams_source": "estimate", "state": "cooked",
+             "confidence": 0.5},
+        ])
+        assert res.unresolved == ["guanciale"]
+        assert res.event_ids, "a resolution that failed recorded nothing"
+
+        rows = await p.fetch(
+            """SELECT label, match_tier, chosen_fdc_id, entry_id, queries, candidates
+                 FROM resolution_event WHERE user_id=$1 ORDER BY position""", uid)
+        assert len(rows) == 1
+        ev = rows[0]
+        assert ev["label"] == "guanciale"
+        assert ev["match_tier"] == "none"
+        assert ev["chosen_fdc_id"] is None
+        assert ev["entry_id"] is None
+        # Every phrase actually searched, so a later reader can tell an empty
+        # database from a query that was never asked.
+        assert json.loads(ev["queries"]) == ["guanciale"]
+        assert json.loads(ev["candidates"]) == []
+
+        await p.execute("DELETE FROM resolution_event WHERE user_id=$1", uid)
+
+    run(scenario())
+
+
+def test_a_successful_resolution_records_the_losing_candidates(harness):
+    """A margin is the only honest input to a confidence figure.
+
+    `log_component` keeps the runner-up, but only one, and `replace_components`
+    DELETEs the row on a `/fix` — destroying the record of what was being fixed
+    at the moment it becomes interesting. The list lives here instead.
+    """
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+        from nutrai.llm import parse as llm
+
+        p = await db.pool()
+        await p.execute("DELETE FROM resolution_event WHERE user_id=$1", uid)
+        await p.execute("DELETE FROM food_alias WHERE user_id=$1", uid)
+
+        res = await llm.resolve_items(uid, [
+            {"label": "bacon", "search_terms": "bacon cured pork",
+             "grams": 30, "grams_source": "estimate", "state": "cooked",
+             "confidence": 0.8},
+        ])
+        assert res.components, "expected an auto-match for bacon"
+
+        ev = await p.fetchrow(
+            "SELECT * FROM resolution_event WHERE user_id=$1 ORDER BY position", uid)
+        assert ev["match_tier"] == "auto"
+        assert ev["chosen_fdc_id"] == res.components[0].fdc_id
+
+        cands = json.loads(ev["candidates"])
+        assert len(cands) > 1, "only the winner was kept, so there is no margin"
+        assert cands[0]["fdc_id"] == ev["chosen_fdc_id"]
+        # Per-query scores kept apart: a high sim_model against a low sim_user
+        # is the model's own paraphrase scored as evidence for itself.
+        assert "sim_user" in cands[0] and "sim_model" in cands[0]
+        assert cands[0]["sim"] >= cands[1]["sim"]
+
+        await p.execute("DELETE FROM resolution_event WHERE user_id=$1", uid)
+        await p.execute("DELETE FROM food_alias WHERE user_id=$1", uid)
+
+    run(scenario())

@@ -68,6 +68,9 @@ def tidy_test_users(request: pytest.FixtureRequest):
                 for sql in (
                     "DELETE FROM target WHERE user_id=$1 AND effective_to IS NOT NULL",
                     "DELETE FROM llm_call WHERE user_id=$1",
+                    # Written at resolve time with entry_id NULL, so the
+                    # log_entry cascade never reaches the ones that matter.
+                    "DELETE FROM resolution_event WHERE user_id=$1",
                     "DELETE FROM observation WHERE user_id=$1",
                     "DELETE FROM pending_action WHERE user_id=$1",
                     "DELETE FROM notification_log WHERE user_id=$1",

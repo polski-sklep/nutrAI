@@ -428,6 +428,37 @@ Rules when adding a message:
   It should now be unreachable; a "markup rejected by Telegram" line in the logs
   means something above was skipped.
 
+## Why a food matched, recorded
+
+`sql/030` created `resolution_event` and nothing wrote to it, so for every meal
+since, the one question the table exists to answer had to be reconstructed by
+re-running the resolver by hand. `031` adds `user_id` and the writer now fires
+from `resolve_items`.
+
+**It is written at resolve time, not at confirm time.** That is the whole
+design. A `log_component` row exists only for something that resolved *and*
+was written, so deferring the record to the write path would capture the
+successes and call it provenance. The rows worth reading are the ones that
+never became an entry — an item that matched nothing, a card you discarded, a
+food USDA has no word for. `entry_id` is NULL until `create_pending_entry`
+claims it, and **a row that keeps its NULL is the failure, kept.**
+
+`match_tier` distinguishes the ways it can go wrong, and they are not the same
+thing: `none` means every query was searched and returned nothing, while
+`asked_model` with a null choice means the model saw candidates and declined
+them all. Collapsing those two would hide which half of the resolver to fix.
+
+The candidate list lives here rather than on `log_component` because
+`replace_components` DELETEs component rows — a `/fix` would destroy the record
+of what it was fixing at the moment that record became interesting. `/fix`
+therefore calls `db.link_resolution_events` explicitly; there is no create call
+to hang the new events off.
+
+`tests/conftest.py` sweeps the table by `user_id`. It has to be by user: the
+`log_entry` cascade cannot reach a row whose `entry_id` is NULL, which is most
+of the interesting ones, and a table the suite cannot clean is how `target`
+reached 11,330 superseded rows.
+
 ## The golden set has a runner
 
 ```bash

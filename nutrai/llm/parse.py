@@ -192,6 +192,10 @@ class Resolution:
     # bakery's bun — so a weak best match usually means the right answer was
     # never on the list, not that the wrong one was picked from it.
     weak_matches: list[tuple[str, float]] = field(default_factory=list)
+    # Row ids in `resolution_event`, already written. `create_pending_entry`
+    # sets their entry_id if this resolution becomes an entry; the ones that
+    # do not are the record of what went wrong, which is the point.
+    event_ids: list[int] = field(default_factory=list)
 
 
 # "0.33 slice", "half a slice", "two slices" — read locally, not inferred.
@@ -287,6 +291,23 @@ def _alternatives(query: str) -> list[str]:
     return parts if len(parts) > 1 else []
 
 
+def _queries(it: dict[str, Any], label: str,
+              dish_name: str | None = None) -> list[str]:
+    """Every phrase the resolver searches on, in order, de-duplicated.
+
+    Factored out of `_candidates` so provenance records what was actually
+    asked. Reconstructing it at the call site would be a second implementation
+    of the same list, and the two would drift the first time either changed —
+    at which point the record would describe a search that never happened,
+    which is worse than no record.
+    """
+    base = [q for q in (str(it.get("search_terms") or "").strip(),
+                        label.strip(),
+                        (dish_name or "").strip()) if q]
+    return list(dict.fromkeys(
+        base + [side for q in base for side in _alternatives(q)]))
+
+
 async def _candidates(it: dict[str, Any], label: str, user_id: int | None = None,
                       dish_name: str | None = None) -> list[dict[str, Any]]:
     """Search on the model's `search_terms` *and* on the user's own label.
@@ -313,9 +334,7 @@ async def _candidates(it: dict[str, Any], label: str, user_id: int | None = None
     """
     q_model = str(it.get("search_terms") or "").strip()
     q_user = label.strip()
-    q_dish = (dish_name or "").strip()
-    queries = [q for q in (q_model, q_user, q_dish) if q]
-    queries += [side for q in list(queries) for side in _alternatives(q)]
+    queries = _queries(it, label, dish_name)
     pooled: dict[int, dict[str, Any]] = {}
     per_query: dict[int, dict[str, float]] = {}
     for q in dict.fromkeys(queries):
@@ -417,8 +436,37 @@ async def resolve_items(user_id: int, items: list[dict[str, Any]],
     unresolved: list[str] = []
     weak: list[tuple[str, float]] = []
     notes: list[str] = []
-    need_model: list[tuple[dict[str, Any], list[asyncpg.Record]]] = []
+    need_model: list[tuple[dict[str, Any], list[asyncpg.Record], dict[str, Any]]] = []
     cost = 0.0
+    events: list[dict[str, Any]] = []
+
+    def _event(label: str, queries: list[str], cands: list[Any],
+               *, chosen: int | None, tier: str | None) -> dict[str, Any]:
+        """One item's resolution, recorded whatever became of it.
+
+        Appended at every exit including the ones that resolve nothing, since
+        an item that matched no row leaves no component and is exactly the case
+        worth reading back. Candidates are trimmed to the fields a diagnosis
+        needs — the full Record carries a `has_energy` and a `covers` that are
+        derivable and a description that is the only text worth keeping.
+        """
+        ev = {
+            "position": len(events),
+            "label": label,
+            "queries": queries,
+            "candidates": [
+                {"fdc_id": int(c["fdc_id"]), "description": c["description"],
+                 "data_type": c["data_type"], "precedence": int(c["precedence"] or 9),
+                 "sim": _as_float(c["sim"]),
+                 "sim_user": _as_float(c.get("sim_user")),
+                 "sim_model": _as_float(c.get("sim_model"))}
+                for c in cands
+            ],
+            "chosen_fdc_id": chosen,
+            "match_tier": tier,
+        }
+        events.append(ev)
+        return ev
 
     async def _accept(label: str, fdc_id: int, it: dict[str, Any], yf: float = 1.0,
                       *, tier: str | None = None,
@@ -474,6 +522,9 @@ async def resolve_items(user_id: int, items: list[dict[str, Any]],
             # why `match_tier` has to be read alongside `sim_user`.
             await _accept(label, alias["fdc_id"], it, tier="alias",
                           chosen={"sim_user": alias["alias_sim"], "sim_model": None})
+            # No candidate list: the alias tier never generates one, and
+            # recording an empty one is the honest answer rather than a gap.
+            _event(label, [], [], chosen=int(alias["fdc_id"]), tier="alias")
             continue
 
         # On a one-ingredient meal the dish name is a third search term, and
@@ -483,6 +534,7 @@ async def resolve_items(user_id: int, items: list[dict[str, Any]],
         # user's own pickle brine row sat unconsulted, because nothing ever
         # searched for the two words together.
         hint = dish_name if (dish_name and len(items) == 1) else None
+        queries = _queries(it, label, hint)
         cands = await _candidates(it, label, user_id, dish_name=hint)
         # A candidate that negates the food is never auto-matched, however well
         # it scores. It drops to the model instead of being taken on trust —
@@ -522,6 +574,7 @@ async def resolve_items(user_id: int, items: list[dict[str, Any]],
         if own is not None and not inverts_meaning(asked_for, own["description"]):
             await _accept(label, own["fdc_id"], it,
                           tier="own", chosen=own, cands=cands)
+            _event(label, queries, cands, chosen=int(own["fdc_id"]), tier="own")
             await db.upsert_alias(user_id, label, own["fdc_id"],
                                   float(it.get("grams", 0) or 0))
             continue
@@ -533,20 +586,28 @@ async def resolve_items(user_id: int, items: list[dict[str, Any]],
         ):
             await _accept(label, cands[0]["fdc_id"], it,
                           tier="auto", chosen=cands[0], cands=cands)
+            _event(label, queries, cands, chosen=int(cands[0]["fdc_id"]), tier="auto")
             await db.upsert_alias(user_id, label, cands[0]["fdc_id"], float(it.get("grams", 0) or 0))
             continue
         if not cands:
+            # The failure this whole table exists for: every query searched,
+            # nothing returned, and until now not a trace of it anywhere.
+            _event(label, queries, [], chosen=None, tier="none")
             unresolved.append(label)
             weak.append((label, 0.0))
             continue
         best = float(cands[0]["sim"] or 0)
         if best < WEAK_MATCH_SIMILARITY:
             weak.append((label, best))
-        need_model.append((it, cands))
+        # Provisional: the model tier below overwrites tier and chosen row if
+        # it picks one, and leaves this standing if it declines.
+        need_model.append((it, cands,
+                           _event(label, queries, cands,
+                                  chosen=None, tier="asked_model")))
 
     if need_model:
         lines = []
-        for n, (it, cands) in enumerate(need_model, 1):
+        for n, (it, cands, _ev) in enumerate(need_model, 1):
             opts = " | ".join(
                 f"{c['fdc_id']}: {c['description']} [{c['data_type']}]" for c in cands
             )
@@ -572,21 +633,32 @@ async def resolve_items(user_id: int, items: list[dict[str, Any]],
         choices = list(res.data.get("choices", []))
         by_index = {int(c["index"]): c for c in choices if c.get("index") is not None}
         by_label = {str(c.get("label", "")).lower(): c for c in choices}
-        for n, (it, _cands) in enumerate(need_model, 1):
+        for n, (it, _cands, ev) in enumerate(need_model, 1):
             label = str(it.get("label", ""))
             pick = by_index.get(n) or by_label.get(label.lower())
             if not pick or not pick.get("fdc_id"):
+                # The model saw the candidates and declined them all. The
+                # event keeps its 'asked_model' tier and a null choice, which
+                # is a different failure from having no candidates at all and
+                # has to stay distinguishable from it.
                 unresolved.append(label)
                 continue
             yf = float(pick.get("yield_factor", 1.0) or 1.0)
             chosen = next((c for c in _cands if c["fdc_id"] == int(pick["fdc_id"])), None)
             await _accept(label, int(pick["fdc_id"]), it, yf,
                           tier="model", chosen=chosen, cands=_cands)
+            ev["chosen_fdc_id"] = int(pick["fdc_id"])
+            ev["match_tier"] = "model"
             await db.upsert_alias(
                 user_id, label, int(pick["fdc_id"]), float(it.get("grams", 0) or 0)
             )
 
-    return Resolution(comps, sources, unresolved, cost, bool(need_model), notes, weak)
+    # Written before returning, and never inside the loop: one round trip for
+    # the meal rather than one per ingredient, and nothing half-recorded if a
+    # later item raises.
+    event_ids = await db.record_resolution_events(user_id, events)
+    return Resolution(comps, sources, unresolved, cost, bool(need_model), notes, weak,
+                      event_ids)
 
 
 async def modifier_ops(component_labels: list[str], phrase: str, *, user_id: int) -> dict[str, Any]:
