@@ -237,3 +237,33 @@ def test_a_mistyped_operator_stays_a_mistyped_operator():
     """
     for text in ("3 @99:99", "1 x1.5.2", "1 -", "1 +"):
         assert dsl.parse(text) is not None, text
+
+
+def test_a_correction_finds_the_component_it_names():
+    """"80g turkey breast" appended a second turkey instead of fixing the first.
+
+    `_label_match` looked for a single word among the component's words and
+    compared a phrase by prefix, so "turkey breast" missed "baked turkey
+    breast" on every branch. `apply` turns a SetComponent it cannot place into
+    an AddComponent, so the entry logged 907 kcal of a bird eaten once — and
+    both components resolved to the same USDA row.
+    """
+    assert dsl._label_match("baked turkey breast", "turkey breast")
+    assert dsl._label_match("baked turkey breast", "turkey breast.")   # typing
+    assert dsl._label_match("Baked Turkey Breast", "turkey breast")    # casing
+    # Still loose in the documented direction.
+    assert dsl._label_match("red onion", "onion")
+    assert dsl._label_match("olive oil", "oil")
+    # And still not loose enough to hit a different food.
+    assert not dsl._label_match("chicken breast", "turkey breast")
+    assert not dsl._label_match("rice", "chicken")
+
+
+def test_a_correction_sets_rather_than_adds():
+    """The whole point: one turkey, at the corrected mass."""
+    comps = [dsl.Component("baked turkey breast", 100, 400.0, "as_logged", 1.0, "estimate")]
+    ops, _unparsed = dsl.parse_ops("80g turkey breast.".split())
+    out, unresolved = dsl.apply(comps, ops)
+    assert len(out) == 1, [c.label for c in out]
+    assert out[0].grams == 80.0
+    assert not unresolved

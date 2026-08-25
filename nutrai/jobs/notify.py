@@ -240,14 +240,46 @@ async def morning_notes(bot: Bot) -> None:
             continue
 
         yday = day - dt.timedelta(days=1)
+        prog = await db.day_progress(u["id"], yday)
+        drivers = await _morning_subject(u["id"], yday, prog)
         await _deliver(
             bot, u["telegram_id"], "morning note",
             render.morning_note(
-                u["display_name"],
-                await db.day_progress(u["id"], yday),
+                u["display_name"], prog,
                 await db.day_coverage(u["id"], yday),
+                drivers=drivers,
             ),
         )
+        await db.record_morning_subject(u["id"], day, drivers.get("nutrient_id"))
+
+
+async def _morning_subject(user_id: int, yday: dt.date,
+                           prog: list[Any]) -> dict[str, Any]:
+    """The breach worth naming this morning, and the food behind it.
+
+    Skips whatever was named yesterday when anything else was also over. A
+    ceiling crossed every day is the worst one every day, so without this the
+    note says the same sentence for ever — and a message that never changes is
+    one nobody reads, which costs the mornings it would have been useful.
+    """
+    over = [r for r in prog
+            if r["max_amount"] and float(r["max_amount"]) > 0
+            and float(r["amount"]) > float(r["max_amount"])]
+    if not over:
+        return {}
+    over.sort(key=lambda r: -float(r["amount"]) / float(r["max_amount"]))
+    said = await db.last_morning_subject(user_id, yday + dt.timedelta(days=1))
+    fresh = [r for r in over if r["nutrient_id"] != said] or over
+    pick = fresh[0]
+
+    rows = await db.nutrient_drivers(user_id, yday, yday, pick["nutrient_id"], limit=1)
+    out: dict[str, Any] = {"nutrient_id": pick["nutrient_id"]}
+    if rows:
+        top = rows[0]
+        share = float(top["total"]) / max(float(pick["amount"]), 1e-9)
+        out["name"] = render.food_short(top["name"])
+        out["share"] = f"{share:.0%} of the day's total"
+    return out
 
 
 async def sweep(bot: Bot) -> None:

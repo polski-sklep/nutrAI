@@ -607,11 +607,19 @@ def test_the_morning_note_names_one_thing_not_five():
         row(1003, "Protein", "G", 114, lo=165, state="under"),
         row(1079, "Fiber, total dietary", "G", 30, lo=38, state="under"),
     ]
-    out = morning_note("jacob", heavy, {r["nutrient_id"]: 1.0 for r in heavy})
+    out = morning_note("jacob", heavy, {r["nutrient_id"]: 1.0 for r in heavy},
+                       drivers={"nutrient_id": 1253, "name": "Egg, whole, cooked, fried",
+                                "share": "62% of the day's total"})
     assert "Good morning, Jacob" in out
     assert out.count("went over") == 1
     assert "Cholesterol" in out and "Sodium" not in out
-    assert "egg yolks" in out          # the lever, where an honest one exists
+    # The food that caused it yesterday, not the food that usually causes it.
+    assert "Egg, whole, cooked, fried" in out and "62% of the day's total" in out
+
+    # With nothing to name it still reports the breach rather than inventing
+    # a lever for it.
+    bare = morning_note("jacob", heavy, {r["nutrient_id"]: 1.0 for r in heavy})
+    assert "went over on" in bare and "most of it from" not in bare
 
 
 def test_the_morning_note_praises_a_clean_day_and_says_nothing_on_an_empty_one():
@@ -953,10 +961,14 @@ def test_food_short_keeps_what_distinguishes_a_food():
     assert food_short("Egg, whole, cooked, fried") != food_short("Egg, whole, raw")
     assert food_short("Bread, rye") == "Bread, rye"
     assert food_short("Pickle juice") == "Pickle juice"
-    # Long ones still get cut, but on a clause boundary rather than mid-word.
+    # Long ones get cut in the middle, not at the end: USDA runs genus to
+    # specific, so the last clause is the one that says which food this is.
+    # "Egg, whole, cooked, hard-boiled" must not become "Egg, whole, cooked".
+    boiled = food_short("Egg, whole, cooked, hard-boiled")
+    assert "hard-boiled" in boiled and boiled.startswith("Egg")
     long = food_short("Fish, tuna, light, canned in oil, drained solids")
-    assert long.startswith("Fish, tuna") and not long.endswith(",")
-    assert len(long) <= 42
+    assert long.startswith("Fish") and "drained solids" in long
+    assert not long.endswith(",") and len(long) <= 42
 
 
 def _driver_ctx(n_nutrients=40, foods_per=3):

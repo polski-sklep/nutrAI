@@ -612,3 +612,43 @@ def test_a_connection_failure_says_so_and_names_what_still_works():
     out = _failure_reason(APIConnectionError("Connection error."))
     assert "reach" in out.lower()
     assert "/repeat" in out
+
+
+def test_food_new_without_a_name_waits_for_one():
+    """It asked for a name and opened no wait, so the answer went to the meal
+    parser: "Lemon water" came back as a confirmation card for a drink instead
+    of naming the food being defined.
+
+    Ninth instance of a card that instructs rather than asks.
+    """
+    import inspect
+
+    from nutrai import bot
+    from nutrai.bot import PROMPT_CONSUMERS
+
+    assert "food_name_await" in PROMPT_CONSUMERS
+    src = inspect.getsource(bot.food_cmd)
+    assert "Name it first" not in src, "still teaching a syntax instead of asking"
+    assert '_ask(' in src
+
+
+def test_a_shortened_supplement_name_is_recognised():
+    """The stack holds "Vitamin D3 + K2"; the message said "with vitamin d3".
+
+    Every word of the shortened form is in the name, in order, and the whole
+    string is not — so exact containment missed a capsule the user had named
+    outright. Two consecutive words are enough; one is not, which is what keeps
+    "zinc-rich beef stew" from ticking off zinc.
+    """
+    import re
+
+    from nutrai.db import _names_supplement
+
+    def norm(v: str) -> str:
+        return " ".join(re.sub(r"[^a-z0-9]+", " ", v.lower()).split())
+
+    assert _names_supplement(norm("Vitamin D3 + K2"),
+                             norm("Lemon lime water with vitamin d3"))
+    assert _names_supplement(norm("Marine Collagen"), norm("coffee with marine collagen"))
+    assert not _names_supplement(norm("Zinc"), norm("zinc-rich beef stew"))
+    assert not _names_supplement(norm("Vitamin D3 + K2"), norm("vitamin c with breakfast"))

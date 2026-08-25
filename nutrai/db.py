@@ -2373,6 +2373,27 @@ async def morning_note_sent(user_id: int, day: dt.date) -> bool:
     return result.endswith(" 1")
 
 
+async def last_morning_subject(user_id: int, before: dt.date) -> int | None:
+    """The nutrient yesterday's note was about, so today's can move on."""
+    p = await pool()
+    return await p.fetchval(
+        """SELECT subject_nutrient_id FROM morning_note_log
+            WHERE user_id = $1 AND local_date < $2 AND subject_nutrient_id IS NOT NULL
+         ORDER BY local_date DESC LIMIT 1""",
+        user_id, before,
+    )
+
+
+async def record_morning_subject(user_id: int, day: dt.date,
+                                 nutrient_id: int | None) -> None:
+    p = await pool()
+    await p.execute(
+        """UPDATE morning_note_log SET subject_nutrient_id = $3
+            WHERE user_id = $1 AND local_date = $2""",
+        user_id, day, nutrient_id,
+    )
+
+
 async def top_components(user_id: int, limit: int = 6, *, tz: str = "UTC",
                          hour: int | None = None,
                          exclude_fdc: Sequence[int] = ()) -> list[asyncpg.Record]:
@@ -2442,6 +2463,24 @@ async def rating_notes(user_id: int, days: int = 28) -> list[asyncpg.Record]:
     )
 
 
+def _names_supplement(name: str, text: str) -> bool:
+    """Whether a message names this supplement, allowing a shortened form.
+
+    Two or more of the supplement's own words, consecutively, in the message.
+    A single word is not enough: "zinc" appears in "zinc-rich beef stew" and no
+    tablet was swallowed.
+    """
+    want, said = name.split(), text.split()
+    if len(want) < 2 or len(said) < 2:
+        return False
+    for n in range(len(want), 1, -1):
+        for i in range(len(want) - n + 1):
+            run = want[i:i + n]
+            if any(said[j:j + n] == run for j in range(len(said) - n + 1)):
+                return True
+    return False
+
+
 async def supplements_named_in(user_id: int, day: dt.date,
                                labels: Sequence[str],
                                free_text: str | None = None) -> list[int]:
@@ -2489,7 +2528,7 @@ async def supplements_named_in(user_id: int, day: dt.date,
         # not, and "zinc-rich beef stew" involves no tablet. So free text is
         # only searched for multi-word names — a single word is too easily an
         # ingredient, an adjective or a brand.
-        if text and " " in name and name in text:
+        if text and _names_supplement(name, text):
             out.append(r["id"])
     return out
 

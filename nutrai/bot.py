@@ -2161,8 +2161,16 @@ async def food_cmd(msg: Message) -> None:
         return
 
     if len(rest) >= 2 and rest[1].lower() in ("new", "add"):
-        await msg.answer(
-            "Name it first — <code>/food new pickle juice</code>.", parse_mode="HTML")
+        await _ask(
+            msg, u, "food_name_await",
+            "🥫 <b>What would you like to call it?</b>\n\n"
+            "<i>The name you will type when you log it — "
+            "<code>pickle juice</code>, <code>mum's lasagne</code>.</i>",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="✋ never mind",
+                                     callback_data="foodcancel:"),
+            ]]),
+        )
         return
 
     # Lists *and* listens. Printing "/food new pickle juice" and then sending
@@ -3803,12 +3811,48 @@ async def _repeat_named_dish(msg: Message, u: asyncpg.Record, text: str,
     portion prior and the confirm gate are the same ones every other repeat
     gets.
     """
-    dish = await db.dish_by_name(u["id"], text)
+    day = on_day or _today(u)
+    named = await db.supplements_named_in(u["id"], day, [], free_text=text)
+    body = await _without_supplement_clause(u["id"], text) if named else text
+
+    dish = await db.dish_by_name(u["id"], body)
     if not dish:
         return False
     ops: list[Any] = [dsl.SetDate(iso=on_day.isoformat())] if on_day else []
-    return await _try_repeat(
-        msg, u, dsl.RepeatCommand(selector=dish["slug"], selector_kind="slug", ops=ops))
+    if not await _try_repeat(
+            msg, u, dsl.RepeatCommand(selector=dish["slug"],
+                                      selector_kind="slug", ops=ops)):
+        return False
+    if named:
+        await db.log_supplements(u["id"], day, named, via="from_meal")
+        rows = await db.supplements_logged_on(u["id"], day)
+        taken = ", ".join(r["name"] for r in rows if r["id"] in set(named))
+        if taken:
+            await msg.answer(f"💊 Ticked off: {render._esc(taken)}",
+                             parse_mode="HTML")
+    return True
+
+
+async def _without_supplement_clause(user_id: int, text: str) -> str:
+    """The message with a trailing "with <supplement>" removed.
+
+    Only names from the user's own stack are stripped, so this cannot eat a
+    food: "with vitamin d3" goes, "with extra corn" stays and the whole thing
+    is left to the parser as before.
+    """
+    words = re.findall(r"[a-z0-9]+", text.lower())
+    for sup in await db.supplement_stack(user_id):
+        want = re.findall(r"[a-z0-9]+", sup["name"].lower())
+        for n in range(len(want), 1, -1):
+            for i in range(len(want) - n + 1):
+                run = want[i:i + n]
+                for j in range(len(words) - n + 1):
+                    if words[j:j + n] == run:
+                        cut = words[:j]
+                        while cut and cut[-1] in ("with", "and", "plus"):
+                            cut.pop()
+                        return " ".join(cut)
+    return text
 
 
 async def _try_repeat(msg: Message, u: asyncpg.Record, cmd: dsl.RepeatCommand) -> bool:

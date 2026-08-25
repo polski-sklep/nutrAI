@@ -466,8 +466,35 @@ def apply(components: list[Component], ops: list[Op]) -> tuple[list[Component], 
 
 
 def _label_match(a: str, b: str) -> bool:
-    a, b = a.lower().strip(), b.lower().strip()
-    return a == b or b in a.split() or a.startswith(b) or b.startswith(a)
+    """Does `b` name the component called `a`?
+
+    Loose on purpose — "-onion" has to reach "red onion" — but it was loose in
+    one direction only. A single word was looked for among `a`'s words while a
+    multi-word phrase was compared by prefix, so "turkey breast" did not match
+    "baked turkey breast": not equal, not one of its words, and neither a
+    prefix of the other.
+
+    That silence is expensive. `apply` turns a SetComponent it cannot place
+    into an AddComponent, so correcting a 400 g estimate with "80g turkey
+    breast" appended a second turkey instead of fixing the first, and the entry
+    logged 907 kcal of a bird eaten once.
+
+    Both sides are now compared as runs of words, so a phrase matches whether
+    it sits at the start, the end or the middle. Punctuation goes first: a
+    trailing full stop is typing, not meaning.
+    """
+    wa, wb = _words(a), _words(b)
+    if not wa or not wb:
+        return False
+    if wa == wb:
+        return True
+    short, long_ = (wb, wa) if len(wb) <= len(wa) else (wa, wb)
+    n = len(short)
+    return any(long_[i:i + n] == short for i in range(len(long_) - n + 1))
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", text.lower())
 
 
 def resolve_date(op: SetDate, today: "dt.date") -> "dt.date":

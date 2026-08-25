@@ -53,7 +53,6 @@ ABSENT_MEANS_ZERO = frozenset({1018, 1057, 1253})   # alcohol, caffeine, cholest
 CEILING_NEAR = 0.85
 
 
-
 def bar(pct: float, width: int = 10) -> str:
     filled = max(0, min(width, round(pct / 100 * width)))
     return BAR_FULL * filled + BAR_EMPTY * (width - filled)
@@ -79,14 +78,13 @@ def food_short(description: str, limit: int = 30) -> str:
     parts = [p.strip() for p in (description or "").split(",") if p.strip()]
     if not parts:
         return ""
-    out = parts[0]
-    for part in parts[1:]:
-        if len(out) + len(part) + 2 > limit and out != parts[0]:
-            break
-        out = f"{out}, {part}"
-        if len(out) >= limit:
-            break
-    return out if len(out) <= limit + 12 else out[:limit + 11] + "…"
+    whole = ", ".join(parts)
+    if len(whole) <= limit or len(parts) == 1:
+        return whole
+    ends = f"{parts[0]}, {parts[-1]}"
+    if len(parts) > 2 and len(ends) + len(parts[1]) + 2 <= limit:
+        ends = f"{parts[0]}, {parts[1]}, {parts[-1]}"
+    return ends if len(ends) <= limit + 10 else ends[:limit + 9] + "…"
 
 
 def fmt_usd(usd: float) -> str:
@@ -2306,7 +2304,8 @@ def plan_card(data: Mapping[str, Any], cost_usd: float | None = None) -> str:
 
 
 def morning_note(name: str | None, yesterday: Sequence[Row],
-                 coverage: dict[int, float] | None = None) -> str:
+                 coverage: dict[int, float] | None = None,
+                 drivers: dict[str, Any] | None = None) -> str:
     """Good morning, and at most one thing to do about yesterday.
 
     Template and SQL only — invariant 4. It reads a ceiling that was crossed
@@ -2330,12 +2329,17 @@ def morning_note(name: str | None, yesterday: Sequence[Row],
     # you missed, then praise, which is what is left when neither applies.
     if sc.breached:
         worst = sc.breached[0]
-        # "Cholesterol 250%" carries the percentage; the lever is separate and
-        # only offered where there is an honest one-line answer.
-        bare = worst.split()[0] if worst else ""
-        lever = next((v for k, v in MORNING_LEVERS.items() if k.startswith(bare)), None)
-        lines.append(f"Yesterday you went over on <b>{_esc(worst)}</b>."
-                     + (f" Today, {lever}." if lever else ""))
+        driver = (drivers or {}).get("name")
+        if driver:
+            share = drivers.get("share")
+            lines.append(
+                f"Yesterday you went over on <b>{_esc(worst)}</b>. "
+                f"Most of it — {_esc(share)} — was <b>{_esc(driver)}</b>."
+                if share else
+                f"Yesterday you went over on <b>{_esc(worst)}</b>, "
+                f"mostly <b>{_esc(driver)}</b>.")
+        else:
+            lines.append(f"Yesterday you went over on <b>{_esc(worst)}</b>.")
     elif sc.short:
         lines.append(f"Yesterday came up short on <b>{_esc(sc.short[0])}</b>.")
     else:
@@ -2351,19 +2355,6 @@ def morning_note(name: str | None, yesterday: Sequence[Row],
         lines.append(f"<i>{sc.reached} of {sc.assessable} floors fully met.</i>")
     return "\n".join(lines)
 
-
-# Ceilings that have an obvious, single, sayable lever. Deliberately short:
-# a suggestion for every nutrient would be a lookup table pretending to be
-# advice, and most excesses have no one-line answer.
-MORNING_LEVERS: dict[str, str] = {
-    "Cholesterol": "fewer egg yolks would be the biggest single change",
-    "Sodium": "most of it is usually bread, cheese and anything jarred",
-    "Saturated fat": "butter, cheese and fatty cuts are where it concentrates",
-    "Total Sugars": "the sweet drinks and snacks first, before the fruit",
-    "Alcohol": "a night off is the whole lever",
-    "Energy": "the largest single item is usually easier to halve than to drop",
-    "Caffeine": "an earlier last coffee matters more than a smaller one",
-}
 
 
 def off_product_card(p: Mapping[str, Any], name: str) -> str:
