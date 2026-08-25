@@ -428,7 +428,7 @@ Rules when adding a message:
   It should now be unreachable; a "markup rejected by Telegram" line in the logs
   means something above was skipped.
 
-## Two guards on auto-match, and why escalating is a win
+## Three guards on auto-match, and why escalating is a win
 
 `resolve_items` took the head of the candidate list whenever it cleared
 `AUTO_MATCH_SIMILARITY` and did not invert the food. Two more things now
@@ -454,6 +454,22 @@ rather than a narrowed one. Preparation words are exempt (that is
 already names `Rice, white, long-grain, regular, enriched, cooked` as the right
 answer for plain cooked rice, and treating "enriched" as narrowing blocks it.
 
+**`label_absent`.** The one that explains the most damage. `_candidates`
+searches the model's `search_terms` as well as your label and ranks by
+whichever scored higher, and the model writes `search_terms` as a USDA-style
+description of the row it already believes in — so a high pooled score can be
+the model's own prior scored as evidence for itself. "brownie" scores **0.022**
+against `Pie, chocolate creme, commercially prepared`; the model's phrase
+scored 0.696, cleared the gate with no model consulted, and the alias it wrote
+on 23 Aug 2026 logged every brownie since as chocolate creme pie.
+
+A floor on `sim_user` cannot express this — "rice" scores badly against its own
+right row too. **Presence is the question, not degree**: if none of your words
+appear in the description at all, the match was carried entirely by a phrase
+you never typed. Prefix matching stands in for stemming so "brownie" reaches
+"brownies", and a word under four characters must match exactly or "oil"
+reaches "oilseed".
+
 **A blocked auto-match is an escalation, not a refusal**, and the golden runner
 now scores it as its own outcome. A case where the resolver declines and the
 expected row is on the list it hands the model is `escalated`, not `failed`:
@@ -465,7 +481,15 @@ ever sets a yield factor. It had been passing because the runner checked the
 fdc_id and not `yield_factor_not_one`.
 
 `baseline.json` therefore floors `pass + escalated` and pins the failing ids by
-name. Failures fell from 11 to 9.
+name. Failures fell from 11 to 9, and `label_absent` cost nothing on the set at
+all — it only ever fires where the resolver had no business being confident.
+
+**The alias tier caches these forever.** An auto-match writes an alias, the
+alias tier is free and never re-checked, and there is no command that repoints
+one — `upsert_alias` is only reached from the food-creation paths. So a single
+bad auto-match is not one wrong meal, it is every meal of that food from then
+on. That is the argument for the guards being strict: escalating costs a
+fraction of a penny once, and a wrong alias costs everything after it.
 
 ## Defining a food has to return to the meal that asked
 

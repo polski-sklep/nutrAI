@@ -236,9 +236,21 @@ def test_a_qualifier_the_query_never_asked_for_blocks_an_auto_match():
     assert uq("chicken breast", "Chicken breast, roll, oven-roasted") == "roll"
     assert uq("olive oil", "Oil, sesame, salad or cooking") == "sesame"
 
-    # The first segment is the food's name: a different name is a weak match,
-    # not a narrowed one, and is judged by similarity like anything else.
+    # A name sharing nothing with the query is a different food and a weak
+    # match, judged by similarity like anything else.
     assert uq("spaghetti, cooked", "Pasta, cooked") is None
+
+    # But a name that echoes the query and adds to it narrows it. Exempting
+    # the first segment outright was wrong in a way worth keeping a test for:
+    # blocking `Spaghetti, spinach, cooked` promoted `Spaghetti squash,
+    # cooked` — a vegetable at 49 kcal per 100 g — into the auto-match, a
+    # worse answer than the one being fixed.
+    assert uq("spaghetti, cooked", "Spaghetti squash, cooked") == "Spaghetti squash"
+    assert uq("spaghetti, cooked", "Spaghetti sauce") == "Spaghetti sauce"
+    assert uq("egg white, fried", "Egg white sandwich") == "Egg white sandwich"
+
+    # USDA's usage note on fats says what the oil is for, not which oil it is.
+    assert uq("olive oil", "Oil, olive, salad or cooking") is None
 
     # Preparation words are the state, judged by state_conflicts instead.
     assert uq("bacon cured pork", "Pork, cured, bacon, cooked, baked") is None
@@ -248,3 +260,34 @@ def test_a_qualifier_the_query_never_asked_for_blocks_an_auto_match():
     # enriched, cooked` is the right answer for plain cooked rice at 0.837.
     assert uq("rice, white, long-grain, regular, cooked",
               "Rice, white, long-grain, regular, enriched, cooked") is None
+
+
+def test_a_row_carrying_none_of_your_words_is_not_auto_matched():
+    """The model's paraphrase must not be scored as evidence for itself.
+
+    `_candidates` searches `search_terms` as well as the label and ranks by
+    whichever scored higher, and the model writes `search_terms` as a USDA-style
+    description of the row it already believes in. On 23 Aug 2026 that logged
+    "brownie" as `Pie, chocolate creme, commercially prepared`: the user's own
+    word scored 0.022 against that row, the model's phrase scored 0.696, and
+    the pooled maximum cleared the 0.62 gate with no model ever consulted. The
+    alias it wrote made every brownie since a chocolate creme pie — 353 kcal
+    against 405, 27 g of sugar against 37.
+    """
+    from nutrai.llm.parse import label_absent
+
+    assert label_absent("brownie", "Pie, chocolate creme, commercially prepared")
+    assert label_absent("spaghetti", "Pasta, cooked")
+    assert label_absent("pancetta/guanciale", "Pork, cured, bacon, cooked, baked")
+
+    # Presence, not degree. A similarity floor could not express this: "rice"
+    # scores badly against its own right row too.
+    assert not label_absent("rice", "Rice, white, long-grain, regular, enriched, cooked")
+    assert not label_absent("minced beef", "Beef, ground, 90% lean meat / 10% fat, raw")
+
+    # Prefix matching stands in for stemming, so a real brownie is reachable.
+    assert not label_absent("brownie", "Cookies, brownies, commercially prepared")
+    assert not label_absent("tomato", "Tomatoes, red, ripe, raw")
+
+    # Under four characters it must match exactly, or "oil" reaches "oilseed".
+    assert label_absent("oil", "Oilseed, cottonseed")

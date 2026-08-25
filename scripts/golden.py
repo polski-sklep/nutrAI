@@ -91,7 +91,8 @@ async def _chosen(case: dict, user_id: int) -> tuple[dict | None, list[dict], st
          if float(c["sim"] or 0) >= AUTO_MATCH_SIMILARITY
          and not parse_mod.inverts_meaning(asked_for, c["description"])
          and not parse_mod.state_conflicts(item.get("state"), c["description"])
-         and not parse_mod.unrequested_qualifier(asked_for, c["description"])),
+         and not parse_mod.unrequested_qualifier(asked_for, c["description"])
+         and not parse_mod.label_absent(label, c["description"])),
         None)
     if auto is not None:
         return auto, cands, "auto"

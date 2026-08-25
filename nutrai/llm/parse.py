@@ -467,6 +467,40 @@ def state_conflicts(state: str | None, description: str) -> str | None:
     return None if _has_word(description, keep) else bad
 
 
+def label_absent(label: str, description: str) -> bool:
+    """True when none of the user's own words appear in the row at all.
+
+    `_candidates` searches the model's `search_terms` as well as the label and
+    ranks by whichever scored higher, so a row can win on a phrase the user
+    never typed. The model writes `search_terms` as a USDA-style description of
+    the row it already believes in, which makes a high pooled score evidence
+    for the model's own prior rather than for the match.
+
+    Measured, and this is the whole argument: "brownie" scores **0.022**
+    against `Pie, chocolate creme, commercially prepared` and 0.286 against
+    `Cookie, brownie, without icing`. The model's phrase scored 0.696 against
+    the pie, cleared the 0.62 gate, auto-matched with no model consulted, and
+    wrote an alias on 23 Aug 2026 that logged every brownie since as chocolate
+    creme pie — 353 kcal against 405, and 27 g of sugar against 37.
+
+    A similarity floor on `sim_user` cannot express this: "rice" scores badly
+    against `Rice, white, long-grain, regular, enriched, cooked` too, and that
+    is the right row. Presence is the question, not degree. Prefix matching
+    stands in for stemming so "brownie" reaches "brownies"; a word under four
+    characters must match exactly, or "oil" would match "oilseed".
+    """
+    words = [w for w in re.split(r"[^a-z0-9]+", label.lower())
+             if w and w not in _QUALIFIER_STOP]
+    if not words:
+        return False
+    d = [w for w in re.split(r"[^a-z0-9]+", description.lower()) if w]
+    for w in words:
+        if any(w == t or (len(w) >= 4 and (t.startswith(w) or w.startswith(t)))
+               for t in d):
+            return False
+    return True
+
+
 _QUALIFIER_STOP = frozenset({
     "and", "or", "with", "without", "in", "of", "the", "a", "an", "by", "as",
     "to", "ns", "nfs", "all", "types", "commercial", "commercially", "solids",
@@ -478,6 +512,10 @@ _QUALIFIER_STOP = frozenset({
     # narrowing qualifier would have blocked it at 0.837.
     "enriched", "unenriched", "fortified", "unfortified", "regular", "plain",
     "generic", "unspecified", "prepared", "unprepared",
+    # USDA's usage note on fats — `Oil, olive, salad or cooking` — which says
+    # what the oil is for, not which oil it is. Only ever a later segment; a
+    # first segment like `Chicken salad` is still judged as a name.
+    "salad", "cooking",
 })
 
 
@@ -491,18 +529,32 @@ def unrequested_qualifier(query: str, description: str) -> str | None:
     a carbonara carrying no fibre figure at all.
 
     Preparation words are exempt — they are the state, which `state_conflicts`
-    judges properly and which the query often leaves unstated. Only the first
-    segment is exempt from the check itself: it is the food's name, and a
-    different name is a weak match rather than a narrowed one.
+    judges properly and which the query often leaves unstated.
+
+    The first segment is the food's *name* and is judged differently, because
+    exempting it outright was wrong in a way worth recording: blocking
+    `Spaghetti, spinach, cooked` promoted `Spaghetti squash, cooked` — a
+    vegetable at 49 kcal per 100 g — straight into the auto-match, which is a
+    worse answer than the one being fixed. A name that shares nothing with the
+    query is a different food and a weak match, judged by similarity like
+    anything else; a name that repeats the query's word and *adds* one is
+    narrowing it, and "spaghetti squash" is not spaghetti.
     """
     q = {w for w in re.split(r"[^a-z0-9]+", query.lower()) if w}
-    prep = _RAW_WORDS + _COOKED_WORDS + _DRY_WORDS
-    for seg in description.split(",")[1:]:
+    prep = set(_RAW_WORDS + _COOKED_WORDS + _DRY_WORDS)
+    for i, seg in enumerate(description.split(",")):
         words = {w for w in re.split(r"[^a-z0-9]+", seg.lower())
                  if w and w not in _QUALIFIER_STOP}
-        if not words or words & q or words <= set(prep):
+        if not words or words <= prep:
             continue
-        return seg.strip()
+        extra = words - q - prep
+        if i == 0:
+            # Only a name that echoes the query can narrow it.
+            if (words & q) and extra:
+                return seg.strip()
+            continue
+        if not (words & q) and extra:
+            return seg.strip()
     return None
 
 
@@ -683,7 +735,8 @@ async def resolve_items(user_id: int, items: list[dict[str, Any]],
              if float(c["sim"] or 0) >= AUTO_MATCH_SIMILARITY
              and not inverts_meaning(asked_for, c["description"])
              and not state_conflicts(it.get("state"), c["description"])
-             and not unrequested_qualifier(asked_for, c["description"])),
+             and not unrequested_qualifier(asked_for, c["description"])
+             and not label_absent(label, c["description"])),
             None)
         if auto is not None:
             await _accept(label, auto["fdc_id"], it,
