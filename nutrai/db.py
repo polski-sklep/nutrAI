@@ -499,6 +499,35 @@ async def record_resolution_events(
     return [r["id"] for r in rows]
 
 
+async def entry_awaiting_food(entry_id: int, label: str) -> dict[str, Any] | None:
+    """The entry a "define it yourself" offer came from, and the mass it wanted.
+
+    The grams are recovered from `log_entry.parse` — the model's own item list,
+    stored verbatim — because the item never became a component and so left no
+    row to read. Without it the food gets defined and then has to be weighed a
+    second time, by a person who already said how much they ate.
+    """
+    p = await pool()
+    row = await p.fetchrow(
+        "SELECT id, name, status, parse FROM log_entry WHERE id = $1", entry_id)
+    if not row:
+        return None
+    grams = None
+    try:
+        items = (json.loads(row["parse"]) or {}).get("items") or []
+    except (TypeError, ValueError):
+        items = []
+    want = label.strip().lower()
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        if str(it.get("label", "")).strip().lower() == want:
+            grams = float(it.get("grams") or 0) or None
+            break
+    return {"id": row["id"], "name": row["name"],
+            "status": row["status"], "grams": grams}
+
+
 async def link_resolution_events(event_ids: list[int], entry_id: int) -> None:
     """Attach already-written events to an entry that existed before them.
 

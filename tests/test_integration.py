@@ -3635,3 +3635,81 @@ def test_a_successful_resolution_records_the_losing_candidates(harness):
         await p.execute("DELETE FROM food_alias WHERE user_id=$1", uid)
 
     run(scenario())
+
+
+def test_defining_a_food_puts_it_back_into_the_meal_that_asked(harness):
+    """The offer is made by a card, about an item that card could not match.
+
+    It carried only the food's name, so defining it built the row, showed a
+    panel, and left the meal exactly as wrong as it had been. On 25 Aug a
+    carbonara was confirmed without its pancetta one minute after the pancetta
+    had been defined by hand at that very card's invitation.
+    """
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await p.execute("DELETE FROM food WHERE owner_user_id=$1", uid)
+
+        # A meal the resolver can only half-match: the second item is a word
+        # USDA does not carry, so it reaches the card as unresolved.
+        harness.llm.meal = {
+            "dish_name": "Pasta carbonara",
+            "items": [
+                {"label": "spaghetti", "search_terms": "pasta cooked",
+                 "grams": 220, "grams_source": "estimate", "state": "cooked",
+                 "confidence": 0.8},
+                {"label": "guanciale", "search_terms": "guanciale",
+                 "grams": 40, "grams_source": "estimate", "state": "cooked",
+                 "confidence": 0.5},
+            ],
+            "confidence": 0.6,
+        }
+        harness.sent.clear()
+        await harness.feed("pasta carbonara")
+        card = harness.sent.last()
+        entry_id = _confirm_id(card)
+        assert any("deffood:" in b for b in card.buttons), "no define offer"
+        # The offer must name the entry, or the round trip has nowhere to land.
+        deffood = next(b for b in card.buttons if b.startswith("deffood:"))
+        assert deffood.split(":")[1] == str(entry_id)
+
+        before = await p.fetchval(
+            "SELECT count(*) FROM log_component WHERE entry_id=$1", entry_id)
+
+        # Define it, exactly as the button does.
+        harness.sent.clear()
+        await harness.press(deffood, card.message_id)
+        harness.llm.meal = {
+            "dish_name": "guanciale",
+            "items": [{"label": "bacon", "search_terms": "bacon cured pork",
+                       "grams": 40, "grams_source": "stated", "state": "cooked",
+                       "confidence": 0.9}],
+            "confidence": 0.9,
+        }
+        harness.sent.clear()
+        await harness.feed("40 g bacon")
+
+        after = await p.fetch(
+            "SELECT label, grams FROM log_component WHERE entry_id=$1 ORDER BY position",
+            entry_id)
+        assert len(after) == before + 1, (
+            "the food was defined and the meal never received it")
+        assert after[-1]["label"] == "guanciale"
+        # The mass came from the parse, not from asking a second time.
+        assert float(after[-1]["grams"]) == 40.0
+
+        # And it is still a proposal: defining a food logs nothing.
+        assert await p.fetchval(
+            "SELECT status FROM log_entry WHERE id=$1", entry_id) == "pending"
+
+        # Aliases first: defining a food writes one, and it references the row.
+        await p.execute(
+            "DELETE FROM food_alias WHERE fdc_id IN "
+            "(SELECT fdc_id FROM food WHERE owner_user_id=$1)", uid)
+        await p.execute("DELETE FROM log_entry WHERE id=$1", entry_id)
+        await p.execute("DELETE FROM food WHERE owner_user_id=$1", uid)
+
+    run(scenario())

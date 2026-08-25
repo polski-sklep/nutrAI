@@ -428,6 +428,32 @@ Rules when adding a message:
   It should now be unreachable; a "markup rejected by Telegram" line in the logs
   means something above was skipped.
 
+## Defining a food has to return to the meal that asked
+
+The "define it yourself" button is offered *by a card*, about an item *that
+card* could not resolve. Its callback carried only the food's name, so the
+round trip ended at the nutrition panel: the row was created, the alias was
+written, and the meal was left exactly as wrong as it had been. On 25 Aug 2026
+a carbonara was confirmed without its pancetta one minute after the pancetta
+was defined by hand at that card's own invitation.
+
+`deffood:<entry_id>:<label>` now carries the meal, and
+`_return_to_the_meal_that_asked` puts the food back into it. Three rules:
+
+- **Only a `pending` entry is amended**, and amending one is not logging — the
+  card is still a proposal that has to be confirmed, so invariant 5 holds.
+- **A confirmed entry is refused out loud**, naming the meal and pointing at
+  `/undo`. `log_nutrient` is the snapshot it was scored on (invariant 2), so
+  it genuinely cannot be amended — and saying nothing is what made the failure
+  look like success.
+- **The mass comes from `log_entry.parse`**, the model's own item list, because
+  the item never became a component and left no row to read. Asking a second
+  time for a number the person already gave is how the flow lost them.
+
+The old two-field callback is still parsed: cards already on a screen keep
+working, and a label may itself contain a colon, so it is the *numeric* second
+field that distinguishes the shapes rather than the field count.
+
 ## Why a food matched, recorded
 
 `sql/030` created `resolution_event` and nothing wrote to it, so for every meal

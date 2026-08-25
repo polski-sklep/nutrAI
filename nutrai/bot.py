@@ -104,15 +104,24 @@ _RECIPE_EXAMPLES = (
 )
 
 
-def _define_button(weak: Sequence[tuple[str, float]]) -> list[InlineKeyboardButton]:
+def _define_button(weak: Sequence[tuple[str, float]],
+                   entry_id: int = 0) -> list[InlineKeyboardButton]:
     """Offered at the moment the gap is visible, which is the only moment you
-    know the database is missing something."""
+    know the database is missing something.
+
+    The entry id rides along because without it the offer is a dead end. It
+    asks you to describe a food *because a specific meal could not match it*,
+    and the callback carried only the name — so defining it built the row,
+    congratulated you, and left the meal exactly as wrong as it was. On
+    25 Aug a carbonara was logged without its pancetta a minute after the
+    pancetta had been defined by hand at the card's own invitation.
+    """
     if not weak:
         return []
     label = weak[0][0]
     return [InlineKeyboardButton(
         text=f"🥫 define {render._short_note(label)[:20]} yourself",
-        callback_data=f"deffood:{label[:40]}")]
+        callback_data=f"deffood:{entry_id}:{label[:40]}")]
 
 
 @dp.callback_query(F.data.startswith("deffood:"))
@@ -123,7 +132,15 @@ async def cb_define_food(cq: CallbackQuery) -> None:
     know the database is missing something.
     """
     u = await db.get_or_create_user(cq.from_user.id)
-    name = cq.data.split(":", 1)[1].strip()
+    # Two shapes: `deffood:<entry_id>:<label>` and the older `deffood:<label>`,
+    # which is still sitting on every card already on a screen. A label may
+    # itself contain a colon, so the numeric second field is what distinguishes
+    # them rather than the field count alone.
+    parts = cq.data.split(":", 2)
+    if len(parts) == 3 and parts[1].isdigit():
+        entry_id, name = int(parts[1]), parts[2].strip()
+    else:
+        entry_id, name = 0, cq.data.split(":", 1)[1].strip()
     await cq.answer()
     await _ask(
         cq.message, u, "food_await",
@@ -132,7 +149,7 @@ async def cb_define_food(cq: CallbackQuery) -> None:
         + _RECIPE_EXAMPLES
         + "<i>Resolved against USDA and added up — nothing estimated. Once saved "
         "it outranks the generic row every time you log that name.</i>",
-        payload={"name": name},
+        payload={"name": name, "entry_id": entry_id},
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="✋ never mind", callback_data="foodcancel:"),
         ]]),
@@ -155,7 +172,7 @@ def kb_confirm(entry_id: int,
         label = weak[0][0]
         rows.append([InlineKeyboardButton(
             text=f"🥫 define {render._short_note(label)[:18]} yourself",
-            callback_data=f"deffood:{label[:40]}")])
+            callback_data=f"deffood:{entry_id}:{label[:40]}")])
     # What you have had with this before. Offered here because this is the
     # moment the meal is still editable and still in front of you — afterwards
     # it means undoing a confirmed entry and typing the whole thing again.
@@ -2421,7 +2438,80 @@ async def _consume_food_recipe(msg: Message, u: asyncpg.Record, text: str, paylo
                                    portion_unit=portion_unit),
         parse_mode="HTML",
     )
+    await _return_to_the_meal_that_asked(msg, u, payload, name, fdc_id)
     return True
+
+
+async def _return_to_the_meal_that_asked(
+        msg: Message, u: asyncpg.Record, payload: dict[str, Any],
+        name: str, fdc_id: int) -> None:
+    """Put the newly-defined food back into the meal that could not match it.
+
+    The offer to define a food is made *by a specific card*, about a specific
+    item that card could not resolve. Until now the round trip ended at the
+    panel: the row was created, the alias was written, and the meal it came
+    from was left exactly as wrong as it had been. It cost a person the work of
+    describing a food and gave them nothing for the meal they were describing
+    it for.
+
+    Only a `pending` entry is amended, and amending one is not logging: the
+    card is still a proposal and still has to be confirmed, so invariant 5 is
+    untouched. A confirmed entry is refused rather than quietly changed —
+    `log_nutrient` is the snapshot it was scored on (invariant 2) — and saying
+    so is the point, because silence is what made this look like it worked.
+    """
+    entry_id = int(payload.get("entry_id") or 0)
+    if not entry_id:
+        return
+    entry = await db.entry_awaiting_food(entry_id, name)
+    if not entry:
+        return
+
+    if entry["status"] != "pending":
+        # Discarded or already logged. Nothing here can be repaired silently,
+        # so name the meal and say what would actually fix it.
+        await msg.answer(
+            f"⚠️ <b>{render._esc(entry['name'])}</b> is already "
+            f"{render._esc(entry['status'])}, so <b>{render._esc(name)}</b> "
+            "was not added to it — a logged meal keeps the nutrients it was "
+            "scored on.\n\n"
+            "Everything from now on will use your row. To correct that meal, "
+            "<code>/undo</code> it and send it again.",
+            parse_mode="HTML")
+        return
+
+    grams = entry["grams"]
+    if not grams:
+        # The mass is unknown only if the item never reached the parse, which
+        # should not happen — but guessing one would put an invented number
+        # into a meal, so it is asked for instead.
+        await msg.answer(
+            f"➕ Add <b>{render._esc(name)}</b> to "
+            f"<b>{render._esc(entry['name'])}</b>? Reply with the mass, "
+            "e.g. <code>+40 g " + render._esc(name) + "</code>.",
+            parse_mode="HTML")
+        return
+
+    await db.add_component_to_entry(
+        entry_id, fdc_id, name, float(grams), grams_source="estimate")
+
+    _e, comps = await db.entry_with_components(entry_id)
+    profs = await db.profiles_for([c["fdc_id"] for c in comps])
+    resolved = [
+        ResolvedComponent(c["label"], c["fdc_id"], float(c["grams"]),
+                          float(c["yield_factor"]), float(c["grams_sigma"] or 0),
+                          c["grams_source"])
+        for c in comps
+    ]
+    await msg.answer(
+        f"➕ Added <b>{render._esc(name)}</b> at {grams:g} g to "
+        f"<b>{render._esc(entry['name'])}</b>. Still nothing logged:\n\n"
+        + render.confirm_card(entry["name"], resolved,
+                              total_nutrients(resolved, profs),
+                              confidence=None, warnings=[]),
+        parse_mode="HTML",
+        reply_markup=kb_confirm(entry_id),
+    )
 
 
 @dp.message(Command("report", "review"))
@@ -4090,7 +4180,11 @@ async def _present(
             "<code>2 cheese rolls, 1 pickle, half an avocado, 4 slices salami</code> — "
             "or define it yourself if the database simply has no row for it."
         )
-        kb = InlineKeyboardMarkup(inline_keyboard=[_define_button([(missed, 0.0)])])
+        # The entry rides along even though it was just discarded: defining
+        # the food will then say so and tell you to send the meal again,
+        # instead of ending in a panel and a meal that never got logged.
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[_define_button([(missed, 0.0)], entry_id)])
         if edit:
             await edit.edit_text(text, parse_mode="HTML", reply_markup=kb)
         else:
