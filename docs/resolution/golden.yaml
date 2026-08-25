@@ -1,0 +1,1150 @@
+# Golden evaluation set for food-to-nutrient resolution.
+#
+# DATA, NOT CODE. Nothing here imports; the runner in tests/ reads it.
+#
+# Every `fdc_id` below was verified present and not retired against the live
+# database on 25 Aug 2026 (13,636 foods: Foundation 411, SR Legacy 7,793,
+# FNDDS 5,432, user_product 14; USDA Branded NOT loaded). Re-verify with the
+# runner's `--verify-ids` pass before trusting a failure.
+#
+# --------------------------------------------------------------- field guide
+#
+# id            stable slug; never renumber, tests and the report cite it
+# stage         which link in the chain this case exercises. One of:
+#                 parse      model turns text/photo into items      (model)
+#                 candidates db.search_foods / parse._candidates     (SQL)
+#                 select     auto-match vs model tier decision       (SQL)
+#                 mass       _mass_for / count_from_text / portions  (SQL)
+#                 yield      yield_factor                            (mixed)
+#                 nutrient   profiles_for / canonical fold / energy  (SQL)
+#                 validate   parse.validate warnings                 (SQL)
+#                 entry      whole-entry checks (dup fdc_id, sums)   (SQL)
+#               A case names the FIRST stage that must be right. The runner
+#               reports the stage, not just the number.
+# tier          model_free | needs_model — whether a live API call is required
+#               to reach the assertion when `parse` is supplied frozen
+# parse         the frozen parse item. Supplying it is what makes most cases
+#               model-free: it is the model's contribution, recorded once.
+# expect        fdc_id       the single right answer
+#               acceptable   other rows that are defensibly the same food
+#               forbidden    rows that must never win; each is a real failure
+#               state / grams / basis / yield_factor
+# discriminators  the nutrients that separate a right match from a plausible
+#               wrong one. `per_100g` is of the EXPECTED row. Each carries a
+#               tolerance and the reason for that tolerance.
+# traces        FAILURES.md case number, where this reproduces a traced bug
+# baseline      what today's resolver actually does (measured, see SPEC-8)
+#
+# Tolerance vocabulary:
+#   pct: n        relative, +/- n% of the expected value
+#   abs: n        absolute, in the nutrient's own unit
+#   max: n        assertion is an upper bound (used for "must be ~zero")
+#   exact: true   no tolerance; a different number is a different food
+# A case may set both pct and abs; the wider wins (protects small numbers).
+
+meta:
+  version: 1
+  verified_against:
+    date: 2026-08-25
+    food_rows: 13636
+    datasets: [foundation_food, sr_legacy_food, survey_fndds_food, user_product]
+    branded_loaded: false
+    auto_match_similarity: 0.62
+    weak_match_similarity: 0.45
+  eval_user:
+    # The suite MUST NOT run as user 2. He has 132 aliases; an alias hit
+    # short-circuits resolution entirely, so a case whose label matches one
+    # measures the cache, not the resolver. The runner bootstraps a throwaway
+    # user with zero aliases, and copies nothing but visibility of the
+    # user_product rows the `own_product` cases need.
+    aliases: none
+    note: alias-hit behaviour is tested explicitly by the `alias_*` cases only
+
+cases:
+
+# =========================================================== A. one obvious row
+- id: whole_banana
+  stage: candidates
+  tier: model_free
+  input: "120 g banana"
+  parse: {label: banana, search_terms: "banana, raw", grams: 120, grams_source: stated, state: raw}
+  expect:
+    fdc_id: 2709224            # Banana, raw (FNDDS)
+    acceptable: [173944]       # Bananas, raw (SR Legacy)
+    forbidden: [169394, 2709802]   # Pepper, banana, raw — a different plant
+    state: raw
+    grams: 120
+    basis: per_100g_x_grams_x_yield
+    yield_factor: 1.0
+  discriminators:
+    - {nutrient: 1008, per_100g: 97, tol: {pct: 12}, reason: "SR Legacy 89 vs FNDDS 97; either is right, 12% spans both"}
+    - {nutrient: 1092, per_100g: 326, tol: {pct: 15}, reason: "potassium is why anyone logs a banana; a banana pepper has 256 and would pass an energy check"}
+    - {nutrient: 1005, per_100g: 22.7, tol: {pct: 10}, reason: "banana pepper is 4.6 g carb — 5x apart, the cheapest separator"}
+  traces: null
+
+- id: whole_garlic_tie
+  stage: candidates
+  tier: model_free
+  input: "6 g garlic"
+  parse: {label: garlic, search_terms: "garlic, raw", grams: 6, grams_source: stated, state: raw}
+  expect:
+    fdc_id: 1104647            # Garlic, raw (Foundation) — precedence 0/1 wins the 3-way 1.000 tie
+    acceptable: [169230, 2709786]
+    forbidden: []
+    state: raw
+    grams: 6
+    basis: per_100g_x_grams_x_yield
+  discriminators:
+    - {nutrient: 1005, per_100g: 28.2, tol: {pct: 10}, reason: "all three rows agree; this case is about determinism, not accuracy"}
+  assert_also:
+    deterministic_tiebreak: true
+    reason: "three rows score similarity 1.000. Which one wins must not depend on planner row order — it decides the snapshot"
+
+- id: whole_olive_oil
+  stage: candidates
+  tier: model_free
+  input: "15 g olive oil"
+  parse: {label: "olive oil", search_terms: "olive oil", grams: 15, grams_source: stated, state: as_sold}
+  expect:
+    fdc_id: 2710186            # Olive oil (FNDDS), 900 kcal, 100 g fat
+    acceptable: [171413]       # Oil, olive, salad or cooking (SR Legacy), 884 kcal
+    forbidden: [748608, 1750351]   # Foundation olive rows: NO 1008, NO 1004, satfat only
+    state: as_sold
+    grams: 15
+    basis: per_100g_x_grams_x_yield
+  discriminators:
+    - {nutrient: 1008, per_100g: 900, tol: {pct: 3}, reason: "the whole point: 15 g of oil is 135 kcal and the forbidden row makes it 0"}
+    - {nutrient: 1004, per_100g: 100, tol: {pct: 3}, reason: "748608 reports 93.7 under 1085 (NLEA fat), which nothing maps to 1004"}
+    - {nutrient: 1258, per_100g: 15.5, tol: {pct: 20}, reason: "the forbidden row DOES carry satfat — so the meal gains saturated fat and loses all its energy, which is the worst possible shape of wrong"}
+  traces: 2
+
+# ================================================ B. many near-identical rows
+- id: near_chicken_breast_cooked
+  stage: select
+  tier: model_free
+  input: "250 g chicken breast, roasted, skinless"
+  parse: {label: "chicken breast", search_terms: "chicken breast, skinless, roasted", grams: 250, grams_source: scale, state: cooked}
+  expect:
+    fdc_id: 2705956            # Chicken breast, baked/broiled/roasted, skin not eaten, from raw
+    acceptable: [171140, 171534]
+    forbidden: [2646170, 2727569, 174608]  # raw rows and a deli roll
+    state: cooked
+    grams: 250
+    basis: per_100g_x_grams_x_yield
+    yield_factor: 1.0
+  discriminators:
+    - {nutrient: 1003, per_100g: 30.2, tol: {pct: 8}, reason: "raw is 22.5 — a 250 g breast is 75 g protein or 56 g. This is his largest protein source and the error is silent"}
+    - {nutrient: 1008, per_100g: 161, tol: {pct: 10}, reason: "raw row has no 1008 at all; normalise_energy fills 112 from Atwater, so the day understates by 122 kcal and nothing warns"}
+    - {nutrient: 1093, per_100g: 360, tol: {pct: 40}, reason: "wide because roasting salt varies; still 2.5x off the deli roll's 883 mg, which is the trap for a misspelt query"}
+  traces: null
+
+- id: near_chicken_thigh_cooked
+  stage: yield
+  tier: model_free
+  input: "180 g chicken thigh, boneless skinless, cooked"
+  parse: {label: "chicken thigh", search_terms: "chicken thigh, boneless, skinless, cooked", grams: 180, grams_source: scale, state: cooked}
+  expect:
+    fdc_id: 2646171            # Chicken, thigh, boneless, skinless, RAW — the only close row
+    acceptable: []
+    forbidden: []
+    state: cooked
+    grams: 180
+    basis: per_100g_x_grams_x_yield
+    yield_factor: 1.33
+  discriminators:
+    - {nutrient: 1003, per_100g: 18.6, tol: {pct: 8}, reason: "the row is right and the yield factor is the whole answer: 180 g cooked came from ~239 g raw"}
+  assert_also:
+    yield_factor_not_one: true
+    reason: "the auto-match path calls _accept with the default yield_factor=1.0. Only the model tier ever sets one. A cooked mass on a raw row at yf 1.0 understates protein by 25% and raises nothing"
+
+- id: near_milk_whole
+  stage: candidates
+  tier: model_free
+  input: "200 ml whole milk"
+  parse: {label: "whole milk", search_terms: "milk, whole, 3.25% milkfat", grams: 206, grams_source: stated, state: as_sold}
+  expect:
+    fdc_id: 2705385            # Milk, whole (FNDDS)
+    acceptable: [171265, 322892, 746782]
+    forbidden: [2705388, 2705467]   # skim; chocolate milk
+    state: as_sold
+    grams: 206
+    basis: per_100g_x_grams_x_yield
+  discriminators:
+    - {nutrient: 1004, per_100g: 3.2, tol: {pct: 15}, reason: "skim is 0.2 — the one number that separates them, and energy differs only 61 vs 34"}
+    - {nutrient: 1087, per_100g: 123, tol: {pct: 15}, reason: "calcium is the reason milk is in the diary at all and is nearly identical across fat levels, so it must NOT move when the fat does"}
+  assert_also:
+    ml_to_g: {ml: 200, expect_g: 206, tol: {pct: 5}}
+    reason: "milk is 1.03 g/ml. Nothing in the codebase converts volume to mass; the model does it silently and no test has ever checked it"
+
+# ================================================== C. raw vs cooked, dry vs prepared
+- id: rice_cooked
+  stage: candidates
+  tier: model_free
+  input: "250 g cooked white rice"
+  parse: {label: "white rice", search_terms: "rice, white, long-grain, regular, cooked", grams: 250, grams_source: scale, state: cooked}
+  expect:
+    fdc_id: 168878             # Rice, white, long-grain, regular, enriched, cooked
+    acceptable: [169757]
+    forbidden: [168877, 169756, 169753]   # raw rows; and the with-salt cooked row
+    state: cooked
+    grams: 250
+    basis: per_100g_x_grams_x_yield
+    yield_factor: 1.0
+  discriminators:
+    - {nutrient: 1008, per_100g: 130, tol: {pct: 8}, reason: "the raw row is 365 — 2.8x. This is the failure db.search_foods' docstring was written about; it must stay fixed"}
+    - {nutrient: 1093, per_100g: 1, tol: {abs: 25}, reason: "the with-salt variant is 382 mg. 250 g of rice would add 955 mg of sodium never eaten — over a third of a day's ceiling, from rice"}
+  traces: null
+
+- id: rice_dry
+  stage: yield
+  tier: model_free
+  input: "100 g dry white rice"
+  parse: {label: "white rice", search_terms: "rice, white, long-grain, regular, raw", grams: 100, grams_source: scale, state: dry}
+  expect:
+    fdc_id: 168877             # Rice, white, long-grain, regular, raw, enriched
+    acceptable: [169756]
+    forbidden: [168878]
+    state: dry
+    grams: 100
+    basis: per_100g_x_grams_x_yield
+    yield_factor: 1.0
+  discriminators:
+    - {nutrient: 1008, per_100g: 365, tol: {pct: 5}, reason: "same food, opposite direction from rice_cooked. A resolver that passes one by preferring 'cooked' rows must not pass it by ignoring state"}
+  pair_with: rice_cooked
+  reason: "the pair is the test. Either case alone can be passed by a constant preference"
+
+- id: pasta_dry_no_plain_row
+  stage: candidates
+  tier: model_free
+  input: "100 g dry spaghetti"
+  parse: {label: spaghetti, search_terms: "spaghetti, dry", grams: 100, grams_source: scale, state: dry}
+  expect:
+    fdc_id: 169736             # Pasta, dry, enriched
+    acceptable: [168927, 172025]
+    forbidden: [168911, 168912]   # Spaghetti, spinach — the only rows with "spaghetti" in the name
+    state: dry
+    grams: 100
+    basis: per_100g_x_grams_x_yield
+  discriminators:
+    - {nutrient: 1079, per_100g: 3.2, tol: {pct: 25}, reason: "spinach spaghetti is 10.6 g — 3.3x. THE discriminator: energy 371 vs 372 and protein 13.0 vs 13.3 are indistinguishable, so no energy cross-check can ever see this"}
+    - {nutrient: 1106, per_100g: 0, tol: {max: 3}, reason: "spinach pasta carries 23 ug RAE; a vitamin A that appears from plain pasta is the giveaway"}
+    - {nutrient: 1093, per_100g: 6, tol: {abs: 15}, reason: "36 vs 6 mg — small in absolute terms, but the sign of the error is consistent with the fibre one and confirms the row rather than the query"}
+  note: "there is no row named 'Spaghetti, dry' in this database. The right answer is the generic pasta row, and the near-miss outscores it 0.700 to 0.000 on the word 'spaghetti'"
+
+- id: pasta_cooked
+  stage: candidates
+  tier: model_free
+  input: "240 g cooked pasta"
+  parse: {label: pasta, search_terms: "pasta, cooked", grams: 240, grams_source: scale, state: cooked}
+  expect:
+    fdc_id: 2708357            # Pasta, cooked (FNDDS)
+    acceptable: [169751]
+    forbidden: [168912, 168900]
+    state: cooked
+    grams: 240
+    basis: per_100g_x_grams_x_yield
+  discriminators:
+    - {nutrient: 1005, per_100g: 30.7, tol: {pct: 10}, reason: "dry pasta is 74.7 — the state error is a 2.4x carbohydrate error"}
+    - {nutrient: 1063, per_100g: 0.56, tol: {abs: 1.0}, reason: "FNDDS files sugar under 1063, not 2000. Included to keep the canonical fold under test on an ordinary food, not only on the case that revealed it"}
+  traces: 4
+
+- id: beef_mince_raw
+  stage: candidates
+  tier: model_free
+  input: "250 g raw minced beef 20% fat"
+  parse: {label: "minced beef", search_terms: "beef, ground, 80% lean meat / 20% fat, raw", grams: 250, grams_source: scale, state: raw}
+  expect:
+    fdc_id: 174036
+    acceptable: [2514744]
+    forbidden: [174037, 173111, 171790, 173110]  # other fat percentages
+    state: raw
+    grams: 250
+    basis: per_100g_x_grams_x_yield
+  discriminators:
+    - {nutrient: 1004, per_100g: 20.0, tol: {pct: 15}, reason: "fat percentage IS the identity of a mince row; 5% vs 20% is 150 kcal on a 250 g portion"}
+    - {nutrient: 1003, per_100g: 17.2, tol: {pct: 12}, reason: "protein moves the other way as fat falls, so the two together pin the row where either alone would not"}
+
+# ============================================ D. drained / undrained, salt
+- id: tuna_water_drained
+  stage: select
+  tier: model_free
+  input: "1 tin of tuna in water, drained, 112 g"
+  parse: {label: tuna, search_terms: "tuna, canned in water, drained", grams: 112, grams_source: package, state: as_sold, count: 1}
+  expect:
+    fdc_id: 175158             # Fish, tuna, white, canned in water, drained solids
+    acceptable: [334194, 173709]
+    forbidden: [171986, 171988, 175157]  # "without salt" variants; canned in OIL
+    state: as_sold
+    grams: 112
+    basis: per_100g_x_grams_x_yield
+  discriminators:
+    - {nutrient: 1093, per_100g: 377, tol: {pct: 25}, reason: "the without-salt row is 50 mg. On 112 g that is 422 mg vs 56 mg — the entire difference between a tin that fits the sodium ceiling and one that does not"}
+    - {nutrient: 1004, per_100g: 3.0, tol: {pct: 40}, reason: "canned in oil is 8.1 g; wide tolerance because white/light differ, but oil/water is still outside it"}
+
+- id: chickpeas_canned_drained
+  stage: select
+  tier: needs_model
+  input: "150 g chickpeas from a tin, drained"
+  parse: {label: chickpeas, search_terms: "chickpeas, canned, drained", grams: 150, grams_source: stated, state: as_sold}
+  expect:
+    fdc_id: 173800             # canned, drained solids
+    acceptable: [2707418]
+    forbidden: [173801, 2644288, 2707414]   # drained AND rinsed; sodium added and rinsed; 'Chickpeas, NFS'
+    state: as_sold
+    grams: 150
+    basis: per_100g_x_grams_x_yield
+  discriminators:
+    - {nutrient: 1093, per_100g: 246, tol: {pct: 20}, reason: "rinsing is the only thing separating these rows and it is worth ~45 mg/100 g; nothing else about the food changes"}
+    - {nutrient: 1004, per_100g: 2.8, tol: {pct: 35}, reason: "today's resolver returns `Chickpeas, NFS` (2707414) at 8.9 g fat — an NFS row silently includes added cooking fat. 3.2x, and energy follows it (211 vs 139), so this one IS visible on calories; the sodium case above is not"}
+    - {nutrient: 1079, per_100g: 6.4, tol: {pct: 20}, reason: "guards against the resolver drifting to a dried or cooked-from-dry row, where fibre and everything else moves together"}
+  note: "no candidate reaches 0.62 — this case is a model-tier case by construction and exists to test that the model tier is given the right five candidates"
+
+- id: peanuts_salted
+  stage: select
+  tier: model_free
+  input: "40 g salted dry roasted peanuts"
+  parse: {label: peanuts, search_terms: "peanuts, dry-roasted, with salt", grams: 40, grams_source: stated, state: as_sold}
+  expect:
+    fdc_id: 174262
+    acceptable: [2707517]
+    forbidden: [173806, 170585]
+    state: as_sold
+    grams: 40
+    basis: per_100g_x_grams_x_yield
+  discriminators:
+    - {nutrient: 1093, per_100g: 410, tol: {pct: 25}, reason: "6 mg unsalted vs 410 mg salted — 68x, and every other nutrient in the two rows is byte-identical. There is no other way to tell them apart"}
+
+- id: peanuts_unsalted
+  stage: select
+  tier: model_free
+  input: "40 g unsalted dry roasted peanuts"
+  parse: {label: peanuts, search_terms: "peanuts, dry roasted, without salt", grams: 40, grams_source: stated, state: as_sold}
+  expect:
+    fdc_id: 173806
+    acceptable: []
+    forbidden: [174262, 2707517]
+    state: as_sold
+    grams: 40
+    basis: per_100g_x_grams_x_yield
+  discriminators:
+    - {nutrient: 1093, per_100g: 6, tol: {abs: 20}, reason: "absolute, not relative: 6 mg cannot carry a percentage. Anything above 26 mg means the salted row won"}
+  pair_with: peanuts_salted
+
+- id: butter_unsalted
+  stage: select
+  tier: model_free
+  input: "10 g unsalted butter"
+  parse: {label: "unsalted butter", search_terms: "butter, without salt", grams: 10, grams_source: scale, state: as_sold}
+  expect:
+    fdc_id: 173430             # Butter, without salt
+    acceptable: []
+    forbidden: [173410, 323793]
+    state: as_sold
+    grams: 10
+    basis: per_100g_x_grams_x_yield
+  discriminators:
+    - {nutrient: 1093, per_100g: 11, tol: {abs: 30}, reason: "salted butter is 643 mg. Energy (717), fat (81.1) and cholesterol (215) are IDENTICAL in the two rows — sodium is the only observable, so this case is worthless measured on calories"}
+    - {nutrient: 1008, per_100g: 717, tol: {pct: 3}, reason: "kept only to prove the case did not pass by resolving to an energy-less Foundation butter row, which was the original bug"}
+  traces: 2
+
+- id: butter_salted
+  stage: select
+  tier: model_free
+  input: "10 g butter"
+  parse: {label: butter, search_terms: "butter, salted", grams: 10, grams_source: scale, state: as_sold}
+  expect:
+    fdc_id: 173410
+    acceptable: []
+    forbidden: []
+    state: as_sold
+    grams: 10
+    basis: per_100g_x_grams_x_yield
+  discriminators:
+    - {nutrient: 1008, per_100g: 717, tol: {pct: 3}, reason: "the regression for FAILURES 2 proper: an energy-less Foundation butter row must never be reachable"}
+    - {nutrient: 1093, per_100g: 643, tol: {pct: 25}, reason: "confirms it landed on salted rather than passing by accident on without-salt, whose energy is the same"}
+  pair_with: butter_unsalted
+  traces: 2
+
+- id: broccoli_boiled_nosalt
+  stage: select
+  tier: model_free
+  input: "150 g boiled broccoli"
+  parse: {label: broccoli, search_terms: "broccoli, cooked, boiled, drained", grams: 150, grams_source: stated, state: cooked}
+  expect:
+    fdc_id: 169967             # without salt
+    acceptable: []
+    forbidden: [168510]        # with salt
+    state: cooked
+    grams: 150
+    basis: per_100g_x_grams_x_yield
+  discriminators:
+    - {nutrient: 1093, per_100g: 41, tol: {abs: 40}, reason: "262 vs 41 mg and every other value in the two rows is identical to the decimal. Home cooking without added salt is the default reading of an unqualified 'boiled broccoli'"}
+    - {nutrient: 1162, per_100g: 64.9, tol: {pct: 15}, reason: "vitamin C is why broccoli is logged and is destroyed by cooking — it also catches a drift to the raw row, which is 89.2"}
+  note: "an unqualified query should not silently pick the salted row. If the project decides 'with salt' is the better default, this case must be edited deliberately, not quietly"
+
+# ============================== E. form: whole/white/yolk, skin, bone
+- id: egg_white_fried
+  stage: candidates
+  tier: model_free
+  input: "99 g egg whites, fried"
+  parse: {label: "egg whites", search_terms: "egg white, cooked, fried", grams: 99, grams_source: scale, state: cooked}
+  expect:
+    fdc_id: 2707171            # Egg, white, cooked, fat added
+    acceptable: [2707285, 2707289, 2707169]
+    forbidden: [173423, 171287, 2707152, 323793, 172204]  # whole egg cooked/raw; dried egg white
+    state: cooked
+    grams: 99
+    basis: per_100g_x_grams_x_yield
+  discriminators:
+    - {nutrient: 1253, per_100g: 0, tol: {max: 15}, reason: "THE case. Egg white has no cholesterol. Whole fried egg is 401 mg/100 g; 99 g carried 397 mg never eaten and the day read 249% of its ceiling"}
+    - {nutrient: 1008, per_100g: 100, tol: {pct: 25}, reason: "wide because frying oil is a real variable (52 kcal with no added fat, 100 with). Still excludes whole fried egg at 196 and dried egg white at 376"}
+    - {nutrient: 1093, per_100g: 200, tol: {pct: 90}, reason: "very wide: added salt is genuinely unknown across these rows. Present only to exclude dried egg white at 1,250 mg, which no energy or cholesterol figure would"}
+  traces: 1
+  note: |
+    Reproduces TODAY at the resolver, measured 25 Aug 2026. Pooled candidates for
+    label "egg whites" + search_terms "egg white, cooked, fried" are headed by
+    `Egg, whole, cooked, fried` (173423) at 0.692 — above AUTO_MATCH — with the
+    correct `Egg, white, cooked, fat added` (2707171) second at 0.600, below it.
+    The production fix was a hand-corrected ALIAS for one exact phrase. The cause
+    is untouched: any new phrasing re-creates the bug and caches it again.
+
+- id: egg_white_raw
+  stage: candidates
+  tier: model_free
+  input: "2 egg whites"
+  parse: {label: "egg whites", search_terms: "egg white, raw", grams: 66, grams_source: estimate, state: raw, count: 2}
+  expect:
+    fdc_id: 2707168            # Egg, white only, raw
+    acceptable: [172183]
+    forbidden: [171287, 2707152, 323697, 172203]
+    state: raw
+    grams: 66
+    basis: per_100g_x_grams_x_yield
+  discriminators:
+    - {nutrient: 1253, per_100g: 0, tol: {max: 5}, reason: "same separator as egg_white_fried, on the unambiguous raw row, so a failure distinguishes 'cannot read the word white' from 'cannot read the word fried'"}
+    - {nutrient: 1004, per_100g: 0.17, tol: {abs: 1.5}, reason: "whole egg is 9.5 g fat. Absolute tolerance because 0.17 g cannot carry a percentage"}
+  assert_also:
+    grams_from_count: {count: 2, expect_g: 66, tol: {pct: 8}}
+    reason: "USDA food_portion has 'large' = 33 g for fdc 172183. The database knows this exactly and nothing in the resolver reads it"
+  traces: 1
+
+- id: egg_yolk
+  stage: candidates
+  tier: model_free
+  input: "1 egg yolk"
+  parse: {label: "egg yolk", search_terms: "egg yolk, raw", grams: 17, grams_source: estimate, state: raw, count: 1}
+  expect:
+    fdc_id: 2707172            # Egg, yolk only, raw
+    acceptable: [172184]
+    forbidden: [171287, 2707152, 173436, 173422]  # whole egg; salted/sugared yolk
+    state: raw
+    grams: 17
+    basis: per_100g_x_grams_x_yield
+  discriminators:
+    - {nutrient: 1253, per_100g: 1085, tol: {pct: 10}, reason: "the mirror of egg_white: a yolk carries 2.7x the cholesterol of a whole egg per gram, so 'yolk resolved to whole egg' understates where 'white resolved to whole egg' overstates"}
+    - {nutrient: 1106, per_100g: 381, tol: {pct: 15}, reason: "vitamin A lives entirely in the yolk; whole egg is 160, white is 0 — one nutrient orders all three forms correctly"}
+  traces: 1
+
+- id: egg_whole_fried
+  stage: candidates
+  tier: model_free
+  input: "1 fried egg"
+  parse: {label: "fried egg", search_terms: "egg, whole, cooked, fried", grams: 46, grams_source: estimate, state: cooked, count: 1}
+  expect:
+    fdc_id: 173423             # Egg, whole, cooked, fried
+    acceptable: []
+    forbidden: [2707285, 2707289]   # the egg-WHITE fried rows
+    state: cooked
+    grams: 46
+    basis: per_100g_x_grams_x_yield
+  discriminators:
+    - {nutrient: 1253, per_100g: 401, tol: {pct: 10}, reason: "the fix for FAILURES 1 must not have created its own inverse: a whole fried egg landing on the egg-white row would report 0 mg and understate a real yolk"}
+  pair_with: egg_white_fried
+  traces: 1
+
+- id: chicken_breast_skin_on
+  stage: candidates
+  tier: model_free
+  input: "200 g roast chicken breast with the skin"
+  parse: {label: "chicken breast, skin on", search_terms: "chicken breast, roasted, meat and skin", grams: 200, grams_source: scale, state: cooked}
+  expect:
+    fdc_id: 2705955            # Chicken breast, baked/broiled/roasted, skin eaten, from raw
+    acceptable: []
+    forbidden: [2705956]       # skin NOT eaten
+    state: cooked
+    grams: 200
+    basis: per_100g_x_grams_x_yield
+  discriminators:
+    - {nutrient: 1004, per_100g: null, tol: {pct: 25}, reason: "resolve at run time from the row itself; skin-on carries roughly double the fat of skin-off and nothing else separates them"}
+  note: |
+    Expected value left null deliberately — the runner reads it from the expected
+    row, proving it can express "this row, whatever it says" without the author
+    transcribing a number wrongly.
+    Today the resolver auto-matches 2727569 (Chicken, breast, meat and skin, RAW)
+    at 0.769: wrong state, and the row USDA publishes with a NEGATIVE
+    carbohydrate of -0.43 g/100 g. See case negative_nutrient_value.
+
+# ==================================== F. household measures
+- id: measure_slice_bread
+  stage: mass
+  tier: model_free
+  input: "2 slices of white bread"
+  parse: {label: "white bread", search_terms: "bread, white, commercially prepared", grams: 60, grams_source: estimate, state: as_sold, count: 2}
+  expect:
+    fdc_id: 325871
+    acceptable: [174924]
+    forbidden: [174925]        # toasted — a different water content
+    state: as_sold
+    grams: 58
+    basis: usda_food_portion_x_count
+  discriminators:
+    - {nutrient: 1008, per_100g: 270, tol: {pct: 8}, reason: "identity check only; the case is about the mass"}
+  assert_also:
+    grams_from_portion: {unit: slice, count: 2, tol: {pct: 10}}
+    reason: "food_portion holds 36,682 USDA household measures and db.portion_for filters `id < 0`, so only the two the user declared are ever consulted. Every slice, cup, tbsp and medium in this section is currently a model guess against a number the database already holds"
+  traces: 7
+
+- id: measure_cup_rice
+  stage: mass
+  tier: model_free
+  input: "1 cup of cooked rice"
+  parse: {label: rice, search_terms: "rice, white, long-grain, regular, cooked", grams: 180, grams_source: estimate, state: cooked, count: 1}
+  expect:
+    fdc_id: 168878
+    acceptable: []
+    forbidden: [169753]
+    state: cooked
+    grams: 158
+    basis: usda_food_portion_x_count
+  discriminators:
+    - {nutrient: 1008, per_100g: 130, tol: {pct: 5}, reason: "identity"}
+  assert_also:
+    grams_from_portion: {unit: cup, count: 1, expect_g: 158, tol: {abs: 5}}
+    reason: "food_portion row for 168878 says 1 cup = 158 g, exactly. A 180 g model guess is a 14% error on a number that was never uncertain"
+
+- id: measure_tbsp_butter
+  stage: mass
+  tier: model_free
+  input: "1 tbsp butter"
+  parse: {label: butter, search_terms: "butter, salted", grams: 15, grams_source: estimate, state: as_sold, count: 1}
+  expect: {fdc_id: 173410, acceptable: [], forbidden: [], state: as_sold, grams: 14.2, basis: usda_food_portion_x_count}
+  discriminators:
+    - {nutrient: 1008, per_100g: 717, tol: {pct: 3}, reason: "identity"}
+  assert_also:
+    grams_from_portion: {unit: tbsp, count: 1, expect_g: 14.2, tol: {abs: 1}}
+
+- id: measure_tsp_cinnamon
+  stage: mass
+  tier: model_free
+  input: "1 tsp cinnamon"
+  parse: {label: cinnamon, search_terms: "cinnamon, ground", grams: 2.6, grams_source: estimate, state: as_sold, count: 1}
+  expect: {fdc_id: 171320, acceptable: [], forbidden: [2710261, 171849], state: as_sold, grams: 2.6, basis: usda_food_portion_x_count}
+  discriminators:
+    - {nutrient: 1079, per_100g: 53.1, tol: {pct: 10}, reason: "cinnamon is 53% fibre. Resolved to 'Sugar, cinnamon' it becomes 0 g fibre and 98 g sugar — and at 2.6 g neither shows up in an energy check"}
+    - {nutrient: 1087, per_100g: 1002, tol: {pct: 15}, reason: "1,002 mg calcium per 100 g is the most distinctive number cinnamon has; it is also why a mis-scaled spice quietly inflates a micronutrient"}
+
+- id: measure_medium_banana
+  stage: mass
+  tier: model_free
+  input: "a medium banana"
+  parse: {label: banana, search_terms: "banana, raw", grams: 120, grams_source: estimate, state: raw, count: 1}
+  expect: {fdc_id: 173944, acceptable: [2709224], forbidden: [], state: raw, grams: 118, basis: usda_food_portion_x_count}
+  discriminators:
+    - {nutrient: 1092, per_100g: 358, tol: {pct: 15}, reason: "identity, and potassium is the number a banana is logged for"}
+  assert_also:
+    grams_from_portion: {unit: "medium (7\" to 7-7/8\" long)", count: 1, expect_g: 118, tol: {abs: 6}}
+    reason: "USDA carries extra small 81 / small 101 / medium 118 / large 136 / extra large 152 for fdc 173944. 'Medium' is not a guess in this database"
+
+- id: measure_clove_garlic
+  stage: mass
+  tier: model_free
+  input: "2 cloves of garlic"
+  parse: {label: garlic, search_terms: "garlic, raw", grams: 6, grams_source: estimate, state: raw, count: 2}
+  expect: {fdc_id: 169230, acceptable: [1104647, 2709786], forbidden: [], state: raw, grams: 6, basis: usda_food_portion_x_count}
+  discriminators:
+    - {nutrient: 1005, per_100g: 33.1, tol: {pct: 10}, reason: "identity"}
+  assert_also:
+    grams_from_portion: {unit: clove, count: 2, tol: {pct: 20}}
+    reason: "a clove is ~3 g. Wide tolerance: real cloves vary more than the USDA figure admits, and 6 g of garlic changes nothing — this case exists to prove the unit is READ, not that it is precise"
+
+- id: measure_handful_almonds
+  stage: mass
+  tier: needs_model
+  input: "a handful of almonds"
+  parse: {label: almonds, search_terms: "almonds, raw", grams: 30, grams_source: estimate, state: as_sold, count: null}
+  expect: {fdc_id: 2346393, acceptable: [2707485, 170567], forbidden: [2707487], state: as_sold, grams: 30, basis: model_estimate_with_interval}
+  discriminators:
+    - {nutrient: 1093, per_100g: 1, tol: {abs: 30}, reason: "excludes the salted row, which is otherwise the same food"}
+  assert_also:
+    has_interval: true
+    interval_relative_width_min: 0.4
+    reason: "'a handful' has no database answer and must not pretend to one. The assertion is that grams_low/grams_high are present and genuinely wide — an estimate with no range is the lie ESTIMATE_SIGMA_REL exists to prevent"
+
+# ============================== G. units, counts, fractions
+- id: unit_grams
+  stage: mass
+  tier: model_free
+  input: "250 g chicken breast"
+  parse: {label: "chicken breast", search_terms: "chicken breast, cooked", grams: 250, grams_source: stated, state: cooked}
+  expect: {fdc_id: 2705956, acceptable: [], forbidden: [], state: cooked, grams: 250, basis: stated}
+  discriminators:
+    - {nutrient: 1003, per_100g: 30.2, tol: {pct: 8}, reason: "identity"}
+  assert_also: {grams_source: stated, sigma_rel: 0.05, reason: "STATED_SIGMA_REL. A stated mass must not be widened to an estimate's 35%"}
+
+- id: unit_kg
+  stage: mass
+  tier: needs_model
+  input: "0.5 kg potatoes, boiled"
+  parse: {label: potatoes, search_terms: "potato, boiled", grams: 500, grams_source: stated, state: cooked}
+  expect: {fdc_id: 2709385, acceptable: [], forbidden: [], state: cooked, grams: 500, basis: stated}
+  discriminators:
+    - {nutrient: 1008, per_100g: null, tol: {pct: 10}, reason: "read from the row; the case is the kg conversion"}
+  assert_also: {expect_g: 500, tol: {abs: 1}, reason: "kg is parsed nowhere in the codebase. If the model returns 0.5 the entry is 1/1000 of the meal and passes every plausibility check, because 0.5 g of anything is plausible"}
+
+- id: unit_ml_water_like
+  stage: mass
+  tier: needs_model
+  input: "330 ml orange juice"
+  parse: {label: "orange juice", search_terms: "orange juice, 100%", grams: 340, grams_source: stated, state: as_sold}
+  expect: {fdc_id: 2709186, acceptable: [2709188, 2709187], forbidden: [], state: as_sold, grams: 340, basis: stated}
+  discriminators:
+    - {nutrient: 1063, per_100g: null, tol: {pct: 15}, reason: "sugar read from the row. FNDDS files it under 1063; a day that shows 0 g of sugar from 330 ml of juice is FAILURES 4 recurring"}
+  assert_also: {ml: 330, expect_g: 340, tol: {pct: 6}, reason: "juice is ~1.04 g/ml. Treating ml as g is a 3-4% understatement that no check can see; the case pins the convention so it is at least consistent"}
+
+- id: unit_oz
+  stage: mass
+  tier: needs_model
+  input: "4 oz salmon fillet, cooked"
+  parse: {label: salmon, search_terms: "salmon, atlantic, farmed, cooked", grams: 113, grams_source: stated, state: cooked}
+  expect: {fdc_id: 175168, acceptable: [171998], forbidden: [175167, 173686, 2706826], state: cooked, grams: 113, basis: stated}
+  discriminators:
+    - {nutrient: 1003, per_100g: 22.1, tol: {pct: 10}, reason: "THE discriminator. Today's resolver returns `Salmon salad` (2706826) at 10.8 g protein — half. Raw salmon at 20.4 is inside tolerance, which is honest: raw/cooked is weakly discriminated here and salad/fillet is not"}
+    - {nutrient: 1004, per_100g: 12.3, tol: {pct: 30}, reason: "salmon salad is 17.4 g, mayonnaise-driven. Fat and protein move in opposite directions, which no single nutrient shows"}
+    - {nutrient: 1008, per_100g: 206, tol: {pct: 10}, reason: "recorded as INSUFFICIENT: salmon salad is 213 kcal against 206. A 3% energy difference on a wholly different food — the Atwater check is blind to this and so is any calorie-only tolerance"}
+  assert_also: {oz: 4, expect_g: 113.4, tol: {abs: 3}, reason: "1 oz = 28.35 g. A fluid-ounce reading gives 118 g and a '4 g' misread gives a meal 28x too small"}
+
+- id: count_three_eggs
+  stage: mass
+  tier: model_free
+  input: "3 eggs, scrambled"
+  parse: {label: eggs, search_terms: "egg, whole, cooked, scrambled", grams: 150, grams_source: estimate, state: cooked, count: 3}
+  expect: {fdc_id: 172187, acceptable: [2707153], forbidden: [2707157], state: cooked, grams: 150, basis: count_x_unit}
+  discriminators:
+    - {nutrient: 1253, per_100g: null, tol: {pct: 15}, reason: "read from the row"}
+  assert_also:
+    grams_is_total_not_per_unit: true
+    reason: "PARSE_TOOL rule 5b. A `count` of 3 with `grams` 50 means the model reported per-unit and the meal is a third of what was eaten. Nothing downstream multiplies, so the error is silent and exactly one third"
+
+- id: fraction_half_avocado
+  stage: mass
+  tier: model_free
+  input: "half an avocado"
+  parse: {label: avocado, search_terms: "avocado, raw", grams: 100, grams_source: estimate, state: raw, count: 0.5}
+  expect: {fdc_id: 2709223, acceptable: [171706, 2710824], forbidden: [173573], state: raw, grams: 100, basis: count_x_unit}
+  discriminators:
+    - {nutrient: 1004, per_100g: 14.7, tol: {pct: 20}, reason: "'Oil, avocado' is 100 g fat and scores 0.500 against 'avocado, raw'. Fat separates the fruit from the oil at 7x"}
+    - {nutrient: 1079, per_100g: 6.7, tol: {pct: 20}, reason: "avocado oil has no fibre at all; two nutrients that move in opposite directions confirm it is the fruit"}
+  assert_also:
+    word_count_parsed: {word: half, expect: 0.5}
+    reason: "count_from_text maps 'half' -> 0.5 but only when the food's declared unit word follows it. 'Half an avocado' has no unit word, so the local reader cannot fire and the model's count is the only signal"
+
+- id: fraction_numeric_slice
+  stage: mass
+  tier: model_free
+  input: "0.33 slice of blondie"
+  parse: {label: blondie, search_terms: blondie, grams: 30, grams_source: estimate, state: as_sold, count: null}
+  expect: {fdc_id: -289, acceptable: [], forbidden: [-249], state: as_sold, grams: 29.04, basis: user_food_portion_x_count}
+  discriminators:
+    - {nutrient: 1008, per_100g: 509.7, tol: {pct: 2}, reason: "a user_product panel is exact; a 2% tolerance is arithmetic slack, not measurement slack"}
+  assert_also:
+    count_from_text: {text: "0.33 slice of blondie", unit: slice, expect: 0.33}
+    grams_from_portion: {unit: slice, expect_g: 29.04, tol: {abs: 0.5}}
+    reason: "the real bug: the model returned a 30 g estimate noting 'standard slice assumed ~90 g' while food_portion held 88 g exactly. -249 is the retired duplicate and must never be matched"
+  traces: 7
+
+- id: fraction_written
+  stage: mass
+  tier: model_free
+  input: "1/2 cup of oats"
+  parse: {label: oats, search_terms: "oats, rolled, dry", grams: 40, grams_source: estimate, state: dry, count: 0.5}
+  expect: {fdc_id: 2346396, acceptable: [2708489], forbidden: [2707773], state: dry, grams: 40, basis: usda_food_portion_x_count}
+  discriminators:
+    - {nutrient: 1079, per_100g: null, tol: {pct: 20}, reason: "read from the row; 'Roll, oatmeal' — a bread roll — scores higher than the oats themselves and has a quite different fibre figure"}
+  assert_also:
+    count_from_text: {text: "1/2 cup of oats", unit: cup, expect: 0.5}
+    reason: "count_from_text handles `\\d+/\\d+`. Pinned because dry oats at 2x is 150 kcal"
+
+# ================== H. liquids, oils, powders, spices at tiny mass
+- id: tiny_black_pepper
+  stage: candidates
+  tier: model_free
+  input: "0.5 g black pepper"
+  parse: {label: "black pepper", search_terms: "black pepper, ground", grams: 0.5, grams_source: estimate, state: as_sold}
+  expect: {fdc_id: 170931, acceptable: [], forbidden: [2705854, 2705863], state: as_sold, grams: 0.5, basis: per_100g_x_grams_x_yield}
+  discriminators:
+    - {nutrient: 1008, per_100g: null, tol: {pct: 10}, reason: "read from the row"}
+  assert_also:
+    no_silent_drop: true
+    reason: "'Beef, ground' and 'Pork, ground' both score 0.333 against 'black pepper, ground' on the word 'ground'. At 0.5 g the nutrient consequence is nil and the ALIAS consequence is permanent: the next 'pepper' in a meal inherits a beef row"
+
+- id: tiny_salt
+  stage: nutrient
+  tier: model_free
+  input: "1 g salt"
+  parse: {label: salt, search_terms: "salt, table", grams: 1, grams_source: estimate, state: as_sold}
+  expect: {fdc_id: 173468, acceptable: [746775], forbidden: [321505], state: as_sold, grams: 1, basis: per_100g_x_grams_x_yield}
+  discriminators:
+    - {nutrient: 1093, per_100g: 38758, tol: {pct: 5}, reason: "1 g of salt is 388 mg of sodium — one sixth of a day's ceiling from a single deterministic gram. If this number is wrong the sodium target is decorative"}
+    - {nutrient: 1008, per_100g: 0, tol: {max: 1}, reason: "salt has no energy; a row that gives it some is a different substance"}
+  note: "321505 is a Foundation 'Salt, table, iodized' row with 12 nutrient rows and no energy. It survives UNUSABLE_ROW because salt has no macros to test"
+
+- id: tiny_soy_sauce
+  stage: candidates
+  tier: model_free
+  input: "10 ml soy sauce"
+  parse: {label: "soy sauce", search_terms: "soy sauce", grams: 11, grams_source: estimate, state: as_sold}
+  expect: {fdc_id: 2707442, acceptable: [174278], forbidden: [2707443, 2710177], state: as_sold, grams: 11, basis: per_100g_x_grams_x_yield}
+  discriminators:
+    - {nutrient: 1093, per_100g: null, tol: {pct: 25}, reason: "read from the row. Reduced-sodium soy sauce is roughly half; 10 ml of the wrong one is ~300 mg, which is 12% of a day's ceiling from a condiment"}
+
+- id: tiny_whey_powder
+  stage: select
+  tier: model_free
+  input: "30 g whey protein powder"
+  parse: {label: "whey protein powder", search_terms: "whey protein powder", grams: 30, grams_source: scale, state: as_sold}
+  expect: {fdc_id: -73, acceptable: [], forbidden: [173180, 2710731, 173177], state: as_sold, grams: 30, basis: per_100g_x_grams_x_yield}
+  discriminators:
+    - {nutrient: 1003, per_100g: 78.1, tol: {pct: 3}, reason: "a transcribed label is exact. The SR Legacy generic whey rows are 20-80 g protein depending which one wins — the spread across candidates is larger than the nutrient itself"}
+  assert_also:
+    precedence_zero_wins: true
+    reason: "a user_product must beat a national average of a different product (FAILURES 3). This case reaches AUTO_MATCH at 0.760, so it exercises the `own` shortcut"
+  traces: 3
+
+# ============================== I. composite dishes and recipes
+- id: composite_devolay
+  stage: select
+  tier: model_free
+  input: "2 devolay"
+  parse: {label: devolay, search_terms: "chicken cordon bleu, breaded, stuffed with cheese and ham", grams: 250, grams_source: estimate, state: cooked, count: 2}
+  expect: {fdc_id: -527, acceptable: [], forbidden: [2706441, 2706088, 167719, 2707469], state: cooked, grams: 250, basis: per_100g_x_grams_x_yield}
+  discriminators:
+    - {nutrient: 1004, per_100g: 18.5, tol: {pct: 8}, reason: "the generic cordon bleu row is 9.2 g — half. On 250 g that is 209 kcal of fat missing"}
+    - {nutrient: 1003, per_100g: 11.8, tol: {pct: 8}, reason: "generic is 22.6 — nearly double, in the opposite direction. The two together make the substitution unmistakable where energy alone (264 vs 210) looks like ordinary variation"}
+  assert_also:
+    precedence_zero_wins: true
+    reason: "FAILURES 3. The model's search_terms describe the generic dish almost exactly; the user's own row can only match the word he typed"
+  traces: 3
+
+- id: composite_devolay_bare_word
+  stage: select
+  tier: model_free
+  input: "devolay"
+  parse: {label: devolay, search_terms: devolay, grams: 125, grams_source: estimate, state: cooked, count: 1}
+  expect: {fdc_id: -527, acceptable: [], forbidden: [], state: cooked, grams: 125, basis: per_100g_x_grams_x_yield}
+  discriminators:
+    - {nutrient: 1004, per_100g: 18.5, tol: {pct: 8}, reason: "same row, same separator"}
+  note: "the bare word scores 0.258 against the row's own description, below AUTO_MATCH and below the `own` shortcut's threshold. The correct row is the ONLY candidate and the resolver still pays for a model call to pick it"
+
+- id: composite_cappuccino
+  stage: entry
+  tier: needs_model
+  input: "three cappuccinos, 300 ml milk in total"
+  parse:
+    - {label: cappuccino, search_terms: "coffee, cappuccino", grams: 450, grams_source: estimate, state: as_sold, count: 3}
+  expect: {fdc_id: 2710472, acceptable: [], forbidden: [], state: as_sold, grams: 450, basis: per_100g_x_grams_x_yield}
+  discriminators:
+    - {nutrient: 1008, per_100g: 27, tol: {pct: 15}, reason: "identity"}
+  assert_also:
+    item_count: 1
+    no_component_inside_composite: true
+    reason: "PARSE_TOOL rule 5a. A cappuccino line PLUS a milk line double-counts the milk. The entry-level assertion is that one level of description is chosen; no per-component check can see this"
+
+- id: composite_spag_bol
+  stage: parse
+  tier: needs_model
+  input: "spaghetti bolognese, 400 g"
+  parse: null
+  expect:
+    fdc_id: null
+    decomposition_min_items: 3
+    must_include_kinds: [pasta, minced_meat, tomato]
+    forbidden: [168911, 168912, 2709745]
+  discriminators:
+    - {nutrient: 1003, per_meal: 30, tol: {pct: 35}, reason: "a 400 g plate of bolognese is roughly 30 g protein. Resolved to 'Spaghetti sauce' alone it is 6 g — the composite failure shows up in protein long before it shows up in energy"}
+  note: "no USDA row for this dish. `spaghetti bolognese` returns 'Spaghetti sauce' 0.400 and 'Spaghetti, spinach, dry' 0.333 — both wrong, both plausible. The right behaviour is decomposition at parse time, which is model work and cannot be tested model-free"
+
+- id: recipe_yield_impossible
+  stage: entry
+  tier: model_free
+  input: "recipe: blondie, ingredients totalling 1587 g, declared as an 850 g tray"
+  parse: null
+  expect:
+    fdc_id: null
+    reject: true
+    reason_code: yield_exceeds_ingredient_mass
+  discriminators:
+    - {nutrient: null, derived: macro_sum_per_100g, expect_max: 100, tol: {abs: 2}, reason: "protein + fat + carbohydrate + fibre cannot exceed 100 g per 100 g of food. The saved blondie held 160 g. This is a closed arithmetic identity, not a heuristic, and it is the only check that catches a proportional error"}
+  assert_also:
+    energy_cross_check_passes: true
+    reason: "recorded deliberately: the Atwater check PASSES on this entry, because every figure was inflated in exact proportion. A suite that only runs the existing guardrails would score this case green"
+  traces: 7
+
+# ==================================== J. absent from USDA
+- id: absent_pickle_juice
+  stage: select
+  tier: model_free
+  input: "100 ml of pickle juice"
+  parse: {label: "pickle juice", search_terms: "pickle brine, liquid from pickled cucumbers", grams: 100, grams_source: stated, state: as_sold}
+  expect: {fdc_id: -3, acceptable: [], forbidden: [2710079, 2709329, 2710097], state: as_sold, grams: 100, basis: per_100g_x_grams_x_yield}
+  discriminators:
+    - {nutrient: 1005, per_100g: 0.9, tol: {abs: 2}, reason: "'Relish, pickle' is 35 g carbohydrate — 39x. Brine is water and salt"}
+    - {nutrient: 1093, per_100g: 757, tol: {pct: 20}, reason: "sodium is what pickle juice is FOR; a relish row reports far less and the reason the user logs it disappears"}
+    - {nutrient: 1008, per_100g: 4.9, tol: {abs: 10}, reason: "130 kcal vs 5. Absolute tolerance because a percentage of 4.9 is meaningless"}
+  traces: 6
+
+- id: absent_pickle_brine_before_food_row
+  stage: candidates
+  tier: model_free
+  input: "100 ml of pickle brine"
+  parse: {label: "pickle brine", search_terms: "pickle brine", grams: 100, grams_source: stated, state: as_sold}
+  expect:
+    fdc_id: null
+    outcome: refuse_and_offer_food_command
+    forbidden: [2710079, 2710071, 2710097, 2706262]
+  discriminators:
+    - {nutrient: null, reason: "the assertion is that NO row is logged. A near-miss here is worse than an unresolved item, because it becomes a permanent alias"}
+  note: "run with the user_product row -3 hidden, to test the behaviour that existed before /food. Best candidate scores 0.368 — below WEAK_MATCH_SIMILARITY, so it should surface as a weak match and never auto-resolve"
+  traces: 6
+
+- id: absent_local_bakery_bun
+  stage: candidates
+  tier: model_free
+  input: "a bułka from the bakery on the corner"
+  parse: {label: "bread roll", search_terms: "roll, white, commercially prepared", grams: 70, grams_source: estimate, state: as_sold, count: 1}
+  expect:
+    fdc_id: null
+    outcome: weak_match_flagged
+    acceptable_if_flagged: [2707660, 2707662]
+  discriminators:
+    - {nutrient: null, reason: "the assertion is that the uncertainty is REPORTED, not that a particular roll is chosen. An unflagged near-neighbour becomes an alias and every future roll inherits it"}
+  note: "the long tail ARCHITECTURE §0.3 says stays automatic and flagged. The failure mode is silent confidence, not a wrong row. Today `Roll, egg bread` (2707659) wins at 0.733 and auto-matches with no flag at all"
+
+- id: absent_supplement_as_food
+  stage: candidates
+  tier: model_free
+  input: "one magnesium tablet"
+  parse: {label: "magnesium tablet", search_terms: "magnesium supplement", grams: 1, grams_source: estimate, state: as_sold, count: 1}
+  expect:
+    fdc_id: null
+    outcome: route_to_supplement_path
+    forbidden_any_food_row: true
+  discriminators:
+    - {nutrient: null, reason: "a supplement resolved to a food row would put label-derived numbers into the food side of day_progress and destroy the amount_food / amount_supplement split that CLAUDE.md requires to survive to the screen"}
+
+# =========================== K. misspellings, abbreviations, Polish, regional
+- id: misspell_chicken
+  stage: candidates
+  tier: model_free
+  input: "200 g chiken breast"
+  parse: {label: "chiken breast", search_terms: "chiken breast", grams: 200, grams_source: stated, state: cooked}
+  expect: {fdc_id: 2705956, acceptable: [2646170, 171140], forbidden: [174608, 2706088], state: cooked, grams: 200, basis: per_100g_x_grams_x_yield}
+  discriminators:
+    - {nutrient: 1093, per_100g: 360, tol: {pct: 45}, reason: "'Chicken breast, roll, oven-roasted' heads today's candidate list and carries 883 mg — a deli product, not a breast. Sodium is the only thing that separates them; protein 14.6 vs 30.2 confirms"}
+    - {nutrient: 1003, per_100g: 30.2, tol: {pct: 12}, reason: "the roll is half the protein. Energy 134 vs 161 would look like ordinary variation"}
+  note: "no candidate reaches 0.62, so this is a model-tier case; the assertion is about the candidate SET as much as the pick"
+
+- id: abbrev_pb
+  stage: parse
+  tier: needs_model
+  input: "30 g pb on toast"
+  parse: null
+  expect: {fdc_id: 2707537, acceptable: [2262072], forbidden: [], state: as_sold, grams: 30, basis: per_100g_x_grams_x_yield}
+  discriminators:
+    - {nutrient: 1004, per_100g: 51.4, tol: {pct: 10}, reason: "identity; peanut butter is half fat and an expansion to anything else moves it"}
+  note: "'pb' returns ZERO candidates from search_foods. Expansion is entirely a parse-stage job; if the model does not expand it, the item is silently dropped from the meal"
+
+- id: polish_kefir
+  stage: candidates
+  tier: model_free
+  input: "250 g kefir"
+  parse: {label: kefir, search_terms: kefir, grams: 250, grams_source: stated, state: as_sold}
+  expect: {fdc_id: 2705394, acceptable: [170904], forbidden: [171301], state: as_sold, grams: 250, basis: per_100g_x_grams_x_yield}
+  discriminators:
+    - {nutrient: 2000, per_100g: 6.9, tol: {pct: 25}, reason: "the strawberry LIFEWAY row is a sweetened product; sugar separates plain from flavoured where energy barely does"}
+    - {nutrient: 1087, per_100g: 124, tol: {pct: 15}, reason: "calcium is what a fermented dairy is logged for"}
+  note: "'kefir' is one of the few Polish-adjacent terms that IS in USDA under its own name, at similarity 1.000"
+
+- id: polish_pierogi
+  stage: candidates
+  tier: model_free
+  input: "6 pierogi"
+  parse: {label: pierogi, search_terms: pierogi, grams: 270, grams_source: estimate, state: cooked, count: 6}
+  expect: {fdc_id: 2708720, acceptable: [], forbidden: [], state: cooked, grams: 270, basis: count_x_unit}
+  discriminators:
+    - {nutrient: 1005, per_100g: 29.6, tol: {pct: 12}, reason: "identity; the FNDDS row is the only pierogi row and is a filled-dumpling composite"}
+  assert_also:
+    coverage_reported: true
+    reason: "one FNDDS row standing in for ruskie / z mięsem / z kapustą. The fillings differ by more than the tolerance and the card must say so rather than implying a measurement"
+
+- id: polish_pierogi_ruskie
+  stage: select
+  tier: model_free
+  input: "6 pierogi ruskie"
+  parse: {label: "pierogi ruskie", search_terms: "pierogi, potato and cheese filled dumplings", grams: 270, grams_source: estimate, state: cooked, count: 6}
+  expect: {fdc_id: 2708720, acceptable: [], forbidden: [], state: cooked, grams: 270, basis: count_x_unit}
+  discriminators:
+    - {nutrient: 1005, per_100g: 29.6, tol: {pct: 12}, reason: "identity"}
+  note: "scores 0.533 — below AUTO_MATCH — with exactly ONE candidate, which is the right one. A model call to choose from a list of one"
+
+- id: polish_kasza_gryczana
+  stage: parse
+  tier: needs_model
+  input: "80 g kaszy gryczanej, ugotowanej"
+  parse: null
+  expect: {fdc_id: 170686, acceptable: [2708362], forbidden: [170685], state: cooked, grams: 80, basis: per_100g_x_grams_x_yield}
+  discriminators:
+    - {nutrient: 1008, per_100g: 92, tol: {pct: 15}, reason: "the DRY groats row is 346 kcal — 3.8x. State and translation must both survive, and the inflected Polish ('ugotowanej') is the state word"}
+    - {nutrient: 1005, per_100g: 19.9, tol: {pct: 15}, reason: "confirms cooked rather than dry independently of energy"}
+  note: "'kasza gryczana' returns ZERO candidates. Everything depends on the model translating to 'buckwheat groats' at parse time. There is no deterministic fallback and no test today"
+
+- id: polish_twarog
+  stage: parse
+  tier: needs_model
+  input: "150 g twarogu półtłustego"
+  parse: null
+  expect:
+    fdc_id: 2705753             # Cheese, cottage, dry curd — the honest near neighbour
+    acceptable: [172181, 2705749]
+    forbidden: [172179, 2705748, 169083, 2707437]   # creamed cottage cheese; SOYBEAN curd
+    state: as_sold
+    grams: 150
+    basis: per_100g_x_grams_x_yield
+  discriminators:
+    - {nutrient: 1003, per_100g: 10.3, tol: {pct: 20}, reason: "twaróg półtłusty is ~18 g protein; dry curd at 10.3 already understates and creamed cottage cheese at 11 understates differently. Wide tolerance is honest here — this row is a stand-in, not a match"}
+    - {nutrient: 1093, per_100g: 372, tol: {pct: 50}, reason: "'Cheese, cottage, salted, dry curd' vs unsalted differ enormously and Polish twaróg is unsalted. Very wide, and still excludes the soybean curd rows at ~10 mg"}
+  assert_also:
+    coverage_reported: true
+    weak_match_flagged: true
+    reason: "the right outcome is a flagged near neighbour with an offer to define it via /food, not a confident match. If this case ever passes silently it is failing"
+  note: "'twarog' and 'twaróg' both return ZERO candidates. Marked needs_model because translation is the whole task"
+
+- id: polish_kielbasa
+  stage: candidates
+  tier: model_free
+  input: "100 g kiełbasa"
+  parse: {label: kielbasa, search_terms: "kielbasa, polish sausage", grams: 100, grams_source: stated, state: as_sold}
+  expect: {fdc_id: 2706188, acceptable: [173877, 173878, 173879, 174607], forbidden: [], state: as_sold, grams: 100, basis: per_100g_x_grams_x_yield}
+  discriminators:
+    - {nutrient: 1093, per_100g: null, tol: {pct: 30}, reason: "read from the row; cured sausage is a major sodium contributor and the four rows differ by preparation"}
+  note: "all four kielbasa rows score ~0.31 against the bare word because trigram similarity punishes a short query against a long description. The right rows are present and none of them can auto-match"
+
+- id: regional_diacritic_stripping
+  stage: candidates
+  tier: model_free
+  input: "100 g kiełbasy"
+  parse: {label: kiełbasa, search_terms: kiełbasa, grams: 100, grams_source: stated, state: as_sold}
+  expect:
+    fdc_id: null
+    outcome: unresolved_or_weak
+  discriminators:
+    - {nutrient: null, reason: "the assertion is behavioural: a label with diacritics must not silently vanish. Today it returns zero candidates and the item is dropped from the meal without a word"}
+  note: "paired with polish_kielbasa to separate 'the row is missing' from 'the query cannot reach the row'"
+
+# ==================================== L. contradictory and implausible
+- id: implausible_mass
+  stage: validate
+  tier: model_free
+  input: "5 kg of chicken breast"
+  parse: {label: "chicken breast", search_terms: "chicken breast, cooked", grams: 5000, grams_source: stated, state: cooked}
+  expect: {fdc_id: 2705956, outcome: warn_and_require_confirm}
+  discriminators:
+    - {nutrient: null, reason: "parse.validate already warns above 1,500 g. The case pins it, and pins that a warning does not silently become a refusal"}
+
+- id: implausible_zero_mass
+  stage: select
+  tier: model_free
+  input: "0 g of rice"
+  parse: {label: rice, search_terms: "rice, white, cooked", grams: 0, grams_source: stated, state: cooked}
+  expect: {fdc_id: null, outcome: item_dropped_silently_is_correct}
+  discriminators:
+    - {nutrient: null, reason: "resolve_items skips grams <= 0. Pinned so a future change does not turn a zero into a resolved row with a default mass"}
+
+- id: contradictory_state
+  stage: validate
+  tier: needs_model
+  input: "200 g of raw cooked rice"
+  parse: null
+  expect: {fdc_id: null, outcome: ask_which_state}
+  discriminators:
+    - {nutrient: null, reason: "state decides a 2.8x energy difference for rice. The only correct response to a contradiction is a question; picking either reading silently is a coin flip on the largest error in the system"}
+
+- id: nonfood_conjunction
+  stage: select
+  tier: model_free
+  input: "cappuccino and 300 ml milk"
+  parse: {label: and, search_terms: and, grams: 100, grams_source: estimate, state: unknown}
+  expect: {fdc_id: null, outcome: item_dropped_silently_is_correct, forbidden_any_food_row: true}
+  discriminators:
+    - {nutrient: null, reason: "'and' matched 'Seven and Seven', a whisky cocktail, at 100 g inside a cappuccino. is_non_food must keep catching it; the regression is one line and the failure is invisible"}
+
+- id: inverting_meatless
+  stage: select
+  tier: model_free
+  input: "400 g breaded fried chicken breast"
+  parse: {label: "chicken breast", search_terms: "chicken breast, breaded, fried, panko crust", grams: 400, grams_source: stated, state: cooked}
+  expect: {fdc_id: 170718, acceptable: [170756, 2706089], forbidden: [167719, 2707469], state: cooked, grams: 400, basis: per_100g_x_grams_x_yield}
+  discriminators:
+    - {nutrient: 1079, per_100g: 0.5, tol: {abs: 2.5}, reason: "the meatless analogue carries 4.3 g fibre per 100 g — 17 g on a 400 g plate of fried chicken, which is the ONLY visible trace the real failure left"}
+    - {nutrient: 1253, per_100g: null, tol: {pct: 40}, reason: "a soy analogue has zero cholesterol; real fried chicken has 60-90 mg. Read from the row"}
+    - {nutrient: 1008, per_100g: null, tol: {pct: 25}, reason: "recorded as insufficient on purpose: 234 vs ~290 kcal passes the Atwater check, which is why this failure survived"}
+  assert_also: {inverts_meaning_blocks_automatch: true}
+
+- id: inverting_vegan_requested
+  stage: select
+  tier: model_free
+  input: "150 g vegan chicken nuggets"
+  parse: {label: "vegan chicken nuggets", search_terms: "chicken, meatless, breaded, fried", grams: 150, grams_source: stated, state: cooked}
+  expect: {fdc_id: 167719, acceptable: [2707469], forbidden: [2706096, 170718], state: cooked, grams: 150, basis: per_100g_x_grams_x_yield}
+  discriminators:
+    - {nutrient: 1079, per_100g: 4.3, tol: {pct: 25}, reason: "the inverse of inverting_meatless: when the analogue is what was asked for, the analogue must win. Fibre is the same separator pointing the other way"}
+    - {nutrient: 1253, per_100g: 0, tol: {max: 5}, reason: "real nuggets carry 36 mg. Zero cholesterol confirms the analogue"}
+  pair_with: inverting_meatless
+  reason: "a guard that blocks analogues wholesale would pass inverting_meatless and fail this. Neither case is a test on its own"
+
+- id: duplicate_fdc_in_entry
+  stage: entry
+  tier: model_free
+  input: "correction: 80 g turkey breast (applied to an entry already holding a 400 g turkey breast)"
+  parse: null
+  expect:
+    outcome: replace_not_append
+    forbidden_state: two_components_same_fdc_id
+  discriminators:
+    - {nutrient: 1008, per_meal: 106, tol: {pct: 15}, reason: "the entry logged 907 kcal of a bird eaten once. The USDA row was correct throughout — the number is the only evidence and it lives at entry level, not component level"}
+  assert_also:
+    no_duplicate_fdc_id_in_entry: true
+    reason: "no check anywhere notices one entry containing the same fdc_id twice. This is an entry-level invariant with no current owner"
+  traces: 8
+
+- id: album_one_meal
+  stage: parse
+  tier: needs_model
+  input: "two photographs of one 330 ml bottle, front and back"
+  parse: null
+  expect:
+    record_meal_calls: 1
+    item_count_max: 1
+    outcome: one_component_330g
+  discriminators:
+    - {nutrient: 2000, per_meal: 30.5, tol: {pct: 20}, reason: "the doubled parse gave 61 g of sugar from one drink — more than a day's ceiling. Sugar is the discriminator because the doubling is proportional and energy is internally consistent with itself"}
+  assert_also:
+    record_meal_call_count: 1
+    reason: "asserting one confirmation card is NOT the guarantee. The card count stayed at one while the contents doubled"
+  traces: 5
+
+# ==================================== M. the alias layer, tested on purpose
+- id: alias_hit_returns_cached
+  stage: select
+  tier: model_free
+  input: "blondie"
+  seed_alias: {alias: blondie, fdc_id: -289}
+  expect: {fdc_id: -289, acceptable: [], forbidden: [-249], resolved_by: alias, model_calls: 0}
+  discriminators:
+    - {nutrient: 1008, per_100g: 509.7, tol: {pct: 2}, reason: "identity"}
+  assert_also: {model_calls: 0, reason: "the alias tier is the steady state; a change that quietly stops using it multiplies cost and latency by the number of meals"}
+
+- id: alias_to_unusable_row_is_skipped
+  stage: select
+  tier: model_free
+  input: "butter"
+  seed_alias: {alias: butter, fdc_id: 748608}
+  expect: {fdc_id: 2710186, resolved_by: search, forbidden: [748608]}
+  discriminators:
+    - {nutrient: 1008, per_100g: null, tol: {pct: 5}, reason: "an alias is a cache of a past resolution and a past resolution can be wrong. UNUSABLE_ROW is applied on the alias path too — this case proves it still is, and extends the definition to a row with no macros at all"}
+  note: "748608 (Oil, olive, extra virgin) is used as the stand-in unusable row because the butter one is gone. It has 30 nutrient rows, no energy, no 1004, and PASSES today's UNUSABLE_ROW"
+  traces: 2
+
+- id: alias_never_repointed_when_pinned
+  stage: select
+  tier: model_free
+  input: "mince"
+  seed_alias: {alias: mince, fdc_id: 174036, pinned: true}
+  expect: {fdc_id: 174036, resolved_by: alias}
+  assert_also:
+    alias_unchanged_after_resolution: true
+    reason: "upsert_alias guards pinned rows. Without it one bad parse six months from now silently redirects 'mince' and every subsequent log is wrong with no trace"
+  discriminators:
+    - {nutrient: 1004, per_100g: 20.0, tol: {pct: 10}, reason: "identity"}
+
+- id: alias_not_written_on_weak_match
+  stage: select
+  tier: model_free
+  input: "100 ml of pickle brine"
+  expect: {fdc_id: null, outcome: weak_match_flagged}
+  assert_also:
+    no_alias_written: true
+    reason: "131 unverified aliases exist because every resolution writes one. A weak or model-tier match that the user has not confirmed must not become permanent — 'a wrong match is not one wrong meal, it is every future meal containing that food'"
+  discriminators:
+    - {nutrient: null, reason: "behavioural"}
+
+# ==================================== N. nutrient-layer cases
+- id: sugar_canonical_fold
+  stage: nutrient
+  tier: model_free
+  input: "one day: 240 g cooked pasta + 200 g whole milk + 100 g banana"
+  components:
+    - {fdc_id: 2708357, grams: 240}   # FNDDS, sugar under 1063
+    - {fdc_id: 2705385, grams: 200}   # FNDDS, sugar under 1063
+    - {fdc_id: 173944, grams: 100}    # SR Legacy, sugar under 2000
+  expect:
+    day_sugar_g: 23.2
+    basis: canonical_fold_1063_into_2000
+  discriminators:
+    - {nutrient: 2000, per_meal: 23.2, tol: {pct: 5}, reason: "without the fold this reads 12.2 g — a correct total of the wrong half. THE case: energy, protein, fat and carbohydrate are all exactly right and only sugar is wrong"}
+  assert_also:
+    coverage_reported: true
+  traces: 4
+
+- id: energy_atwater_fallback
+  stage: nutrient
+  tier: model_free
+  input: "250 g raw chicken breast"
+  components:
+    - {fdc_id: 2646170, grams: 250}
+  expect:
+    meal_kcal: 281
+    basis: energy_from_2048_when_1008_absent
+  discriminators:
+    - {nutrient: 1008, per_meal: 281, tol: {pct: 5}, reason: "2646170 has no 1008 at all. normalise_energy fills it from 2048 (112.2/100 g). Without that the plate's largest item contributes 0 kcal and energy_cross_check cannot see it, because its own guard skips a zero"}
+  assert_also:
+    energy_never_summed_across_1008_2047_2048: true
+    reason: "the Atwater ids are ALTERNATIVES, not addends. Folding them the way 1063/2000 is folded would treble a Foundation row"
+
+- id: no_zero_fill_micronutrient
+  stage: nutrient
+  tier: model_free
+  input: "150 g chickpeas (canned, drained) + 100 g olive oil row with a thin panel"
+  components:
+    - {fdc_id: 2644288, grams: 150}
+    - {fdc_id: 2710186, grams: 15}
+  expect:
+    basis: missing_is_absent_not_zero
+  discriminators:
+    - {nutrient: 1079, coverage_max: 0.95, reason: "2644288 reports no fibre. The day's fibre must be reported with coverage below 1.0, never as a confident total that silently excluded 150 g of chickpeas"}
+  assert_also:
+    coverage_reported: true
+    reason: "invariant 6. A phantom deficiency is a wrong number that looks like a health finding"
+
+- id: negative_nutrient_value
+  stage: nutrient
+  tier: model_free
+  input: "200 g raw chicken breast, meat and skin"
+  components:
+    - {fdc_id: 2727569, grams: 200}
+  expect:
+    basis: usda_value_used_verbatim
+  discriminators:
+    - {nutrient: 1005, per_100g: -0.43, tol: {abs: 0.01}, reason: "USDA really does publish a NEGATIVE carbohydrate for this row (carbohydrate by difference on a high-fat cut). food_nutrient is a faithful copy and must not be edited — but a day total that goes negative on a nutrient should be visible, not silently netted off another food's carbohydrate"}
+  assert_also:
+    negative_total_flagged: true
+    reason: "there is no owner for this today. Recorded so the reconciliation decides deliberately rather than discovering it"
