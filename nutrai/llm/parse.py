@@ -264,6 +264,29 @@ async def _mass_for(user_id: int, fdc_id: int, it: dict[str, Any],
     return choose_mass(grams, source, low=low, high=high, history=[])
 
 
+# A slash or an "or" is the model saying it cannot tell two foods apart.
+#
+# It is not a food name, and searching it as one finds nothing whatsoever:
+# "pancetta/guanciale" scores 0.200 at best — against `Guava paste` — which is
+# under pg_trgm's 0.3 threshold, while plainto_tsquery treats the slashed
+# string as a single token that matches no description. Zero candidates, and a
+# card saying the database holds nothing like cured pork, which holds eleven
+# bacon rows and a pork jowl.
+#
+# Each side searched on its own reaches them: `Pork, belly` at 0.440 and
+# `Pork, cured, bacon, cooked, baked` at 0.324. Still short of an auto-match,
+# which is correct — the model was genuinely unsure and a human should pick —
+# but it now asks with real candidates instead of claiming there are none.
+_ALTERNATION = re.compile(r"\s*(?:/|\bor\b)\s*", re.IGNORECASE)
+
+
+def _alternatives(query: str) -> list[str]:
+    """The separate foods a query is offering a choice between."""
+    parts = [p.strip(" ,;") for p in _ALTERNATION.split(query)]
+    parts = [p for p in parts if len(p) > 2 and not is_non_food(p)]
+    return parts if len(parts) > 1 else []
+
+
 async def _candidates(it: dict[str, Any], label: str, user_id: int | None = None,
                       dish_name: str | None = None) -> list[dict[str, Any]]:
     """Search on the model's `search_terms` *and* on the user's own label.
@@ -292,6 +315,7 @@ async def _candidates(it: dict[str, Any], label: str, user_id: int | None = None
     q_user = label.strip()
     q_dish = (dish_name or "").strip()
     queries = [q for q in (q_model, q_user, q_dish) if q]
+    queries += [side for q in list(queries) for side in _alternatives(q)]
     pooled: dict[int, dict[str, Any]] = {}
     per_query: dict[int, dict[str, float]] = {}
     for q in dict.fromkeys(queries):

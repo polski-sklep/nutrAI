@@ -36,7 +36,7 @@ PARSE_TOOL = {
                         },
                         "search_terms": {
                             "type": "string",
-                            "description": "A precise phrase for looking this up in USDA FoodData Central, e.g. 'beef, ground, 15% fat, raw'. Include the cut, fat percentage, and preparation if visible.",
+                            "description": "A precise phrase for looking this up in USDA FoodData Central, e.g. 'beef, ground, 15% fat, raw'. Include the cut, fat percentage, and preparation if visible. USDA is an American database and holds almost no foreign food WORDS: 'pancetta', 'guanciale', 'twarog', 'kasza gryczana' and 'devolay' return literally nothing. So when the label is regional, foreign or a brand, search_terms must be the plain American-English description of what the food IS, never a transliteration of what it is called: pancetta -> 'bacon, cured pork'; guanciale -> 'cured pork jowl'; twarog -> 'cheese, farmer'; kasza gryczana -> 'buckwheat groats, roasted'. Never put two foods in one entry, and never join alternatives with '/' or 'or' - if you cannot tell which of two foods it is, pick the likelier one and lower confidence.",
                         },
                         "count": {
                             "type": "number",

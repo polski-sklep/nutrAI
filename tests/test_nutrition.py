@@ -169,3 +169,25 @@ def test_an_unmeasured_nutrient_is_not_reported_to_the_planner_as_zero():
     ok = _median_row(1003, "Protein", "g", 142.0, 138.0, 130.0, None)
     assert ok.endswith("| ok")
     assert "142.0" in ok and "138.0" in ok
+
+
+def test_a_slashed_label_is_searched_as_separate_foods():
+    """"pancetta/guanciale" is two foods, and as one string it finds nothing.
+
+    Searched whole it scores 0.200 at best — against `Guava paste` — which is
+    under pg_trgm's 0.3 threshold, while plainto_tsquery treats the slashed
+    string as a single token matching no description. Zero candidates, and a
+    card telling you the database holds nothing like cured pork, which holds
+    eleven bacon rows and a pork jowl.
+    """
+    from nutrai.llm.parse import _alternatives
+
+    assert _alternatives("pancetta/guanciale") == ["pancetta", "guanciale"]
+    assert _alternatives("olive oil/rendered fat") == ["olive oil", "rendered fat"]
+    assert _alternatives("bacon or pancetta") == ["bacon", "pancetta"]
+
+    # Only a genuine choice expands; an ordinary label is left alone, and a
+    # trailing conjunction leaves one usable side, which is not a choice.
+    assert _alternatives("chicken breast") == []
+    assert _alternatives("cheese, parmesan, grated") == []
+    assert _alternatives("bacon or") == []
