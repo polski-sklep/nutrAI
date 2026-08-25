@@ -86,10 +86,15 @@ async def _chosen(case: dict, user_id: int) -> tuple[dict | None, list[dict], st
         None)
     if own is not None and not parse_mod.inverts_meaning(asked_for, own["description"]):
         return own, cands, "own_product"
-    head = cands[0]
-    if (float(head["sim"] or 0) >= AUTO_MATCH_SIMILARITY
-            and not parse_mod.inverts_meaning(asked_for, head["description"])):
-        return head, cands, "auto"
+    auto = next(
+        (c for c in cands
+         if float(c["sim"] or 0) >= AUTO_MATCH_SIMILARITY
+         and not parse_mod.inverts_meaning(asked_for, c["description"])
+         and not parse_mod.state_conflicts(item.get("state"), c["description"])
+         and not parse_mod.unrequested_qualifier(asked_for, c["description"])),
+        None)
+    if auto is not None:
+        return auto, cands, "auto"
     return None, cands, "would_ask_model"
 
 
@@ -166,6 +171,21 @@ async def run_case(case: dict, user_id: int) -> Result:
 
     # select / nutrient / yield / validate: which row is actually taken.
     if chosen is None:
+        # Declining to guess is not the same as guessing wrong, and a runner
+        # that calls no model cannot tell them apart by outcome — so it tells
+        # them apart by what was on offer. If the expected row is in the list
+        # the resolver handed over, tier 3 has everything it needs and this is
+        # the design working, not a defect. If it is not, the model is being
+        # asked to choose between wrong answers and the failure is real.
+        #
+        # The distinction matters because the guards deliberately convert
+        # confident wrong matches into escalations: `state_conflicts` turned
+        # `near_chicken_breast_cooked` from taking a raw row into asking, and
+        # scoring that as a regression would argue for putting the bug back.
+        if any(int(c["fdc_id"]) in ok_ids for c in cands):
+            return Result(case, "escalated",
+                          f"declined to auto-match; {want} is on the list "
+                          f"(head {head['description']!r} sim={float(head['sim']):.2f})")
         return Result(case, "fail", f"{how}: nothing auto-matched"
                       + (f", head {head['description']!r} sim={float(head['sim']):.2f}"
                          if head else ""))
@@ -238,7 +258,8 @@ async def main() -> int:
         counts[r.status] = counts.get(r.status, 0) + 1
 
     if not a.quiet:
-        for status, mark in (("fail", "✗"), ("unsupported", "–"), ("skip", "·")):
+        for status, mark in (("fail", "✗"), ("escalated", "→"),
+                             ("unsupported", "–"), ("skip", "·")):
             group = [r for r in results if r.status == status]
             if not group:
                 continue
@@ -249,12 +270,13 @@ async def main() -> int:
 
     by_stage: dict[str, tuple[int, int]] = {}
     for r in results:
-        if r.status in ("pass", "fail"):
+        if r.status in ("pass", "fail", "escalated"):
             p_, n_ = by_stage.get(r.case["stage"], (0, 0))
             by_stage[r.case["stage"]] = (p_ + (r.status == "pass"), n_ + 1)
     for stage, (passed, total) in sorted(by_stage.items()):
         print(f"   {stage:<12} {passed}/{total}")
     print(f"\n{counts.get('pass', 0)} pass · {counts.get('fail', 0)} fail · "
+          f"{counts.get('escalated', 0)} escalated with the right row on the list · "
           f"{counts.get('skip', 0)} need a model · "
           f"{counts.get('unsupported', 0)} not driven yet")
 
@@ -264,8 +286,11 @@ async def main() -> int:
     record = {"pass": counts.get("pass", 0),
               "graded": counts.get("pass", 0) + counts.get("fail", 0),
               "by_stage": {k: list(v) for k, v in sorted(by_stage.items())},
+              "escalated": counts.get("escalated", 0),
               "known_failures": sorted(r.case["id"] for r in results
-                                       if r.status == "fail")}
+                                       if r.status == "fail"),
+              "known_escalations": sorted(r.case["id"] for r in results
+                                          if r.status == "escalated")}
     if a.baseline:
         BASELINE.write_text(json.dumps(record, indent=2) + "\n")
         print(f"\nbaseline written: {BASELINE.relative_to(ROOT)}")

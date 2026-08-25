@@ -191,3 +191,60 @@ def test_a_slashed_label_is_searched_as_separate_foods():
     assert _alternatives("chicken breast") == []
     assert _alternatives("cheese, parmesan, grated") == []
     assert _alternatives("bacon or") == []
+
+
+def test_a_candidate_that_contradicts_the_declared_state_is_not_auto_matched():
+    """`state` is the field the parse schema calls the largest error source.
+
+    The resolver read it to pick a mass and never to pick a row, so on
+    25 Aug "egg white, fried" auto-matched `Egg, white, dried` at 0.625 —
+    roughly 380 kcal per 100 g against 52 — and "broccoli, boiled" auto-matched
+    `Broccoli, raw` at 0.692. Both are plausible numbers off the wrong row.
+    """
+    from nutrai.llm.parse import state_conflicts
+
+    assert state_conflicts("cooked", "Egg, white, dried") == "dried"
+    assert state_conflicts("cooked", "Broccoli, raw") == "raw"
+    assert state_conflicts("raw", "Egg, whole, cooked, fried") == "cooked"
+    assert state_conflicts("dry", "Pasta, cooked") == "cooked"
+
+    # No contradiction: agreeing, silent, or a row covering both forms.
+    assert state_conflicts("cooked", "Pork, cured, bacon, cooked, baked") is None
+    assert state_conflicts("raw", "Chicken, breast, boneless, skinless, raw") is None
+    assert state_conflicts("cooked", "Cheese, parmesan, grated") is None
+    assert state_conflicts("dry", "Pasta, dry, enriched") is None
+
+    # `as_sold` and `unknown` say the state was never established, not that it
+    # was neutral, so they rule nothing out.
+    assert state_conflicts("unknown", "Egg, white, dried") is None
+    assert state_conflicts("as_sold", "Broccoli, raw") is None
+
+    # "fresh" means uncured in `Pork, fresh, belly`, not uncooked.
+    assert state_conflicts("cooked", "Pork, fresh, belly") is None
+
+
+def test_a_qualifier_the_query_never_asked_for_blocks_an_auto_match():
+    """USDA writes `Food, qualifier, qualifier`, and the qualifier can be a
+    different food wearing the same name.
+
+    "spaghetti, cooked" auto-matched `Spaghetti, spinach, cooked` at 0.739 and
+    220 g of it went into a carbonara, carrying no fibre figure at all.
+    """
+    from nutrai.llm.parse import unrequested_qualifier as uq
+
+    assert uq("spaghetti, cooked", "Spaghetti, spinach, cooked") == "spinach"
+    assert uq("chicken breast", "Chicken breast, roll, oven-roasted") == "roll"
+    assert uq("olive oil", "Oil, sesame, salad or cooking") == "sesame"
+
+    # The first segment is the food's name: a different name is a weak match,
+    # not a narrowed one, and is judged by similarity like anything else.
+    assert uq("spaghetti, cooked", "Pasta, cooked") is None
+
+    # Preparation words are the state, judged by state_conflicts instead.
+    assert uq("bacon cured pork", "Pork, cured, bacon, cooked, baked") is None
+
+    # Fortification qualifies how the same food was processed, not which food
+    # it is. search_foods names this case: `Rice, white, long-grain, regular,
+    # enriched, cooked` is the right answer for plain cooked rice at 0.837.
+    assert uq("rice, white, long-grain, regular, cooked",
+              "Rice, white, long-grain, regular, enriched, cooked") is None

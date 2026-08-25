@@ -43,7 +43,7 @@ def test_golden_set_does_not_regress() -> None:
     floor = json.loads(golden.BASELINE.read_text())
     cases = yaml.safe_load(golden.GOLDEN.read_text())["cases"]
 
-    async def run() -> tuple[list[str], list[str], list[str]]:
+    async def run() -> tuple[list[str], list[str], list[str], list[str]]:
         # One loop for the whole suite: `db.pool()` caches a pool bound to the
         # running loop, so a second asyncio.run would inherit a dead one.
         try:
@@ -51,17 +51,28 @@ def test_golden_set_does_not_regress() -> None:
             results = [await golden.run_case(c, 2) for c in cases]
             return (bad_ids,
                     [r.case["id"] for r in results if r.status == "pass"],
-                    [r.case["id"] for r in results if r.status == "fail"])
+                    [r.case["id"] for r in results if r.status == "fail"],
+                    [r.case["id"] for r in results if r.status == "escalated"])
         finally:
             await db.close()
 
-    bad_ids, passed, failed = asyncio.run(run())
+    bad_ids, passed, failed, escalated = asyncio.run(run())
 
     assert not bad_ids, "golden set names rows that are gone: " + "; ".join(bad_ids)
 
+    # Failing is the regression; escalating is not.
+    #
+    # A guard that converts a confident wrong match into a question is the
+    # design working — `state_conflicts` moved near_chicken_thigh_cooked out of
+    # auto-match, and that case exists precisely to say a cooked mass must not
+    # land on a raw row at yield_factor 1.0. Counting that as a regression
+    # would be an argument for putting the bug back.
     lost = sorted(set(failed) - set(floor["known_failures"]))
-    assert not lost, ("these passed when the baseline was recorded and now fail: "
-                      + ", ".join(lost))
-    assert len(passed) >= floor["pass"], (
-        f"{len(passed)} passing, floor is {floor['pass']} — "
-        "run scripts/golden.py to see which")
+    assert not lost, ("these did not fail when the baseline was recorded and "
+                      "now do: " + ", ".join(lost))
+
+    settled = len(passed) + len(escalated)
+    floor_settled = floor["pass"] + floor.get("escalated", 0)
+    assert settled >= floor_settled, (
+        f"{len(passed)} pass + {len(escalated)} escalated = {settled}, "
+        f"floor is {floor_settled} — run scripts/golden.py to see which")

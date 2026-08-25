@@ -412,6 +412,100 @@ def inverts_meaning(query: str, description: str) -> bool:
     return any(term in d for term in INVERTING_TERMS)
 
 
+# Words in a USDA description that assert how the food was treated.
+#
+# "fresh" is deliberately absent: `Pork, fresh, belly` means uncured, not
+# uncooked, and reading it as a raw marker would block the right row.
+_RAW_WORDS = ("raw", "uncooked", "unprepared")
+_COOKED_WORDS = (
+    "cooked", "boiled", "baked", "fried", "roasted", "grilled", "broiled",
+    "steamed", "stewed", "braised", "microwaved", "sauteed", "sautéed",
+    "poached", "toasted", "heated", "prepared",
+)
+_DRY_WORDS = ("dry", "dried", "dehydrated", "powder", "powdered")
+
+# What each declared state rules out. `as_sold` and `unknown` rule out nothing,
+# which is the honest reading of them: they say the state was not established,
+# not that it was neutral.
+_STATE_EXCLUDES: dict[str, tuple[str, ...]] = {
+    "cooked": _RAW_WORDS + _DRY_WORDS,
+    "raw": _COOKED_WORDS + _DRY_WORDS,
+    "dry": _COOKED_WORDS,
+}
+
+
+def _has_word(description: str, words: tuple[str, ...]) -> str | None:
+    d = re.split(r"[^a-z]+", description.lower())
+    return next((w for w in words if w in d), None)
+
+
+def state_conflicts(state: str | None, description: str) -> str | None:
+    """The word by which a candidate contradicts the state that was declared.
+
+    `state` is the one field the parse schema calls out as "the largest error
+    source in the system", and until now the resolver read it only to pick a
+    mass — never to pick a row. It is the strongest signal available and it was
+    being thrown away: on 25 Aug "egg white, fried" auto-matched `Egg, white,
+    dried` at 0.625, roughly 380 kcal per 100 g against 52, and "broccoli,
+    boiled" auto-matched `Broccoli, raw` at 0.692. Both are plausible numbers
+    from the wrong row, which is the failure mode nothing downstream catches.
+
+    Only a contradiction counts. A description that says nothing about its
+    state is not evidence against anything, so it passes.
+    """
+    excluded = _STATE_EXCLUDES.get((state or "").lower())
+    if not excluded:
+        return None
+    bad = _has_word(description, excluded)
+    if bad is None:
+        return None
+    # A description asserting both — `Pasta, dry, enriched, cooked` — is not
+    # contradicting anything; it is covering two forms in one row, and the
+    # matching word is the one that decides.
+    keep = {"cooked": _COOKED_WORDS, "raw": _RAW_WORDS, "dry": _DRY_WORDS}[
+        (state or "").lower()]
+    return None if _has_word(description, keep) else bad
+
+
+_QUALIFIER_STOP = frozenset({
+    "and", "or", "with", "without", "in", "of", "the", "a", "an", "by", "as",
+    "to", "ns", "nfs", "all", "types", "commercial", "commercially", "solids",
+    "eaten", "not",
+    # Fortification and grading, which qualify how the same food was processed
+    # rather than which food it is. `search_foods` already names the case this
+    # protects: `Rice, white, long-grain, regular, enriched, cooked` is the
+    # right answer for plain cooked rice, and treating "enriched" as a
+    # narrowing qualifier would have blocked it at 0.837.
+    "enriched", "unenriched", "fortified", "unfortified", "regular", "plain",
+    "generic", "unspecified", "prepared", "unprepared",
+})
+
+
+def unrequested_qualifier(query: str, description: str) -> str | None:
+    """A qualifier the description adds that the query never asked for.
+
+    USDA writes `Food, qualifier, qualifier`. A segment after the first comma
+    that shares no word with the query narrows the row to a *different food*
+    that happens to be spelled the same way: "spaghetti, cooked" auto-matched
+    `Spaghetti, spinach, cooked` at 0.739 on 25 Aug, and 220 g of it went into
+    a carbonara carrying no fibre figure at all.
+
+    Preparation words are exempt — they are the state, which `state_conflicts`
+    judges properly and which the query often leaves unstated. Only the first
+    segment is exempt from the check itself: it is the food's name, and a
+    different name is a weak match rather than a narrowed one.
+    """
+    q = {w for w in re.split(r"[^a-z0-9]+", query.lower()) if w}
+    prep = _RAW_WORDS + _COOKED_WORDS + _DRY_WORDS
+    for seg in description.split(",")[1:]:
+        words = {w for w in re.split(r"[^a-z0-9]+", seg.lower())
+                 if w and w not in _QUALIFIER_STOP}
+        if not words or words & q or words <= set(prep):
+            continue
+        return seg.strip()
+    return None
+
+
 def _as_float(v: Any) -> float | None:
     """asyncpg hands back Decimal for a numeric; the dataclass wants a float."""
     return None if v is None else float(v)
@@ -579,15 +673,23 @@ async def resolve_items(user_id: int, items: list[dict[str, Any]],
                                   float(it.get("grams", 0) or 0))
             continue
 
-        if (
-            cands
-            and float(cands[0]["sim"] or 0) >= AUTO_MATCH_SIMILARITY
-            and not inverts_meaning(asked_for, cands[0]["description"])
-        ):
-            await _accept(label, cands[0]["fdc_id"], it,
-                          tier="auto", chosen=cands[0], cands=cands)
-            _event(label, queries, cands, chosen=int(cands[0]["fdc_id"]), tier="auto")
-            await db.upsert_alias(user_id, label, cands[0]["fdc_id"], float(it.get("grams", 0) or 0))
+        # The best candidate that survives every guard, not merely the best
+        # candidate. Reading the head alone meant one disqualifying word sent
+        # the whole item to the model even when the row below it was right,
+        # and — far worse — that a disqualified head was taken on trust
+        # whenever its score cleared the bar.
+        auto = next(
+            (c for c in cands
+             if float(c["sim"] or 0) >= AUTO_MATCH_SIMILARITY
+             and not inverts_meaning(asked_for, c["description"])
+             and not state_conflicts(it.get("state"), c["description"])
+             and not unrequested_qualifier(asked_for, c["description"])),
+            None)
+        if auto is not None:
+            await _accept(label, auto["fdc_id"], it,
+                          tier="auto", chosen=auto, cands=cands)
+            _event(label, queries, cands, chosen=int(auto["fdc_id"]), tier="auto")
+            await db.upsert_alias(user_id, label, auto["fdc_id"], float(it.get("grams", 0) or 0))
             continue
         if not cands:
             # The failure this whole table exists for: every query searched,

@@ -1,6 +1,6 @@
 {
-  "pass": 26,
-  "graded": 37,
+  "pass": 25,
+  "graded": 34,
   "by_stage": {
     "candidates": [
       14,
@@ -19,10 +19,11 @@
       1
     ],
     "yield": [
-      2,
+      1,
       2
     ]
   },
+  "escalated": 3,
   "known_failures": [
     "broccoli_boiled_nosalt",
     "chicken_breast_skin_on",
@@ -32,7 +33,10 @@
     "misspell_chicken",
     "near_chicken_breast_cooked",
     "pasta_cooked",
-    "pasta_dry_no_plain_row",
+    "pasta_dry_no_plain_row"
+  ],
+  "known_escalations": [
+    "near_chicken_thigh_cooked",
     "polish_pierogi_ruskie",
     "tuna_water_drained"
   ]

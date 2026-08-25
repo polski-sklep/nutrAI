@@ -428,6 +428,45 @@ Rules when adding a message:
   It should now be unreachable; a "markup rejected by Telegram" line in the logs
   means something above was skipped.
 
+## Two guards on auto-match, and why escalating is a win
+
+`resolve_items` took the head of the candidate list whenever it cleared
+`AUTO_MATCH_SIMILARITY` and did not invert the food. Two more things now
+disqualify a row, and the auto-match takes the best candidate that survives all
+of them rather than only inspecting the head.
+
+**`state_conflicts`.** The parse schema calls `state` "the largest error source
+in the system" and the resolver read it only to pick a mass. On 25 Aug 2026
+"egg white, fried" auto-matched `Egg, white, dried` at 0.625 — about 380 kcal
+per 100 g against 52 — and "broccoli, boiled" took `Broccoli, raw` at 0.692.
+Only a contradiction counts: a description silent about its state is not
+evidence against anything, `as_sold` and `unknown` rule nothing out, and a row
+naming both forms is covering both rather than contradicting one. "fresh" is
+deliberately not a raw marker — `Pork, fresh, belly` means uncured.
+
+**`unrequested_qualifier`.** USDA writes `Food, qualifier, qualifier`, and a
+qualifier can be a different food wearing the same name: "spaghetti, cooked"
+took `Spaghetti, spinach, cooked` at 0.739, and 220 g of it went into a
+carbonara carrying no fibre figure at all. Only segments after the first are
+checked — the first is the food's name, and a different name is a weak match
+rather than a narrowed one. Preparation words are exempt (that is
+`state_conflicts`' job) and so are fortification and grading words: `search_foods`
+already names `Rice, white, long-grain, regular, enriched, cooked` as the right
+answer for plain cooked rice, and treating "enriched" as narrowing blocks it.
+
+**A blocked auto-match is an escalation, not a refusal**, and the golden runner
+now scores it as its own outcome. A case where the resolver declines and the
+expected row is on the list it hands the model is `escalated`, not `failed`:
+tier 3 has everything it needs, and counting it as a regression would be an
+argument for putting the bug back. `near_chicken_thigh_cooked` moved from
+`pass` to `escalated` and that is the case working — it exists to say a cooked
+mass must not land on a raw row at `yield_factor` 1.0, and only the model tier
+ever sets a yield factor. It had been passing because the runner checked the
+fdc_id and not `yield_factor_not_one`.
+
+`baseline.json` therefore floors `pass + escalated` and pins the failing ids by
+name. Failures fell from 11 to 9.
+
 ## Defining a food has to return to the meal that asked
 
 The "define it yourself" button is offered *by a card*, about an item *that
