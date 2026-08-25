@@ -3784,16 +3784,17 @@ async def _log_one_component(msg: Message, u: asyncpg.Record, comp: dict[str, An
     resolved = [ResolvedComponent(
         label, int(comp["fdc_id"]), grams, 1.0,
         estimate.sigma_for(grams, source), source)]
+    profiles = await db.profiles_for([int(comp["fdc_id"])])
+    totals = total_nutrients(resolved, profiles)
     entry_id = await db.create_pending_entry(
         u["id"], render._title(label), resolved,
-        source="repeat", slot=dsl.slot_for_hour(_local_now(u).hour),
+        source="repeat",
+        slot=dsl.slot_for_hour(_local_now(u).hour, kcal=totals.get(ENERGY_KCAL)),
         confidence=None, model=None, parse={"one_component": True},
         photo_file_id=None, dish_id=None, when=_when_from_ops(cmd.ops, u),
         tz=u["tz"], rollover_hour=u["day_rollover_hour"],
         grams_sources=[source],
     )
-    profiles = await db.profiles_for([int(comp["fdc_id"])])
-    totals = total_nutrients(resolved, profiles)
     await msg.answer(
         render.confirm_card(render._title(label), resolved, totals,
                             confidence=None, warnings=[]),
@@ -4057,7 +4058,8 @@ async def _present(
         # so it counts towards nothing.
         entry_id = await db.create_pending_entry(
             u["id"], parsed.dish_name, [],
-            source=source, slot=dsl.slot_for_hour(_local_now(u).hour, parsed.slot),
+            source=source,
+            slot=dsl.slot_for_hour(_local_now(u).hour, parsed.slot),
             confidence=parsed.confidence, model=parsed.model,
         parse={**(parsed.raw or {}), "_weak": [w[0] for w in res.weak_matches]},
             photo_file_id=photo_file_id, dish_id=None, tz=u["tz"],
@@ -4088,7 +4090,8 @@ async def _present(
     slug = _slugify(parsed.dish_name)
     # The clock decides the meal, not the model — see dsl.slot_for_hour. On a
     # backdated entry it is the clock of the meal, not of the typing.
-    slot = dsl.slot_for_hour((when or _local_now(u)).hour, parsed.slot)
+    slot = dsl.slot_for_hour((when or _local_now(u)).hour, parsed.slot,
+                             kcal=totals.get(ENERGY_KCAL))
     dish_name = render._title(parsed.dish_name)
     # A parse is a proposal. It must not rewrite the dish it collides with
     # by slug until somebody accepts it — see upsert_dish.

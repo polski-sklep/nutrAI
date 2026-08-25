@@ -3505,3 +3505,40 @@ def test_your_own_food_beats_a_generic_row(database_url):
         await p.execute("DELETE FROM food WHERE fdc_id = $1", fdc)
 
     run(check())
+
+
+@pytest.mark.integration
+def test_a_short_query_reaches_a_long_usda_name(database_url):
+    """"Brownie" came back as "no match in the food database" against nine
+    brownie rows.
+
+    Trigram similarity falls as the description grows, so a short query scores
+    badly however exactly it appears: 0.29 against `Cookie, brownie, without
+    icing` and 0.33 against `Sugar, brown`. The model was handed a list headed
+    by brown sugar and declined to pick, correctly.
+
+    Containment is the stronger signal — `@@ plainto_tsquery` fires only when
+    every word of the query is present — and it scales the score rather than
+    overriding it, because an override put "Pretzels, soft, ready-to-eat,
+    unsalted, no butter" at the head of `unsalted butter`.
+    """
+    from nutrai import db
+
+    async def check() -> None:
+        cases = {
+            "brownie": "brownie",
+            "unsalted butter": "butter,",
+            "egg whites, fried": "egg white",
+            "rye bread": "bread, rye",
+            "beef, ground": "beef, ground",
+            "whole milk": "milk, whole",
+        }
+        wrong = []
+        for query, want in cases.items():
+            rows = await db.search_foods(query, limit=3, user_id=None)
+            head = rows[0]["description"].lower() if rows else ""
+            if want not in head:
+                wrong.append(f"{query!r} -> {head!r}")
+        assert not wrong, wrong
+
+    run(check())

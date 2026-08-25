@@ -538,8 +538,23 @@ def resolve_date(op: SetDate, today: "dt.date") -> "dt.date":
 SLOT_BOUNDARIES = ((11, "breakfast"), (15, "lunch"), (17, "snack"), (22, "dinner"))
 
 
-def slot_for_hour(hour: int, model_slot: str | None = None) -> str:
+# Below this, an entry is not a meal. A glass of lemon water is 12 kcal and was
+# filed as "breakfast" because it was drunk at 08:33 — which makes a day look
+# like it began with a meal it did not, on the screen and in every slot-shaped
+# question asked of it afterwards.
+#
+# Energy rather than any judgement about liquids: a 12 kcal thing is a drink or
+# a garnish whichever state it is in, and a raw carrot at 41 kcal is a snack
+# that happens to be small. The threshold sits below the smallest thing anybody
+# would call a meal and above nothing worth arguing over.
+MEAL_KCAL_FLOOR = 25.0
+
+
+def slot_for_hour(hour: int, model_slot: str | None = None,
+                  kcal: float | None = None) -> str:
     if model_slot == "drink":
+        return "drink"
+    if kcal is not None and kcal < MEAL_KCAL_FLOOR:
         return "drink"
     for cutoff, name in SLOT_BOUNDARIES:
         if hour < cutoff:

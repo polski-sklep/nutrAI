@@ -267,3 +267,22 @@ def test_a_correction_sets_rather_than_adds():
     assert len(out) == 1, [c.label for c in out]
     assert out[0].grams == 80.0
     assert not unresolved
+
+
+def test_a_glass_of_water_is_not_breakfast():
+    """A 12 kcal lemon water logged at 08:33 was filed as "breakfast".
+
+    The slot came from the clock alone, so a day looked like it began with a
+    meal it did not — on the screen and in every slot-shaped question asked of
+    it afterwards.
+    """
+    assert dsl.slot_for_hour(8, kcal=12) == "drink"
+    assert dsl.slot_for_hour(8, None, kcal=2) == "drink"      # black coffee
+    # A small solid thing is still a snack, not a meal-sized claim.
+    assert dsl.slot_for_hour(15, kcal=41) == "snack"
+    # And a real breakfast is still breakfast.
+    assert dsl.slot_for_hour(8, kcal=400) == "breakfast"
+    # The model's own "drink" still wins outright, whatever the energy.
+    assert dsl.slot_for_hour(13, "drink", kcal=400) == "drink"
+    # Unknown energy changes nothing — the clock decides, as before.
+    assert dsl.slot_for_hour(8) == "breakfast"
