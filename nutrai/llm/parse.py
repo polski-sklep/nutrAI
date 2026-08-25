@@ -478,9 +478,23 @@ async def resolve_items(user_id: int, items: list[dict[str, Any]],
         # precedence 0 is `user_product` and nothing else. A row you wrote from
         # a packet in your hand is not a candidate to be weighed against a
         # national average of a food you did not eat; it is the answer.
-        own = next((c for c in cands
-                    if c["precedence"] == 0
-                    and float(c["sim"] or 0) >= AUTO_MATCH_SIMILARITY), None)
+        #
+        # The threshold was the wrong comparison, measured against the golden
+        # set on 25 Aug 2026: authority is not a score. "Devolay chicken
+        # (breaded stuffed chicken)" leads its own candidate list and still
+        # scored 0.39, because trigram similarity falls with description
+        # length (RECONCILED.md §1) and naming your own food precisely is what
+        # makes it long. Gated on 0.62 the rule could not fire in the case it
+        # was written for.
+        #
+        # So the comparison is against the pooled head, per §3.2. Your row at
+        # the top of the list is the answer whatever its score; below the head
+        # it still has to clear the threshold like anything else.
+        own = next(
+            (c for c in cands
+             if c["precedence"] == 0
+             and (c is cands[0] or float(c["sim"] or 0) >= AUTO_MATCH_SIMILARITY)),
+            None)
         if own is not None and not inverts_meaning(asked_for, own["description"]):
             await _accept(label, own["fdc_id"], it,
                           tier="own", chosen=own, cands=cands)

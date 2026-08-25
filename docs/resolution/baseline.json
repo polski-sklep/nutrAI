@@ -1,0 +1,39 @@
+{
+  "pass": 26,
+  "graded": 37,
+  "by_stage": {
+    "candidates": [
+      14,
+      19
+    ],
+    "nutrient": [
+      1,
+      1
+    ],
+    "select": [
+      9,
+      14
+    ],
+    "validate": [
+      0,
+      1
+    ],
+    "yield": [
+      2,
+      2
+    ]
+  },
+  "known_failures": [
+    "broccoli_boiled_nosalt",
+    "chicken_breast_skin_on",
+    "egg_white_fried",
+    "implausible_mass",
+    "inverting_meatless",
+    "misspell_chicken",
+    "near_chicken_breast_cooked",
+    "pasta_cooked",
+    "pasta_dry_no_plain_row",
+    "polish_pierogi_ruskie",
+    "tuna_water_drained"
+  ]
+}

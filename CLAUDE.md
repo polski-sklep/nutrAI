@@ -428,6 +428,38 @@ Rules when adding a message:
   It should now be unreachable; a "markup rejected by Telegram" line in the logs
   means something above was skipped.
 
+## The golden set has a runner
+
+```bash
+python scripts/golden.py                    # the report
+python scripts/golden.py --stage candidates # one stage
+python scripts/golden.py --baseline         # lock in a new floor
+pytest -q -m integration tests/test_golden.py
+```
+
+`docs/resolution/golden.yaml` was data with nothing reading it. It is now
+driven by `scripts/golden.py`, and every ranking change should be checked
+against it rather than against the four queries you happen to have in mind at
+the moment of changing them — which is how each of the last three ranking
+changes was checked, and why each of them broke something else.
+
+Two deliberate limits. It **calls no model**: sixty-four cases carry a frozen
+`parse` block, so the assertion is reached by SQL alone, and the twelve
+`needs_model` cases are reported as skipped rather than counted as passing. It
+**consults no aliases**: `_candidates` never does, and going through the alias
+tier would measure the cache instead of the resolver — which is why the file
+says the suite must not run as a user with 132 of them. Calling `_candidates`
+directly rather than `resolve_items` is what makes running as user 2 safe.
+
+**A failure is a finding, not a broken build.** Eleven cases fail today. Some
+pin behaviour that does not exist yet (`measure_slice_bread` wants USDA
+household portions `db.portion_for` filters out by design); the rest are real
+defects, listed in `docs/resolution/RECONCILED.md`. So the guard asserts a
+*floor* from `docs/resolution/baseline.json`, plus the failing ids by name —
+a count alone cannot see a swap that repairs one case and breaks another.
+Demanding green would mean deleting the failing cases, which turns the golden
+set into a record of what already works.
+
 ## Style
 
 - Raw SQL via asyncpg. No ORM. The schema is the source of truth.
