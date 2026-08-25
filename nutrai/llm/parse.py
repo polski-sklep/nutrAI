@@ -265,7 +265,7 @@ async def _mass_for(user_id: int, fdc_id: int, it: dict[str, Any],
 
 
 async def _candidates(it: dict[str, Any], label: str, user_id: int | None = None,
-                      dish_name: str | None = None) -> list[asyncpg.Record]:
+                      dish_name: str | None = None) -> list[dict[str, Any]]:
     """Search on the model's `search_terms` *and* on the user's own label.
 
     Trigram similarity punishes a descriptive query. `PARSE_SYSTEM` asks for "a
@@ -280,15 +280,31 @@ async def _candidates(it: dict[str, Any], label: str, user_id: int | None = None
     auto-match threshold. Both are asked, the union is ranked by the best score
     either achieved, and the threshold itself is untouched — it is eval-set
     work, not something to tune against one plate.
+
+    Every candidate carries the score each query gave it, kept apart rather
+    than collapsed. `sim` remains the pooled maximum so existing callers are
+    unchanged, but a high `sim_model` against a low `sim_user` means the model's
+    own paraphrase — written to look like a USDA description — outscored the
+    words the user actually typed, which is the mechanism behind the 25 Aug
+    cereal failure and is invisible in the maximum alone.
     """
-    queries = [q for q in (str(it.get("search_terms") or "").strip(), label.strip(),
-                           (dish_name or "").strip()) if q]
-    pooled: dict[int, asyncpg.Record] = {}
+    q_model = str(it.get("search_terms") or "").strip()
+    q_user = label.strip()
+    q_dish = (dish_name or "").strip()
+    queries = [q for q in (q_model, q_user, q_dish) if q]
+    pooled: dict[int, dict[str, Any]] = {}
+    per_query: dict[int, dict[str, float]] = {}
     for q in dict.fromkeys(queries):
         for c in await db.search_foods(q, limit=5, user_id=user_id):
-            best = pooled.get(c["fdc_id"])
-            if best is None or float(c["sim"] or 0) > float(best["sim"] or 0):
-                pooled[c["fdc_id"]] = c
+            fid, sim = c["fdc_id"], float(c["sim"] or 0)
+            per_query.setdefault(fid, {})[q] = sim
+            best = pooled.get(fid)
+            if best is None or sim > float(best["sim"] or 0):
+                pooled[fid] = dict(c)
+    for fid, row in pooled.items():
+        scores = per_query.get(fid, {})
+        row["sim_user"] = scores.get(q_user)
+        row["sim_model"] = scores.get(q_model)
     # Rank by similarity, precedence breaking ties — the same order
     # db.search_foods uses, applied across the pooled result.
     return sorted(
@@ -353,6 +369,11 @@ def inverts_meaning(query: str, description: str) -> bool:
     return any(term in d for term in INVERTING_TERMS)
 
 
+def _as_float(v: Any) -> float | None:
+    """asyncpg hands back Decimal for a numeric; the dataclass wants a float."""
+    return None if v is None else float(v)
+
+
 async def resolve_items(user_id: int, items: list[dict[str, Any]],
                         dish_name: str | None = None,
                         text: str | None = None) -> Resolution:
@@ -375,12 +396,26 @@ async def resolve_items(user_id: int, items: list[dict[str, Any]],
     need_model: list[tuple[dict[str, Any], list[asyncpg.Record]]] = []
     cost = 0.0
 
-    async def _accept(label: str, fdc_id: int, it: dict[str, Any], yf: float = 1.0) -> None:
+    async def _accept(label: str, fdc_id: int, it: dict[str, Any], yf: float = 1.0,
+                      *, tier: str | None = None,
+                      chosen: dict[str, Any] | None = None,
+                      cands: list[dict[str, Any]] | None = None) -> None:
         m = await _mass_for(user_id, fdc_id, it, text)
         count = it.get("count")
+        # The runner-up is the best candidate that is not the one taken. A
+        # margin is the only honest input to a confidence figure and it cannot
+        # be recovered later: the candidate list is not kept anywhere, so a
+        # decision made on 0.001 and one made on 0.4 look identical afterwards.
+        runner = next((c for c in (cands or []) if c["fdc_id"] != fdc_id), None)
         comps.append(ResolvedComponent(
             label, fdc_id, m.grams, yf, m.sigma, m.source,
             float(count) if count else None,
+            state=str(it.get("state") or "as_logged"),
+            match_tier=tier,
+            sim_user=_as_float(chosen.get("sim_user")) if chosen else None,
+            sim_model=_as_float(chosen.get("sim_model")) if chosen else None,
+            runner_up_fdc_id=int(runner["fdc_id"]) if runner else None,
+            runner_up_sim=_as_float(runner.get("sim")) if runner else None,
         ))
         sources.append(m.source)
         if m.note:
@@ -406,7 +441,15 @@ async def resolve_items(user_id: int, items: list[dict[str, Any]],
         alias = await db.resolve_alias(user_id, label)
         if alias:
             await db.bump_alias(alias["id"])
-            await _accept(label, alias["fdc_id"], it)
+            # The alias tier is the steady state — most resolutions arrive here
+            # and cost nothing — so leaving it unmeasured would keep the
+            # dominant path invisible, which is the whole defect Phase 0 exists
+            # to close. The score recorded is the alias string against what was
+            # typed, not a row description against a label: a different
+            # distribution through the same constant (SPEC-7 §7.3), which is
+            # why `match_tier` has to be read alongside `sim_user`.
+            await _accept(label, alias["fdc_id"], it, tier="alias",
+                          chosen={"sim_user": alias["alias_sim"], "sim_model": None})
             continue
 
         # On a one-ingredient meal the dish name is a third search term, and
@@ -439,7 +482,8 @@ async def resolve_items(user_id: int, items: list[dict[str, Any]],
                     if c["precedence"] == 0
                     and float(c["sim"] or 0) >= AUTO_MATCH_SIMILARITY), None)
         if own is not None and not inverts_meaning(asked_for, own["description"]):
-            await _accept(label, own["fdc_id"], it)
+            await _accept(label, own["fdc_id"], it,
+                          tier="own", chosen=own, cands=cands)
             await db.upsert_alias(user_id, label, own["fdc_id"],
                                   float(it.get("grams", 0) or 0))
             continue
@@ -449,7 +493,8 @@ async def resolve_items(user_id: int, items: list[dict[str, Any]],
             and float(cands[0]["sim"] or 0) >= AUTO_MATCH_SIMILARITY
             and not inverts_meaning(asked_for, cands[0]["description"])
         ):
-            await _accept(label, cands[0]["fdc_id"], it)
+            await _accept(label, cands[0]["fdc_id"], it,
+                          tier="auto", chosen=cands[0], cands=cands)
             await db.upsert_alias(user_id, label, cands[0]["fdc_id"], float(it.get("grams", 0) or 0))
             continue
         if not cands:
@@ -496,7 +541,9 @@ async def resolve_items(user_id: int, items: list[dict[str, Any]],
                 unresolved.append(label)
                 continue
             yf = float(pick.get("yield_factor", 1.0) or 1.0)
-            await _accept(label, int(pick["fdc_id"]), it, yf)
+            chosen = next((c for c in _cands if c["fdc_id"] == int(pick["fdc_id"])), None)
+            await _accept(label, int(pick["fdc_id"]), it, yf,
+                          tier="model", chosen=chosen, cands=_cands)
             await db.upsert_alias(
                 user_id, label, int(pick["fdc_id"]), float(it.get("grams", 0) or 0)
             )

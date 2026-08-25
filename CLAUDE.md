@@ -228,10 +228,29 @@ area; do not re-litigate them.
   in `food` with `data_type = 'user_product'` and a negative `fdc_id`, so
   `log_component.fdc_id`, `profiles_for`, coverage, `portion_history`, `/why`
   and the audit all work unchanged. `precedence` was rebuilt to rank
-  `user_product` at 0, above Foundation. The "ask every time" decision was
-  overtaken: a saved product wins on similarity and precedence, and the confirm
-  card names the row it matched, which turned out to be the better answer to
-  the same worry.
+  `user_product` at 0, above Foundation.
+
+  **The claim that "a saved product wins on similarity and precedence" was
+  measured on 25 Aug 2026 and is false.** It loses for five of nine saved
+  products on the names a person actually types. Precedence never decides
+  anything — both sort orders use it only to break an exact tie in a float,
+  which does not occur — and the `own` guard in `resolve_items` requires
+  `sim >= AUTO_MATCH_SIMILARITY` before precedence 0 can pre-empt, so it cannot
+  fire in the case it was written for. `cosmic cereal` resolved to an FNDDS
+  porridge on 25 Aug with the user's own row sitting at 0.619 against a 0.62
+  gate.
+
+  The cause is not the threshold. Trigram similarity is dominated by
+  description length (r = −0.87 to −0.94 within a single food), and a brand
+  plus a product name is longer than what anyone types — so naming your own
+  food precisely makes it *less* reachable. `docs/resolution/RECONCILED.md` §1
+  has the measurement and §3.2 the replacement: authority is not a score, and
+  the comparison must be against the pooled head rather than a constant.
+
+  The "ask every time" decision therefore stands un-overtaken. The confirm card
+  naming the matched row is still the right mechanism — but see SPEC-2 §5: the
+  card suppresses that line whenever the label is a substring of the
+  description, which hides it on 42% of confirmed components.
 
 - **NOVA processing score.** Scoped 16 Aug 2026, to be built after the eval
   fortnight ends (on or after 30 Aug 2026). Decisions below are settled; do not

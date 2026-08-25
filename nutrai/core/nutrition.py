@@ -32,6 +32,22 @@ class ResolvedComponent:
     # How many units this line represents, when the user gave a number. Display
     # only — `grams` is already the total, so nothing downstream multiplies.
     count: float | None = None
+    # The form the food was in when eaten, as the model reported it: raw,
+    # cooked, dry, as_sold, unknown. The model has been emitting this on every
+    # parsed item all along, the confirm card renders it, and it was dropped on
+    # the floor between the two — `state` is 'as_logged' on all 363 stored
+    # rows. Nothing consumes it yet; storing it is what makes a raw/cooked
+    # mismatch visible in the data at all. See docs/resolution/SPEC-4.
+    state: str = "as_logged"
+    # How this row was chosen, and what it beat. Written once, never revised:
+    # a threshold cannot be tuned from data that never recorded what anything
+    # scored, and "why did this resolve here" is unanswerable after the fact
+    # without the runner-up. See docs/resolution/RECONCILED.md §3.4.
+    match_tier: str | None = None
+    sim_user: float | None = None
+    sim_model: float | None = None
+    runner_up_fdc_id: int | None = None
+    runner_up_sim: float | None = None
 
 
 # FDC reports food energy under three different nutrient ids, and which one a

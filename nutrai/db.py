@@ -118,7 +118,8 @@ async def resolve_alias(user_id: int, name: str) -> asyncpg.Record | None:
     later mention of it resolves here for zero tokens."""
     p = await pool()
     return await p.fetchrow(
-        f"""SELECT a.*, f.description
+        f"""SELECT a.*, f.description,
+                   similarity(a.alias, lower($2)) AS alias_sim
              FROM food_alias a JOIN food f ON f.fdc_id = a.fdc_id
             WHERE a.user_id = $1
               AND (a.alias = lower($2) OR similarity(a.alias, lower($2)) > $3)
@@ -194,7 +195,10 @@ async def search_foods(query: str, limit: int = 5, data_types: Sequence[str] | N
                        plainto_tsquery('english', $1)) AS rank,
                EXISTS (SELECT 1 FROM food_nutrient fn
                         WHERE fn.fdc_id = f.fdc_id
-                          AND fn.nutrient_id IN (1008, 2048, 2047)) AS has_energy
+                          AND fn.nutrient_id IN (1008, 2048, 2047)) AS has_energy,
+               -- Every word of the query present in the description, as words.
+               to_tsvector('english', f.description)
+                   @@ plainto_tsquery('english', $1)                 AS covers
           FROM food f
          WHERE (to_tsvector('english', f.description) @@ plainto_tsquery('english', $1)
                 OR f.description % $1)
@@ -221,9 +225,12 @@ async def search_foods(query: str, limit: int = 5, data_types: Sequence[str] | N
                -- becomes unfindable — `butter` still returns eight rows.
                AND NOT {UNUSABLE_ROW.format(t="f")}
                {dt_filter}
-      ORDER BY (similarity(f.description, $1) + ts_rank(
+      ORDER BY ((similarity(f.description, $1) + ts_rank(
                    to_tsvector('english', f.description),
-                   plainto_tsquery('english', $1))) DESC,
+                   plainto_tsquery('english', $1)))
+                * CASE WHEN to_tsvector('english', f.description)
+                            @@ plainto_tsquery('english', $1)
+                       THEN 1.35 ELSE 1.0 END) DESC,
                -- A row with no energy figure, ahead of precedence.
                --
                -- 276 of 411 Foundation rows carry no 1008 and no Atwater
@@ -449,11 +456,13 @@ async def _write_components(con: Any, entry_id: int,
     await con.executemany(
         """INSERT INTO log_component
              (entry_id, position, fdc_id, label, grams, yield_factor,
-              grams_source, grams_sigma)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)""",
+              grams_source, grams_sigma, state,
+              match_tier, sim_user, sim_model, runner_up_fdc_id, runner_up_sim)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)""",
         [(entry_id, i, c.fdc_id, c.label, c.grams, c.yield_factor,
           (grams_sources[i] if grams_sources and i < len(grams_sources) else c.grams_source),
-          c.sigma)
+          c.sigma, c.state,
+          c.match_tier, c.sim_user, c.sim_model, c.runner_up_fdc_id, c.runner_up_sim)
          for i, c in enumerate(components)],
     )
 
