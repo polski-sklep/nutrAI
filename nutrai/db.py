@@ -1022,6 +1022,7 @@ async def log_observation(
     user_id: int, kind: str, value: float, *, scale: str = "1-10",
     note: str | None = None, tz: str = "Europe/Warsaw", rollover_hour: int = 4,
     when: dt.datetime | None = None, with_fasting: bool = True,
+    source: str = "volunteered",
 ) -> int:
     """Stamp the observation with the fasting state it was made in.
 
@@ -1049,11 +1050,126 @@ async def log_observation(
         return await con.fetchval(
             """INSERT INTO observation
                  (user_id, observed_at, local_date, kind, value, scale,
-                  hours_fasted, kcal_since_waking, note)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id""",
+                  hours_fasted, kcal_since_waking, note, source)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id""",
             user_id, now, local_date_for(now, tz, rollover_hour), kind, value, scale,
-            hours, kcal, note,
+            hours, kcal, note, source,
         )
+
+
+async def plan_rating_prompts(
+        user_id: int, day: dt.date, kinds: list[str],
+        window: tuple[dt.datetime, dt.datetime], limit: int = 3) -> int:
+    """Draw the day's prompts once, rather than rolling a die every sweep.
+
+    The times are chosen from a seed of (user, day) so replanning is idempotent
+    and a test can predict them. A sweep that re-rolled a probability every ten
+    minutes would cluster unpredictably and could not be asserted about at all.
+
+    The cap is the row count, not a tally. "No more than three a day" as a
+    running counter would depend on every send path incrementing it correctly;
+    three planned rows means there is no fourth to fire.
+
+    `kinds` arrives sparsest-first, so the prompts go where the evidence is
+    thinnest and `/insight` becomes usable sooner.
+    """
+    import random
+
+    if not kinds:
+        return 0
+    start, end = window
+    span = int((end - start).total_seconds())
+    if span <= 0:
+        return 0
+    rng = random.Random(f"{user_id}:{day.isoformat()}")
+    picked = kinds[:limit]
+    # Spread across the window rather than drawn independently: three uniform
+    # draws land within a few minutes of each other often enough to matter.
+    slot = span // len(picked)
+    p = await pool()
+    written = 0
+    for i, kind in enumerate(picked):
+        due = start + dt.timedelta(seconds=i * slot + rng.randrange(slot or 1))
+        written += bool(await p.fetchval(
+            """INSERT INTO rating_prompt (user_id, local_date, kind, due_at)
+               VALUES ($1,$2,$3,$4)
+               ON CONFLICT (user_id, local_date, kind) DO NOTHING
+               RETURNING id""",
+            user_id, day, kind, due))
+    return written
+
+
+async def due_rating_prompt(user_id: int, now: dt.datetime) -> asyncpg.Record | None:
+    """The one prompt that is due, or nothing. Never two in a sweep."""
+    p = await pool()
+    return await p.fetchrow(
+        """SELECT id, kind, due_at FROM rating_prompt
+            WHERE user_id = $1 AND asked_at IS NULL AND due_at <= $2
+            ORDER BY due_at LIMIT 1""",
+        user_id, now)
+
+
+async def set_rating_prompts(user_id: int, on: bool) -> None:
+    p = await pool()
+    await p.execute("UPDATE app_user SET rating_prompts = $2 WHERE id = $1",
+                    user_id, on)
+
+
+async def observation_counts(user_id: int) -> list[tuple[str, int]]:
+    """How many of each kind exist, most first. What `/insight` is waiting on."""
+    p = await pool()
+    rows = await p.fetch(
+        """SELECT kind, count(*) AS n FROM observation
+            WHERE user_id = $1 GROUP BY kind ORDER BY n DESC""", user_id)
+    return [(r["kind"], int(r["n"])) for r in rows]
+
+
+async def prompt_kind(prompt_id: int) -> str | None:
+    """The kind a prompt asked about, or None if it is gone."""
+    p = await pool()
+    return await p.fetchval("SELECT kind FROM rating_prompt WHERE id = $1", prompt_id)
+
+
+async def mark_prompt_asked(prompt_id: int) -> None:
+    p = await pool()
+    await p.execute("UPDATE rating_prompt SET asked_at = now() WHERE id = $1",
+                    prompt_id)
+
+
+async def close_rating_prompt(prompt_id: int, *, observation_id: int | None = None,
+                              declined: bool = False) -> None:
+    """What the prompt produced, including nothing.
+
+    An ignored prompt is kept rather than deleted: a kind nobody ever answers
+    is a kind not worth asking about, and deleting the unanswered rows is
+    exactly what would hide that.
+    """
+    p = await pool()
+    await p.execute(
+        """UPDATE rating_prompt SET observation_id = $2, declined = $3
+            WHERE id = $1""",
+        prompt_id, observation_id, declined)
+
+
+async def sparsest_kinds(user_id: int, kinds: list[str], day: dt.date) -> list[str]:
+    """Rateable kinds, fewest observations first, excluding today's answers.
+
+    Asking again about something already rated today is the fastest way to
+    make the prompts feel like noise, and a second reading of the same kind
+    hours apart is a different measurement the analysis does not model.
+    """
+    p = await pool()
+    rows = await p.fetch(
+        """SELECT k.kind,
+                  (SELECT count(*) FROM observation o
+                    WHERE o.user_id = $1 AND o.kind = k.kind) AS n,
+                  EXISTS (SELECT 1 FROM observation o
+                           WHERE o.user_id = $1 AND o.kind = k.kind
+                             AND o.local_date = $3) AS today
+             FROM unnest($2::text[]) AS k(kind)
+            ORDER BY n ASC""",
+        user_id, kinds, day)
+    return [r["kind"] for r in rows if not r["today"]]
 
 
 async def observations(user_id: int, kind: str, days: int = 90) -> list[asyncpg.Record]:

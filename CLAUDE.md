@@ -424,14 +424,48 @@ moment it needs to be read. `/audit` runs exactly the same checks over the last
 seven days, when somebody wants to know.
 
 What still arrives unbidden earns it by being short and timely: the morning
-note (07:30), supplement reminders at their scheduled slots, and the Sunday
-report. **The greeting goes first.** Both ran on the same ten-minute interval
+note (07:30), supplement reminders at their scheduled slots, the Sunday report,
+and — the one deliberate exception, added 26 Aug 2026 — up to three rating
+prompts a day. **The greeting goes first.** Both ran on the same ten-minute interval
 as separate jobs, so the order was decided by registration and the event loop,
 and the capsule card kept landing ahead of "Good morning" — a day starting with
 a chore. `morning_first` sequences them in one job, which is the only way to
 guarantee it; each is shielded so a note that raises does not cost the
 reminder. Everything else is pull — `/today`, `/week`, `/next`, `/last`,
 `/audit`. If you are about to schedule something, that list is the bar.
+
+## Asking for a rating
+
+The exception to the rule above, and it had to argue for itself. 25 observations
+in ten days across six kinds, best kind at 7, and `/insight` refuses under 20 —
+so at the volunteered rate the feature never turns on. Remembering to type
+`/rate` was the binding constraint, not willingness to answer.
+
+It earns the exception the way the morning note does: one line, one tap, and
+`/prompts off`. The switch shipped *with* the feature, because an unprompted
+message with no off switch is the one you mute at the Telegram level, and that
+mutes the morning note and the supplement reminders with it.
+
+- **About now, or not at all.** A random hour can only honestly ask a
+  present-tense question. `sleep` is a memory test by the afternoon and `rpe`
+  belongs to a training session the bot posts anyway, so neither is in
+  `PROMPTABLE`.
+- **The cap is the row count, not a tally.** Three planned rows per day means
+  there is no fourth to fire, whatever a send path does. The times are drawn
+  once from a `(user, day)` seed, so replanning is idempotent and a test can
+  predict them; a probability re-rolled every sweep clusters unpredictably and
+  cannot be asserted about.
+- **Sparsest kind first**, and never a kind already rated by hand that day.
+- **`observation.source` records which it was.** A volunteered rating clusters
+  on notable moments — you reach for `/rate` when focus is unusually bad — and
+  a prompt at a random hour samples the ordinary. `/insight` correlates over
+  this table, so mixing two sampling processes without recording which is which
+  would put a bias into every correlation with nothing able to find it later.
+  Nothing filters on it yet, deliberately: halving the data to remove a bias
+  nobody has measured trades a known loss for a hypothetical gain.
+- **A skip is recorded as declined, and an ignored prompt is kept.** A kind
+  nobody ever answers is a kind not worth asking about, and deleting the
+  unanswered rows is what would hide that.
 
 ## Days that do not count
 

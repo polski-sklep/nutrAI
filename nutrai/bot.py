@@ -30,6 +30,7 @@ from .core.nutrition import (
     energy_cross_check,
     total_nutrients,
 )
+from .jobs import notify as notify_job
 from .jobs import report as report_job
 from .llm import parse as llm
 
@@ -1115,6 +1116,85 @@ async def cb_rate_value(cq: CallbackQuery) -> None:
     )
 
 
+@dp.message(Command("prompts"))
+async def prompts_cmd(msg: Message) -> None:
+    """`/prompts off` stops the random rating asks. `/prompts` says the state.
+
+    An unprompted message with no off switch is the one you mute at the
+    Telegram level, and that mutes the morning note and the supplement
+    reminders with it — the failure the "Unprompted messages" rule exists to
+    avoid. So the switch ships with the feature, not after it.
+    """
+    u = await _user(msg)
+    arg = (msg.text or "").split()[1:2]
+    if arg and arg[0].lower() in ("off", "on"):
+        want = arg[0].lower() == "on"
+        await db.set_rating_prompts(u["id"], want)
+        await msg.answer(
+            f"\U0001f4ca Rating prompts <b>{'on' if want else 'off'}</b>."
+            + ("" if want else "\n<i>Nothing else changes — the morning note and "
+                               "supplement reminders are unaffected.</i>"),
+            parse_mode="HTML")
+        return
+
+    on = bool(u["rating_prompts"])
+    counts = await db.observation_counts(u["id"])
+    have = ", ".join(f"{k} {n}" for k, n in counts) or "nothing yet"
+    await msg.answer(
+        f"\U0001f4ca Rating prompts are <b>{'on' if on else 'off'}</b> — "
+        f"up to {notify_job.PROMPTS_PER_DAY} a day, about how you feel "
+        "right now, one tap each.\n"
+        f"<i>So far: {render._esc(have)}. {insight.MIN_PAIRS} of a kind before "
+        "<code>/insight</code> can analyse it.</i>\n\n"
+        "<code>/prompts off</code> to stop them.",
+        parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("pr:"))
+async def cb_prompted_rating(cq: CallbackQuery) -> None:
+    """A rating answered from a prompt rather than typed.
+
+    Recorded with `source='prompted'` because it is not the same measurement:
+    a volunteered rating clusters on notable moments — you reach for /rate when
+    focus is unusually bad — while a prompt at a random hour samples the
+    ordinary. `/insight` correlates over this table, so mixing two sampling
+    processes without recording which is which would bake a bias into every
+    correlation with nothing able to find it afterwards.
+    """
+    _k, pid, val = cq.data.split(":")
+    u = await db.get_or_create_user(cq.from_user.id)
+    kind = await db.prompt_kind(int(pid))
+    if kind is None:
+        await cq.answer("that prompt has expired")
+        return
+    await cq.answer(f"{kind} {val}")
+
+    obs_id, text = await _rating_text(u, kind, float(val), source="prompted")
+    await db.close_rating_prompt(int(pid), observation_id=obs_id)
+    # The keypad is spent: leaving it live invites a second answer to a
+    # question about a moment that has passed.
+    await cq.message.edit_text(
+        text, parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+            text="\U0001f4dd why?", callback_data=f"ratenote:{obs_id}")]]))
+
+
+@dp.callback_query(F.data.startswith("prno:"))
+async def cb_prompted_rating_skip(cq: CallbackQuery) -> None:
+    """Declined, and recorded as declined.
+
+    A skip is not the same as an ignored prompt and neither is a wrong number.
+    Offering the button is what stops a prompt arriving at a bad moment from
+    becoming a guess in the dataset.
+    """
+    pid = int(cq.data.split(":")[1])
+    await db.close_rating_prompt(pid, declined=True)
+    await cq.answer("skipped")
+    await cq.message.edit_text(
+        "\u270b Skipped. <i>Nothing recorded — a guessed number is worse than "
+        "no number.</i>", parse_mode="HTML")
+
+
 async def _record_rating(msg: Message, u: asyncpg.Record, kind: str, value: float,
                          note: str | None = None) -> None:
     obs_id, text = await _rating_text(u, kind, value, note)
@@ -1130,7 +1210,8 @@ async def _record_rating(msg: Message, u: asyncpg.Record, kind: str, value: floa
 
 
 async def _rating_text(u: asyncpg.Record, kind: str, value: float,
-                       note: str | None = None) -> tuple[int, str]:
+                       note: str | None = None,
+                       source: str = "volunteered") -> tuple[int, str]:
     """Log it and say what it bought.
 
     The old reply was "focus 9 at 4.8h fasted · 19 more before this can be
@@ -1141,7 +1222,7 @@ async def _rating_text(u: asyncpg.Record, kind: str, value: float,
     h = await db.current_fast_hours(u["id"])
     obs_id = await db.log_observation(
         u["id"], kind, value, tz=u["tz"], rollover_hour=u["day_rollover_hour"],
-        note=note,
+        note=note, source=source,
     )
     obs = await db.observations(u["id"], kind)
     n = len(obs)

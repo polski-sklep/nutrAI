@@ -309,6 +309,92 @@ async def weekly_summary(bot: Bot) -> None:
         )
 
 
+# Never prompted, for two different reasons.
+#
+# `rpe` belongs to a training session and the training bot posts it; asking
+# "how hard was training?" at a random hour on a rest day is a question with no
+# answer. `sleep` is a memory test by the afternoon — it is asked only inside
+# the morning window, which the general prompt cannot guarantee.
+PROMPTABLE = ("focus", "energy", "mood", "hunger")
+PROMPTS_PER_DAY = 3
+
+# The waking window a prompt may land in, as offsets from the wake hour. Not
+# before the first hour — a rating taken while still surfacing measures the
+# waking-up, not the day — and not into the last stretch before sleep.
+PROMPT_FROM_WAKE = dt.timedelta(hours=2)
+PROMPT_UNTIL_WAKE = dt.timedelta(hours=13)
+
+
+async def rating_prompts(bot: Bot) -> None:
+    """Ask for one rating, at most three times a day.
+
+    A deliberate exception to the rule that nothing analytical arrives unasked,
+    and it has to earn it the same way the morning note does: one line, one
+    tap, about *now*, and switchable off. The justification is arithmetic —
+    25 observations in ten days across six kinds, best kind at 7, and
+    `/insight` refuses under 20. Remembering to type `/rate` is the binding
+    constraint, not willingness to answer.
+
+    "About now" is what makes a random time honest. Every promptable kind is a
+    present-tense question; anything retrospective is a memory test and is not
+    in `PROMPTABLE`.
+    """
+    import zoneinfo
+
+    p = await db.pool()
+    now = dt.datetime.now(dt.timezone.utc)
+    for u in await p.fetch(
+        """SELECT id, telegram_id, tz, day_rollover_hour, wake_hour, rating_prompts
+             FROM app_user"""
+    ):
+        if not u["rating_prompts"]:
+            continue
+        wake = u["wake_hour"] or await db.wake_hour_estimate(u["id"], u["tz"])
+        if wake is None:
+            continue   # not told, and not enough history to have learned
+
+        day = db.day_for_user(u, now)
+        tz = zoneinfo.ZoneInfo(u["tz"])
+        waking = (now.astimezone(tz)
+                  .replace(hour=int(wake), minute=0, second=0, microsecond=0))
+        kinds = await db.sparsest_kinds(u["id"], list(PROMPTABLE), day)
+        await db.plan_rating_prompts(
+            u["id"], day, kinds,
+            (waking + PROMPT_FROM_WAKE, waking + PROMPT_UNTIL_WAKE),
+            limit=PROMPTS_PER_DAY)
+
+        due = await db.due_rating_prompt(u["id"], now)
+        if not due:
+            continue
+        # Planned this morning, answered by hand since. Marking it asked rather
+        # than firing keeps the day's budget spent on something unmeasured.
+        if due["kind"] not in await db.sparsest_kinds(u["id"], [due["kind"]], day):
+            await db.mark_prompt_asked(due["id"])
+            continue
+        # A prompt that has sat unfired past its window is stale: the answer
+        # would be stamped now and read as if it were asked on time.
+        if now - due["due_at"] > dt.timedelta(hours=2):
+            await db.mark_prompt_asked(due["id"])
+            continue
+
+        # Claimed before sending, as the supplement slot is: a send that fails
+        # must not be retried into a second prompt ten minutes later.
+        await db.mark_prompt_asked(due["id"])
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+        pid = due["id"]
+        keys = [InlineKeyboardButton(text=str(n), callback_data=f"pr:{pid}:{n}")
+                for n in range(1, 11)]
+        await _deliver(
+            bot, u["telegram_id"], f"rating prompt {due['kind']}",
+            render.rating_prompt_card(due["kind"]),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                keys[:5], keys[5:],
+                [InlineKeyboardButton(text="✋ skip", callback_data=f"prno:{pid}")],
+            ]),
+        )
+
+
 async def morning_first(bot: Bot) -> None:
     """The greeting, then the capsules — in that order, on every tick.
 
@@ -322,7 +408,7 @@ async def morning_first(bot: Bot) -> None:
     because a morning note that raises must not silently cost you the
     reminder — the failure mode that ordering was meant to fix.
     """
-    for job in (morning_notes, supplement_reminders):
+    for job in (morning_notes, supplement_reminders, rating_prompts):
         try:
             await job(bot)
         except Exception:

@@ -3713,3 +3713,130 @@ def test_defining_a_food_puts_it_back_into_the_meal_that_asked(harness):
         await p.execute("DELETE FROM food WHERE owner_user_id=$1", uid)
 
     run(scenario())
+
+
+def test_rating_prompts_are_capped_and_never_repeat_a_kind(harness):
+    """Three a day, structurally, and never twice about the same thing.
+
+    The cap is the row count rather than a running tally: a counter would
+    depend on every send path incrementing it correctly, and three planned rows
+    means there is no fourth to fire whatever the code does.
+    """
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+        from nutrai.jobs import notify
+
+        p = await db.pool()
+        await p.execute("DELETE FROM rating_prompt WHERE user_id=$1", uid)
+        await p.execute("DELETE FROM observation WHERE user_id=$1", uid)
+
+        day = dt.date(2026, 8, 26)
+        start = dt.datetime(2026, 8, 26, 9, tzinfo=dt.timezone.utc)
+        kinds = await db.sparsest_kinds(uid, list(notify.PROMPTABLE), day)
+        assert len(kinds) == 4, kinds
+
+        n = await db.plan_rating_prompts(
+            uid, day, kinds, (start, start + dt.timedelta(hours=11)), limit=3)
+        assert n == 3, "planned more or fewer than the cap"
+
+        # Planning again is idempotent — the sweep runs every ten minutes.
+        again = await db.plan_rating_prompts(
+            uid, day, kinds, (start, start + dt.timedelta(hours=11)), limit=3)
+        assert again == 0
+        assert await p.fetchval(
+            "SELECT count(*) FROM rating_prompt WHERE user_id=$1 AND local_date=$2",
+            uid, day) == 3
+
+        # The times are drawn once and spread, not clustered.
+        due = [r["due_at"] for r in await p.fetch(
+            "SELECT due_at FROM rating_prompt WHERE user_id=$1 AND local_date=$2"
+            " ORDER BY due_at", uid, day)]
+        assert due == sorted(due)
+        assert all(start <= d <= start + dt.timedelta(hours=11) for d in due)
+        gaps = [(b - a).total_seconds() for a, b in zip(due, due[1:])]
+        assert all(g > 600 for g in gaps), f"prompts clustered: {gaps}"
+
+        # A kind already rated by hand today is not asked about again.
+        await db.log_observation(uid, "focus", 7, tz="Europe/Warsaw")
+        today = db.local_date_for(dt.datetime.now(dt.timezone.utc), "Europe/Warsaw", 4)
+        left = await db.sparsest_kinds(uid, list(notify.PROMPTABLE), today)
+        assert "focus" not in left
+
+        await p.execute("DELETE FROM rating_prompt WHERE user_id=$1", uid)
+        await p.execute("DELETE FROM observation WHERE user_id=$1", uid)
+
+    run(scenario())
+
+
+def test_a_prompted_rating_is_recorded_as_prompted(harness):
+    """A prompted rating and a volunteered one are different measurements.
+
+    Volunteered ratings cluster on notable moments — you reach for /rate when
+    focus is unusually bad — while a prompt at a random hour samples the
+    ordinary. `/insight` correlates over this table, so mixing two sampling
+    processes without recording which is which would put a bias into every
+    correlation and leave nothing able to detect it afterwards.
+    """
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await p.execute("DELETE FROM rating_prompt WHERE user_id=$1", uid)
+        await p.execute("DELETE FROM observation WHERE user_id=$1", uid)
+
+        pid = await p.fetchval(
+            """INSERT INTO rating_prompt (user_id, local_date, kind, due_at, asked_at)
+               VALUES ($1, current_date, 'energy', now(), now()) RETURNING id""", uid)
+
+        harness.sent.clear()
+        await harness.feed("/rate energy 6")          # volunteered
+        await harness.press(f"pr:{pid}:9", harness.sent.last().message_id)
+
+        rows = await p.fetch(
+            "SELECT id, kind, value, source FROM observation WHERE user_id=$1 ORDER BY id", uid)
+        assert [(r["kind"], float(r["value"]), r["source"]) for r in rows] == [
+            ("energy", 6.0, "volunteered"),
+            ("energy", 9.0, "prompted"),
+        ]
+        # The prompt records what it produced, so an unanswered one stays
+        # visible as unanswered.
+        assert await p.fetchval(
+            "SELECT observation_id FROM rating_prompt WHERE id=$1", pid) == rows[1]["id"]
+
+        await p.execute("DELETE FROM rating_prompt WHERE user_id=$1", uid)
+        await p.execute("DELETE FROM observation WHERE user_id=$1", uid)
+
+    run(scenario())
+
+
+def test_skipping_a_prompt_records_nothing(harness):
+    """A guessed number is worse than no number."""
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await p.execute("DELETE FROM rating_prompt WHERE user_id=$1", uid)
+        await p.execute("DELETE FROM observation WHERE user_id=$1", uid)
+        pid = await p.fetchval(
+            """INSERT INTO rating_prompt (user_id, local_date, kind, due_at, asked_at)
+               VALUES ($1, current_date, 'mood', now(), now()) RETURNING id""", uid)
+
+        harness.sent.clear()
+        await harness.feed("/prompts")
+        await harness.press(f"prno:{pid}", harness.sent.last().message_id)
+
+        assert await p.fetchval(
+            "SELECT count(*) FROM observation WHERE user_id=$1", uid) == 0
+        row = await p.fetchrow(
+            "SELECT declined, observation_id FROM rating_prompt WHERE id=$1", pid)
+        assert row["declined"] is True and row["observation_id"] is None
+
+        await p.execute("DELETE FROM rating_prompt WHERE user_id=$1", uid)
+
+    run(scenario())

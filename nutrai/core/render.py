@@ -2539,3 +2539,30 @@ def protein_spread(entries: Sequence[Row]) -> str | None:
         line += "\n<i>Most of it in one meal — spreading it across the day "
         line += "does more for muscle than the same total in one sitting.</i>"
     return line
+
+
+# What each promptable rating is asking, in the present tense.
+#
+# A random-time prompt can only honestly ask about now. Anything retrospective
+# — how you slept, how training felt — is a memory test by the afternoon, and
+# those kinds are not prompted at all.
+_PROMPT_QUESTION = {
+    "focus": ("\U0001f9e0", "How sharp do you feel right now?"),
+    "energy": ("\u26a1", "Physical energy right now — not mood?"),
+    "mood": ("\U0001f642", "How do you feel in yourself right now?"),
+    "hunger": ("\U0001f37d", "How hungry are you right now?"),
+}
+
+
+def rating_prompt_card(kind: str) -> str:
+    """One line, one tap. The whole message.
+
+    Nothing analytical arrives unasked in this system; this is the exception,
+    and it earns it by being shorter than the act of answering it. A prompt
+    that explains itself every time is one you learn to ignore, so the scale
+    hint is a single clause and there is no preamble at all.
+    """
+    icon, question = _PROMPT_QUESTION.get(kind, ("\U0001f4ca", f"Rate your {kind}."))
+    scale = ("1 full \u2192 10 ravenous" if kind == "hunger"
+             else "1 worst \u2192 10 best")
+    return f"{icon} <b>{_esc(question)}</b>\n<i>{_esc(scale)}</i>"
