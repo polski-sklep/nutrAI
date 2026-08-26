@@ -117,4 +117,5 @@ async def main() -> None:
                    "by_length": {k: sum(v)/len(v) for k, v in by_len.items()},
                    "misses": misses}, open(a.json, "w"), indent=1)
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())

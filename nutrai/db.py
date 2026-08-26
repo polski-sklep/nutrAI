@@ -167,6 +167,30 @@ async def portion_history(user_id: int, fdc_id: int, limit: int = 30) -> list[fl
     return [float(r["grams"]) for r in rows]
 
 
+# How much a row containing every word of the query outranks one that does not.
+#
+# Left at 1.35, deliberately, after trying to raise it. Measured window:
+#
+#   pork jowl        needs > 1.466   (0.2083+0.0645)*B  >  0.400 `Pork jerky`
+#   unsalted butter  needs < 1.494   (0.3478+0.0985)*B  <  0.667 `Butter, salted`
+#                                     ^ Pretzels, soft, ..., unsalted, no butter
+#
+# A viable window 0.03 wide is not a parameter, it is two examples memorised,
+# and the next food breaks it. Worse, the two cases have the SAME similarity
+# ratio to their competitor (0.52 both), so no rule computed from similarity
+# can separate them: the difference is that "jowl" names the food while "no
+# butter" negates it. That is semantics, and a scalar cannot carry it - the
+# same conclusion docs/resolution/RECONCILED.md section 2 reached about
+# AUTO_MATCH_SIMILARITY.
+#
+# The measurement that decides where the effort goes: over 400 generated
+# queries (scripts/eval_retrieval.py) recall@1 is 53% and recall@5 is 85%.
+# The right row is nearly always ON the list; ranking it first is a ~1pp game.
+# Terms that return NOTHING - guanciale, halloumi, gochujang - have recall 0,
+# and no ranking function reaches them. That is where the gap is.
+COVERS_BOOST = 1.35
+
+
 async def search_foods(query: str, limit: int = 5, data_types: Sequence[str] | None = None,
                        user_id: int | None = None) -> list[asyncpg.Record]:
     """Candidate generation for the resolver.
@@ -256,11 +280,12 @@ async def search_foods(query: str, limit: int = 5, data_types: Sequence[str] | N
                -- goes to the model tier — the right row, at the head, with a
                -- human or a model to confirm it. Escalating with the correct
                -- candidate on the list is the win here, not auto-matching it.
-               (to_tsvector('english', f.description)
-                    @@ plainto_tsquery('english', $1)) DESC,
-               (similarity(f.description, $1) + ts_rank(
+               ((similarity(f.description, $1) + ts_rank(
                    to_tsvector('english', f.description),
-                   plainto_tsquery('english', $1))) DESC,
+                   plainto_tsquery('english', $1)))
+                * CASE WHEN to_tsvector('english', f.description)
+                            @@ plainto_tsquery('english', $1)
+                       THEN {COVERS_BOOST} ELSE 1.0 END) DESC,
                -- A row with no energy figure, ahead of precedence.
                --
                -- 276 of 411 Foundation rows carry no 1008 and no Atwater
