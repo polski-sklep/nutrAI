@@ -225,12 +225,42 @@ async def search_foods(query: str, limit: int = 5, data_types: Sequence[str] | N
                -- becomes unfindable — `butter` still returns eight rows.
                AND NOT {UNUSABLE_ROW.format(t="f")}
                {dt_filter}
-      ORDER BY ((similarity(f.description, $1) + ts_rank(
+      ORDER BY -- A row containing every word you said outranks one that does
+               -- not, before string similarity is consulted at all.
+               --
+               -- This was already computed and spent as a 1.35 multiplier,
+               -- which is not enough to survive the length penalty. Trigram
+               -- similarity between a short query and a USDA description is
+               -- dominated by the description's LENGTH, not by whether it
+               -- names the right food: r = -0.87 for `salmon` across the 66
+               -- rows containing it, -0.94 for `chicken breast`. USDA
+               -- descriptions get longer as they get more specific, so the
+               -- score punishes precision.
+               --
+               -- Measured, on `pork jowl` — guanciale's raw material:
+               --   Pork jerky                              sim 0.400  covers f  0.4000
+               --   Pork, fresh, ... jowl, raw              sim 0.208  covers t  0.3683
+               -- The row holding both of the user's words lost to a row
+               -- holding one, by 0.03. Coverage as a tie-break cannot fix
+               -- that; coverage as a key can, and does — the jowl row now
+               -- leads, and `Pork jerky` is not on the first page.
+               --
+               -- It degrades safely. plainto_tsquery is AND over every word,
+               -- so a query no row fully covers leaves every candidate at
+               -- covers=false and the old similarity order stands untouched.
+               -- Nothing becomes unreachable; the partition only reorders
+               -- rows that were already retrieved.
+               --
+               -- It does NOT raise `sim`, which is what AUTO_MATCH_SIMILARITY
+               -- gates on. The jowl row leads the list at 0.208 and still
+               -- goes to the model tier — the right row, at the head, with a
+               -- human or a model to confirm it. Escalating with the correct
+               -- candidate on the list is the win here, not auto-matching it.
+               (to_tsvector('english', f.description)
+                    @@ plainto_tsquery('english', $1)) DESC,
+               (similarity(f.description, $1) + ts_rank(
                    to_tsvector('english', f.description),
-                   plainto_tsquery('english', $1)))
-                * CASE WHEN to_tsvector('english', f.description)
-                            @@ plainto_tsquery('english', $1)
-                       THEN 1.35 ELSE 1.0 END) DESC,
+                   plainto_tsquery('english', $1))) DESC,
                -- A row with no energy figure, ahead of precedence.
                --
                -- 276 of 411 Foundation rows carry no 1008 and no Atwater

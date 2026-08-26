@@ -252,6 +252,44 @@ area; do not re-litigate them.
   card suppresses that line whenever the label is a substring of the
   description, which hides it on 42% of confirmed components.
 
+- **Epicure as a vocabulary bridge — evaluated 26 Aug 2026, deferred to stage 5
+  behind one measurable precondition.** `https://epicure-mcp.kaikaku.ai/mcp`.
+
+  What it is: skip-gram ingredient embeddings over 4.14 M recipes — 1,790
+  ingredients in 300 dimensions, about 2 MB. Thirteen tools, all flavour and
+  cuisine geometry (`neighbors`, `pairing_score`, `cultural_profile`, `morph`).
+
+  **It returns no nutrient values and no `fdc_id`**, so it cannot answer the
+  question the resolver asks, and invariant 1 is not at stake either way. Its
+  own documentation disclaims that outputs are nutritional advice.
+
+  The one slot it fits is the failure USDA cannot fix by ranking: a word the
+  database has no entry for. `pancetta` and `guanciale` return *nothing* —
+  not a weak match, nothing — while `bacon cured pork` reaches `Pork, cured,
+  bacon, cooked, baked` at 0.71. `twaróg` and `kasza gryczana` are the same
+  shape. `neighbors("pancetta")` plausibly bridges that, and today the bridge
+  is a prompt instruction the model has already ignored once.
+
+  **Precondition, and it decides the whole question: does the 1,790-word
+  vocabulary contain the foods actually eaten here?** If `guanciale`, `twaróg`
+  and `kasza gryczana` are absent, this closes. Untestable on 26 Aug — the
+  hosted endpoint answers `401 Bearer` despite a README saying no auth is
+  required.
+
+  If it is ever built: **only when `_candidates` returns zero**, and only to
+  generate additional search terms. Never an auto-match, never an alias
+  without a confirm. Flavour-space proximity is not nutritional equivalence —
+  cocoa sits near coffee, butter near cream — and a neighbour used as a
+  nutrition proxy is the plausible-number-from-the-wrong-row failure that has
+  produced nearly every bug in this repo. It would also put a network call in
+  a resolve path that is currently pure SQL.
+
+  Note what it does **not** address, since that is the reason it is not urgent:
+  none of the four failures of 25–26 Aug. The turkey was a fabricated word
+  upstream of any lookup, the brownie was a cached alias, the spinach pasta an
+  unrequested qualifier, the dried egg white an ignored state. All four were
+  fixed with local logic and no new dependency.
+
 - **NOVA processing score.** Scoped 16 Aug 2026, to be built after the eval
   fortnight ends (on or after 30 Aug 2026). Decisions below are settled; do not
   re-litigate them.
