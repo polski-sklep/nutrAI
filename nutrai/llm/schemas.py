@@ -32,7 +32,7 @@ PARSE_TOOL = {
                     "properties": {
                         "label": {
                             "type": "string",
-                            "description": "The ingredient as a person would name it: 'minced beef', 'jasmine rice', 'olive oil'.",
+                            "description": "The ingredient as a person would name it: 'minced beef', 'jasmine rice', 'olive oil'. Use ONLY the words the user gave you. Never add packaging, provenance or preparation the user did not state — not 'deli', 'prepackaged', 'commercial', 'restaurant', 'homemade', 'fast food', 'canned' or 'smoked' — however typical it is of the dish. These words pick a different USDA row and they move sodium and fat enormously: 'turkey wrap' was parsed as 'Turkey breast slices, deli' and matched a prepackaged row at 898 mg sodium per 100 g against 63 mg for roast turkey breast, so one invented word added 751 mg to the day and was then reported back to the user as a fact about what he ate. If the form is genuinely unstated, say the plain food and lower confidence.",
                         },
                         "search_terms": {
                             "type": "string",

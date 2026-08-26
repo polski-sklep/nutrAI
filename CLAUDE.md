@@ -387,7 +387,12 @@ seven days, when somebody wants to know.
 
 What still arrives unbidden earns it by being short and timely: the morning
 note (07:30), supplement reminders at their scheduled slots, and the Sunday
-report. Everything else is pull — `/today`, `/week`, `/next`, `/last`,
+report. **The greeting goes first.** Both ran on the same ten-minute interval
+as separate jobs, so the order was decided by registration and the event loop,
+and the capsule card kept landing ahead of "Good morning" — a day starting with
+a chore. `morning_first` sequences them in one job, which is the only way to
+guarantee it; each is shielded so a note that raises does not cost the
+reminder. Everything else is pull — `/today`, `/week`, `/next`, `/last`,
 `/audit`. If you are about to schedule something, that list is the bar.
 
 ## Days that do not count
@@ -652,6 +657,24 @@ completely. Name similarity alone finds nothing but fatty acids. The test
 carries an explicit exceptions list: 1119 Zeaxanthin and 1123 Lutein +
 zeaxanthin look complementary and must not be folded, because 1123 is a sum
 that already contains 1119.
+
+## The model may not invent what it was not told
+
+`label` is "the ingredient as a person would name it", and on 25 Aug 2026 a
+turkey wrap was parsed as **"Turkey breast slices, deli"** with `search_terms`
+"turkey breast, sliced, roasted, deli meat". The word *deli* was never typed.
+It matched `Turkey breast, sliced, prepackaged` at 898 mg sodium per 100 g
+against 63 mg for `Turkey, all classes, breast, meat and skin, cooked, roasted`
+— **751 mg from one invented word** on a 90 g portion, which was most of the
+day's overage, and the morning note then reported it back as a fact about what
+he ate. An alias for `baked turkey breast` already existed and never got a
+chance, because the label the model wrote was a different string.
+
+No resolver guard can catch this. `unrequested_qualifier` compares a candidate
+against the *query*, and the query contained "deli" — the fabrication is
+upstream of every check. So the schema forbids it by name: packaging,
+provenance and preparation words are not to be added however typical they are
+of the dish, and an unstated form means the plain food at lower confidence.
 
 ## Things that will look like bugs and are not
 

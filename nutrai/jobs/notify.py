@@ -309,18 +309,38 @@ async def weekly_summary(bot: Bot) -> None:
         )
 
 
+async def morning_first(bot: Bot) -> None:
+    """The greeting, then the capsules — in that order, on every tick.
+
+    Both ran on the same ten-minute interval as independent jobs, so which
+    arrived first was decided by registration order and the event loop. On
+    26 Aug the supplement card landed at 08:17 and "Good morning, Jacob" at
+    08:17 behind it, which reads as the day starting with a chore.
+
+    Sequencing them in one job is the only way to guarantee it: two coroutines
+    on one trigger have no defined order between them. Each is still shielded,
+    because a morning note that raises must not silently cost you the
+    reminder — the failure mode that ordering was meant to fix.
+    """
+    for job in (morning_notes, supplement_reminders):
+        try:
+            await job(bot)
+        except Exception:
+            log.exception("%s failed", job.__name__)
+
+
 def start_scheduler(bot: Bot) -> AsyncIOScheduler:
     sched = AsyncIOScheduler(timezone="UTC")
     sched.add_job(sweep, "interval", minutes=20, args=[bot], id="sweep")
     # Every ten minutes so a reminder lands near its time rather than up to
     # twenty minutes after it. The once-per-slot-per-day record is what makes
-    # a frequent sweep safe.
-    sched.add_job(supplement_reminders, "interval", minutes=10, args=[bot],
-                  id="supp_reminders")
-    # Same cadence: the note has to land near a time that differs per person
-    # and moves as the wake estimate does, so a cron hour cannot express it.
-    sched.add_job(morning_notes, "interval", minutes=10, args=[bot],
-                  id="morning_notes")
+    # a frequent sweep safe. The note needs the same cadence for a different
+    # reason — it lands near a time that differs per person and moves as the
+    # wake estimate does, so a cron hour cannot express it.
+    #
+    # One job rather than two, so the greeting always precedes the capsules.
+    sched.add_job(morning_first, "interval", minutes=10, args=[bot],
+                  id="morning_first")
     # 21:00 Europe/Warsaw. Move this to a per-user job once there is more than
     # one user; a single cron is honest for a single-user deployment.
     # Nothing analytical arrives unasked. The threshold rules went first, then
