@@ -262,6 +262,49 @@ def test_a_qualifier_the_query_never_asked_for_blocks_an_auto_match():
               "Rice, white, long-grain, regular, enriched, cooked") is None
 
 
+def test_an_fndds_dish_head_does_not_auto_match_a_bare_ingredient():
+    """FNDDS inverts the shape the guard above was written for.
+
+    SR Legacy writes `Food, qualifier`. FNDDS writes `Pie, oatmeal` — the head
+    is what the thing *is* and the food you asked for is the qualifier. The
+    head then shares no word with the query, the first-segment branch finds
+    nothing to narrow, and the row walks past a guard written to catch it.
+
+    Measured on 28 Aug 2026, every one auto-matching past all three guards:
+        sweet potato -> Pie, sweet potato  0.812  over Sweet potato, NFS 0.765
+        oatmeal      -> Cookie, oatmeal    0.667  three-way tie, cookie leading
+
+    This is the mechanism behind most of the surviving wrong auto-matches found
+    by the knowledge audit — see docs/knowledge/RECONCILED-KNOWLEDGE.md §2.1.
+    """
+    from nutrai.llm.parse import unrequested_qualifier as uq
+
+    assert uq("oatmeal", "Pie, oatmeal") == "Pie"
+    assert uq("oatmeal", "Cookie, oatmeal") == "Cookie"
+    assert uq("sweet potato", "Pie, sweet potato") == "Pie"
+    assert uq("seaweed", "Soup, seaweed") == "Soup"
+    assert uq("avocado", "Oil, avocado") == "Oil"
+    assert uq("glutinous rice", "Flour, rice, glutinous") == "Flour"
+
+    # The query asking for it is what makes it requested. `avocado oil` wants
+    # the oil, so the head is no longer unrequested.
+    assert uq("avocado oil", "Oil, avocado") is None
+    assert uq("rice pudding", "Pudding, rice") is None
+
+    # A category head is what the food IS, not a dish made from it, and these
+    # are the correct answers. `Cheese, brie` and `Spices, pepper, black` have
+    # exactly the same shape as `Pie, oatmeal` — head shares nothing with the
+    # query, food sits behind it — which is why dishes are named rather than
+    # the structure being tested. Agent 2 of the resolution audit measured a
+    # head-noun rule wrongly rejecting 30 of 132 live aliases.
+    assert uq("brie", "Cheese, brie") is None
+    assert uq("black pepper", "Spices, pepper, black") is None
+    assert uq("salmon", "Fish, salmon, NFS") is None
+    assert uq("canned tuna", "Fish, tuna, canned") is None
+    assert uq("oatmeal", "Oatmeal, NFS") is None
+    assert uq("rye bread", "Bread, rye") is None
+
+
 def test_a_row_carrying_none_of_your_words_is_not_auto_matched():
     """The model's paraphrase must not be scored as evidence for itself.
 

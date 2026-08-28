@@ -519,6 +519,42 @@ _QUALIFIER_STOP = frozenset({
 })
 
 
+# Head segments that name a dish or a processed product rather than a food.
+#
+# `unrequested_qualifier` assumes USDA writes `Food, qualifier, qualifier`, and
+# SR Legacy does: `Spaghetti, spinach, cooked`. FNDDS inverts it. There the head
+# is what the thing *is* and the food you asked for is the qualifier —
+# `Pie, oatmeal` is a pie, `Oil, avocado` is an oil — so the head shares no word
+# with the query, the first-segment branch finds nothing to narrow, and the row
+# passes a guard written to catch exactly this.
+#
+# Measured on 28 Aug 2026, all auto-matching past all three guards:
+#   sweet potato -> Pie, sweet potato   0.812  over Sweet potato, NFS  0.765
+#   oatmeal      -> Cookie, oatmeal     0.667  three-way tie, cookie at the head
+#   seaweed      -> Soup, seaweed       tied with Seaweed, raw
+#
+# A list rather than a rule, because the distinction is semantic and a rule gets
+# it wrong in the expensive direction. `Cheese, brie` and `Spices, pepper, black`
+# have exactly the same *shape* — head shares nothing with the query, the food
+# is a later segment — and are the correct answers, because cheese and spices
+# are what brie and pepper ARE. A pie is not what oatmeal is. Agent 2 of the
+# resolution audit measured a head-noun rule wrongly rejecting 30 of 132 live
+# aliases, which is why this names dishes instead of testing structure.
+#
+# Only blocks when the query did not ask for it: `avocado oil` still reaches
+# `Oil, avocado`, because "oil" is then one of the query's own words.
+_DISH_HEAD_WORDS = frozenset({
+    "pie", "cookie", "cookies", "cake", "cupcake", "muffin", "brownie",
+    "soup", "stew", "chowder", "chili", "casserole",
+    "pizza", "taco", "burrito", "sandwich", "wrap", "salad",
+    "roll", "bun", "biscuit", "cracker", "crackers", "pretzel", "pretzels",
+    "chip", "chips", "popcorn", "bar", "candy", "pudding", "custard",
+    "juice", "drink", "beverage", "soda", "smoothie", "shake", "tea", "coffee",
+    "oil", "flour", "powder", "syrup", "sauce", "gravy", "dressing", "dip",
+    "spread", "jam", "jelly", "butter",
+})
+
+
 def unrequested_qualifier(query: str, description: str) -> str | None:
     """A qualifier the description adds that the query never asked for.
 
@@ -542,7 +578,14 @@ def unrequested_qualifier(query: str, description: str) -> str | None:
     """
     q = {w for w in re.split(r"[^a-z0-9]+", query.lower()) if w}
     prep = set(_RAW_WORDS + _COOKED_WORDS + _DRY_WORDS)
-    for i, seg in enumerate(description.split(",")):
+    segs = description.split(",")
+    # Whether the food the user actually named turns up after the head. That is
+    # what separates the inverted shape from an ordinary weak match: in
+    # `Pie, oatmeal` the query's word is present, just not where the guard looks.
+    food_is_a_qualifier = any(
+        {w for w in re.split(r"[^a-z0-9]+", s.lower()) if w} & q for s in segs[1:]
+    )
+    for i, seg in enumerate(segs):
         words = {w for w in re.split(r"[^a-z0-9]+", seg.lower())
                  if w and w not in _QUALIFIER_STOP}
         if not words or words <= prep:
@@ -551,6 +594,12 @@ def unrequested_qualifier(query: str, description: str) -> str | None:
         if i == 0:
             # Only a name that echoes the query can narrow it.
             if (words & q) and extra:
+                return seg.strip()
+            # FNDDS's inverted shape: a head that names a dish or a processed
+            # product, does not appear in the query, and has the queried food
+            # sitting behind it as a qualifier. That is a different food made
+            # from yours, not a narrower version of it.
+            if words <= _DISH_HEAD_WORDS and not (words & q) and food_is_a_qualifier:
                 return seg.strip()
             continue
         if not (words & q) and extra:
