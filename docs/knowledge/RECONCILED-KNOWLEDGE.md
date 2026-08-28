@@ -237,3 +237,54 @@ One route, so it cannot drift:
    overturned 101 of 882 proposals, including one outright factual error.
 5. `high` is encoded; `medium` is encoded as a non-pre-empting search term;
    `low` is recorded as refused, with the reason, and not encoded.
+
+---
+
+## 7. Results — measured 28 Aug 2026
+
+### Before / after
+
+| measure | before | after | note |
+|---|---|---|---|
+| Golden set | 25 pass · 9 fail · 3 esc | **unchanged** | measures retrieval, not the auto-match decision |
+| `eval_retrieval` recall@1 | 53.0% | **unchanged** | generates queries from a row's own words; vocabulary cannot help it |
+| `eval_retrieval` recall@5 | 84.2% | **unchanged** | as above |
+| Seeded vocabulary surfaces returning **nothing** | **38 of 38** | **0 of 38** | 19 auto, 10 ask, 9 weak |
+| Confirmed live wrong auto-matches | 4 | **2** | `sweet potato`, `oatmeal` fixed; `jelly`, `millet` are other mechanisms |
+| Tests | 401 unit · 101 integration | **408 · 108** | seven generated knowledge tests added |
+
+**The two unchanged rows are the honest finding, not a null result.** Neither
+instrument can see what was fixed: `eval_retrieval` builds its queries out of a
+row's own words, so a synonym for a word USDA never uses cannot help it, and
+neither harness exercises the auto-match decision at all. That gap is why
+`tests/test_knowledge.py` exists and why it is generated rather than listed.
+
+### What each change actually bought
+
+- **FNDDS dish-head guard** — `sweet potato` no longer takes `Pie, sweet
+  potato` (0.812 over 0.765) and `oatmeal` no longer takes `Cookie, oatmeal`.
+  Generated over 400 dish-headed rows, nothing leaks.
+- **Unicode folding** — accented spellings returned zero candidates and now
+  resolve identically to their ASCII forms.
+- **Vocabulary** — 38 dead terms revived, including the eight commonest Polish
+  words, `prawn`, `porridge`, `guanciale`, `pancetta`, `kebab`, `lingonberry`.
+
+### Not built, and why
+
+- **The exact-tie break.** Measured rather than assumed: ties occur on 11 of 18
+  common queries, but precedence already picks the row with the most nutrients
+  in 10 of 11, and the one loser (`avocado` → `Oil, avocado`) is now blocked by
+  the dish-head guard. Every tie that was being decided wrongly is decided by
+  the guard instead, so a completeness tie-break would be churn.
+- **Nutritional fallbacks.** Refused, per §3.3, and confirmed by the decision
+  taken on this document.
+
+### Still open
+
+- `jelly` (a regional homonym: 266 kcal fruit spread vs 60 kcal gelatin
+  dessert) and `millet` (an FNDDS row that is cooked but names no state, 118
+  vs 378 kcal) both survive. Neither is a qualifier problem.
+- The **651 upheld mappings** are not yet loaded. The 38 seeded here were
+  verified by hand; extracting the rest from the critique files is the next
+  data task, and every one has to clear `test_every_synonym_reaches_at_least_
+  one_row` before it counts.
