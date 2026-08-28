@@ -5,7 +5,7 @@ import io
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Sequence
 
 import asyncpg
 from PIL import Image
@@ -292,7 +292,8 @@ def _alternatives(query: str) -> list[str]:
 
 
 def _queries(it: dict[str, Any], label: str,
-              dish_name: str | None = None) -> list[str]:
+              dish_name: str | None = None,
+              synonyms: Sequence[str] = ()) -> list[str]:
     """Every phrase the resolver searches on, in order, de-duplicated.
 
     Factored out of `_candidates` so provenance records what was actually
@@ -300,12 +301,21 @@ def _queries(it: dict[str, Any], label: str,
     of the same list, and the two would drift the first time either changed —
     at which point the record would describe a search that never happened,
     which is worse than no record.
+
+    `synonyms` are descriptions of rows the global vocabulary maps this label
+    to. They go in **last and as ordinary queries**: a synonym expands the
+    search and never decides the match, so ranking and all three guards judge
+    what comes back exactly as they judge everything else. A wrong synonym
+    therefore costs a bad candidate, not a silent auto-match that caches an
+    alias forever — which is the failure mode this whole layer is routing
+    around, and the reason it is not simply a second alias table.
     """
     base = [q for q in (str(it.get("search_terms") or "").strip(),
                         label.strip(),
                         (dish_name or "").strip()) if q]
     return list(dict.fromkeys(
-        base + [side for q in base for side in _alternatives(q)]))
+        base + [side for q in base for side in _alternatives(q)]
+        + [s for s in synonyms if s]))
 
 
 async def _candidates(it: dict[str, Any], label: str, user_id: int | None = None,
@@ -334,7 +344,8 @@ async def _candidates(it: dict[str, Any], label: str, user_id: int | None = None
     """
     q_model = str(it.get("search_terms") or "").strip()
     q_user = label.strip()
-    queries = _queries(it, label, dish_name)
+    syn = [r["expands_to"] for r in await db.synonyms_for(q_user)] if q_user else []
+    queries = _queries(it, label, dish_name, syn)
     pooled: dict[int, dict[str, Any]] = {}
     per_query: dict[int, dict[str, float]] = {}
     for q in dict.fromkeys(queries):
@@ -552,6 +563,9 @@ _DISH_HEAD_WORDS = frozenset({
     "juice", "drink", "beverage", "soda", "smoothie", "shake", "tea", "coffee",
     "oil", "flour", "powder", "syrup", "sauce", "gravy", "dressing", "dip",
     "spread", "jam", "jelly", "butter",
+    # Rendered or separated parts of an animal or plant, which are not the food
+    # you named: `kurczak` expanded to "chicken" and surfaced `Fat, chicken`.
+    "fat", "lard", "tallow", "broth", "stock", "gravy",
 })
 
 
@@ -729,12 +743,22 @@ async def resolve_items(user_id: int, items: list[dict[str, Any]],
         # user's own pickle brine row sat unconsulted, because nothing ever
         # searched for the two words together.
         hint = dish_name if (dish_name and len(items) == 1) else None
-        queries = _queries(it, label, hint)
+        expansions = [r["expands_to"] for r in await db.synonyms_for(label)]
+        queries = _queries(it, label, hint, expansions)
         cands = await _candidates(it, label, user_id, dish_name=hint)
         # A candidate that negates the food is never auto-matched, however well
         # it scores. It drops to the model instead of being taken on trust —
         # tier 3 costs a fraction of a penny and can read the word "meatless".
-        asked_for = f"{label} {it.get('search_terms') or ''}"
+        # The guards must judge against everything that was asked, including
+        # what the vocabulary added. Without the expansions here the guards go
+        # blind exactly where the expansion just widened the net: `porridge`
+        # expands to "oatmeal cooked", surfaces `Cookie, oatmeal`, and
+        # unrequested_qualifier cannot see that "oatmeal" was asked for, so the
+        # FNDDS dish head walks through the check written to stop it. Measured
+        # on the seed: porridge -> Cookie, oatmeal; ryz -> Soup, rice;
+        # kurczak -> Fat, chicken.
+        asked_for = " ".join(
+            [label, str(it.get("search_terms") or ""), *expansions])
 
         # Your own food beats a generic row, whatever the pooling says.
         #

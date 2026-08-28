@@ -35,7 +35,18 @@ def verdict(sim: float | None) -> str:
 
 
 async def probe(term: str, limit: int = 5) -> dict:
-    rows = await db.search_foods(term, limit=limit, user_id=None)
+    # The global vocabulary is part of retrieval, so the probe must consult it
+    # or it measures a resolver that no longer exists. Mirrors `_queries`:
+    # a synonym adds a phrase to search on and never decides the match.
+    rows = list(await db.search_foods(term, limit=limit, user_id=None))
+    seen = {r["fdc_id"] for r in rows}
+    for syn in await db.synonyms_for(term):
+        for r in await db.search_foods(syn["expands_to"], limit=limit, user_id=None):
+            if r["fdc_id"] not in seen:
+                seen.add(r["fdc_id"])
+                rows.append(r)
+    rows.sort(key=lambda r: -float(r["sim"] or 0))
+    rows = rows[:limit]
     cands = [
         {"fdc_id": r["fdc_id"], "description": r["description"],
          "data_type": r["data_type"], "sim": round(float(r["sim"] or 0), 3)}

@@ -230,6 +230,30 @@ def fold_query(text: str) -> str:
                    if not unicodedata.combining(c))
 
 
+async def synonyms_for(surface: str) -> list[asyncpg.Record]:
+    """Global vocabulary hits for a typed name, as extra search terms.
+
+    Returns phrases to search on, and the caller feeds them back in as
+    additional queries. That is the whole design:
+    a synonym **expands the query and never decides the match**, so the ranking
+    and all three guards run unchanged on the result, and a wrong synonym
+    degrades to a bad candidate instead of a silent auto-match that caches an
+    alias forever.
+
+    Exact match on the folded surface only. Fuzzy-matching the vocabulary
+    would put a second similarity comparison in front of the first, which is
+    the failure this whole layer exists to route around.
+    """
+    p = await pool()
+    return await p.fetch(
+        """SELECT surface, expands_to, relation, confidence
+             FROM food_synonym
+            WHERE surface = $1 AND retired_at IS NULL
+         ORDER BY confidence, id""",
+        fold_query(surface.strip().lower()),
+    )
+
+
 async def search_foods(query: str, limit: int = 5, data_types: Sequence[str] | None = None,
                        user_id: int | None = None) -> list[asyncpg.Record]:
     """Candidate generation for the resolver.

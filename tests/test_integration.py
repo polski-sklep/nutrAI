@@ -3568,11 +3568,18 @@ def test_a_resolution_that_matches_nothing_is_still_recorded(harness):
 
         res = await llm.resolve_items(uid, [
             # USDA carries neither word. Not a weak match — no candidates.
-            {"label": "guanciale", "search_terms": "guanciale",
+            #
+            # Was `guanciale` until 28 Aug 2026, when the global vocabulary
+            # gave it "cured pork jowl" and it started reaching real rows —
+            # which is the point of that table, and makes it useless as an
+            # example of a food the database cannot reach. `halloumi` is
+            # genuinely absent: no synonym, and no honest neighbour either,
+            # since a rennet-set brined sheep cheese is not any USDA row.
+            {"label": "halloumi", "search_terms": "halloumi",
              "grams": 40, "grams_source": "estimate", "state": "cooked",
              "confidence": 0.5},
         ])
-        assert res.unresolved == ["guanciale"]
+        assert res.unresolved == ["halloumi"]
         assert res.event_ids, "a resolution that failed recorded nothing"
 
         rows = await p.fetch(
@@ -3580,13 +3587,13 @@ def test_a_resolution_that_matches_nothing_is_still_recorded(harness):
                  FROM resolution_event WHERE user_id=$1 ORDER BY position""", uid)
         assert len(rows) == 1
         ev = rows[0]
-        assert ev["label"] == "guanciale"
+        assert ev["label"] == "halloumi"
         assert ev["match_tier"] == "none"
         assert ev["chosen_fdc_id"] is None
         assert ev["entry_id"] is None
         # Every phrase actually searched, so a later reader can tell an empty
         # database from a query that was never asked.
-        assert json.loads(ev["queries"]) == ["guanciale"]
+        assert json.loads(ev["queries"]) == ["halloumi"]
         assert json.loads(ev["candidates"]) == []
 
         await p.execute("DELETE FROM resolution_event WHERE user_id=$1", uid)
