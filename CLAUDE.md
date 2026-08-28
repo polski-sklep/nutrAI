@@ -232,9 +232,9 @@ area; do not re-litigate them.
 
   **The claim that "a saved product wins on similarity and precedence" was
   measured on 25 Aug 2026 and is false.** It loses for five of nine saved
-  products on the names a person actually types. Precedence never decides
-  anything — both sort orders use it only to break an exact tie in a float,
-  which does not occur — and the `own` guard in `resolve_items` requires
+  products on the names a person actually types. Precedence decides less than
+  it looks like it does — both sort orders consult it only to break an exact
+  tie in a float — and the `own` guard in `resolve_items` requires
   `sim >= AUTO_MATCH_SIMILARITY` before precedence 0 can pre-empt, so it cannot
   fire in the case it was written for. `cosmic cereal` resolved to an FNDDS
   porridge on 25 Aug with the user's own row sitting at 0.619 against a 0.62
@@ -246,6 +246,16 @@ area; do not re-litigate them.
   food precisely makes it *less* reachable. `docs/resolution/RECONCILED.md` §1
   has the measurement and §3.2 the replacement: authority is not a score, and
   the comparison must be against the pooled head rather than a constant.
+
+  **The claim that exact float ties "do not occur" was measured on 28 Aug
+  2026 and is false.** They occur on 11 of 18 common single-word queries:
+  short queries produce small rational similarities that collide. So
+  precedence *is* load-bearing, and on `avocado` it put `Oil, avocado`
+  (sr_legacy, precedence 2) above `Avocado, raw` (FNDDS, 3) at an identical
+  0.6666667. It was not changed, because measurement said not to: precedence
+  already picks the row carrying the most nutrients in 10 of those 11 ties,
+  and the one loser is now blocked by the FNDDS dish-head guard instead. See
+  `docs/knowledge/RECONCILED-KNOWLEDGE.md` §2.2 and §7.
 
   The "ask every time" decision therefore stands un-overtaken. The confirm card
   naming the matched row is still the right mechanism — but see SPEC-2 §5: the
