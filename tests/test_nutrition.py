@@ -334,3 +334,39 @@ def test_a_row_carrying_none_of_your_words_is_not_auto_matched():
 
     # Under four characters it must match exactly, or "oil" reaches "oilseed".
     assert label_absent("oil", "Oilseed, cottonseed")
+
+
+def test_an_accented_spelling_reaches_the_same_row_as_its_ascii_form():
+    """A word the database holds, made unreachable by spelling it properly.
+
+    USDA is American and its descriptions are ASCII — exactly two rows of
+    13,650 carry a non-ASCII character, and both are stray whitespace rather
+    than an accented letter. So the mismatch is always on the query side.
+
+    Measured before folding existed: macron spellings returned ZERO candidates
+    while their ASCII forms reached a candidate list.
+    """
+    from nutrai.db import fold_query as f
+
+    assert f("rāmen") == "ramen"
+    assert f("shōyu") == "shoyu"
+    assert f("jalapeño") == "jalapeno"
+    assert f("açaí") == "acai"
+    assert f("crème fraîche") == "creme fraiche"
+    assert f("gulyás") == "gulyas"
+    assert f("bánh mì") == "banh mi"
+
+    # Letters that are not accented forms at all in Unicode and do not
+    # decompose, so NFKD alone leaves them behind. Polish is the user's locale.
+    assert f("masło") == "maslo"
+    assert f("żurek") == "zurek"
+    assert f("smørrebrød") == "smorrebrod"
+
+    # An ASCII query is returned untouched, and case survives folding.
+    assert f("plain ascii") == "plain ascii"
+    assert f("Ł") == "L"
+
+    # Not case folding and not de-pluralising: search_foods already lowercases
+    # through similarity, and plurals are morphology rather than orthography.
+    assert f("Chicken Breast") == "Chicken Breast"
+    assert f("tomatoes") == "tomatoes"

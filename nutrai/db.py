@@ -4,6 +4,7 @@ import datetime as dt
 import decimal
 import json
 import re
+import unicodedata
 from typing import Any, Iterable, Sequence
 
 import asyncpg
@@ -191,6 +192,44 @@ async def portion_history(user_id: int, fdc_id: int, limit: int = 30) -> list[fl
 COVERS_BOOST = 1.35
 
 
+# Letters that carry no ASCII decomposition, so NFKD alone leaves them behind.
+_FOLD_PAIRS = {"ł": "l", "ø": "o", "đ": "d", "ß": "ss", "æ": "ae", "œ": "oe",
+               "þ": "th", "ð": "d", "ı": "i"}
+
+
+def fold_query(text: str) -> str:
+    """Strip diacritics from a search query so an accented spelling can match.
+
+    USDA is American and its descriptions are ASCII: exactly two rows of 13,650
+    contain a non-ASCII character, and both are stray whitespace rather than an
+    accented letter. So the mismatch is always on the query side, and folding
+    the query is enough — nothing is rewritten in `food`, which is a faithful
+    copy of a public dataset that the loader would overwrite anyway.
+
+    Measured before this existed: macron spellings (`rāmen`, `shōyu`) returned
+    ZERO candidates while their ASCII forms reached a candidate list, and
+    `jalapeño`, `açaí` and `crème` were the same shape. A word the database
+    holds, made unreachable by the way it is properly spelled.
+
+    NFKD handles anything that decomposes to a base letter plus a combining
+    mark. `ł` and `ø` do not decompose at all — they are distinct letters in
+    Unicode, not accented forms — so they are mapped by hand.
+
+    Deliberately NOT case folding or de-pluralising here: `search_foods`
+    already lowercases through `similarity`, and plurals are morphology rather
+    than orthography. And deliberately not touching `chilli`/`chili`/`chile`,
+    which are three spellings of one spice and also the name of a stew — see
+    docs/knowledge/RECONCILED-KNOWLEDGE.md section 3.2.
+    """
+    if text.isascii():
+        return text
+    lowered = "".join(_FOLD_PAIRS.get(c, _FOLD_PAIRS.get(c.lower(), c).upper()
+                                      if c.isupper() and c.lower() in _FOLD_PAIRS else c)
+                      for c in text)
+    return "".join(c for c in unicodedata.normalize("NFKD", lowered)
+                   if not unicodedata.combining(c))
+
+
 async def search_foods(query: str, limit: int = 5, data_types: Sequence[str] | None = None,
                        user_id: int | None = None) -> list[asyncpg.Record]:
     """Candidate generation for the resolver.
@@ -299,7 +338,7 @@ async def search_foods(query: str, limit: int = 5, data_types: Sequence[str] | N
                            AND fn.nutrient_id IN (1008, 2048, 2047))) DESC,
                f.precedence ASC
          LIMIT $2"""
-    args: list[Any] = [query, limit, user_id]
+    args: list[Any] = [fold_query(query), limit, user_id]
     if data_types:
         args.append(list(data_types))
     return await p.fetch(sql, *args)
