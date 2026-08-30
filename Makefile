@@ -1,4 +1,4 @@
-.PHONY: db test load bootstrap pin run logs deploy fmt backup backup-check
+.PHONY: db test load bootstrap pin run logs deploy reload fmt backup backup-check
 
 db:                       ## Postgres only; schema in sql/ applies on first boot
 	docker compose up -d db
@@ -27,6 +27,17 @@ backup:                   ## dump, verify and rotate. NUTRAI_BACKUP_DIR to reloc
 
 backup-check:             ## rehearse the latest restore into a scratch db
 	./scripts/restore.sh --check $$(ls -1t $${NUTRAI_BACKUP_DIR:-$$HOME/nutrai-backups}/nutrai-*.sql.gz | head -1)
+
+reload:                   ## locally: rebuild the image and PROVE the new code is running
+	docker compose up -d --build bot
+	@sleep 6
+	@host=$$(python3 scripts/pkgdigest.py nutrai); \
+	 cont=$$(docker compose exec -T bot python3 /app/scripts/pkgdigest.py /app/nutrai); \
+	 if [ "$$host" = "$$cont" ]; then \
+	   echo "deployed: $$host"; \
+	 else \
+	   echo "STILL STALE — host $$host, container $$cont"; exit 1; \
+	 fi
 
 deploy:                   ## on the VPS: pull, rebuild, restart. DB untouched.
 	git pull --ff-only

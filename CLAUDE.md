@@ -83,7 +83,20 @@ python scripts/load_usda.py <fdc_csv_dir>    # ~2 min for Foundation+SR+FNDDS
 python scripts/bootstrap.py --telegram-id N ...
 python -m nutrai.bot                       # run locally against local db
 docker compose logs -f bot
+make reload                                  # rebuild the image AND prove it is running
 ```
+
+**`docker compose restart bot` deploys nothing.** The service is `build: .` with
+no bind mount, so `restart` restarts the container from the image it already
+has. On 26 Aug 2026 that made every "restarted the bot" claim in a day's work
+false: eight commits of resolver guards, provenance and notification changes
+sat in git while the container ran an image built days earlier. Nothing said
+so — the bot started cleanly, because it started cleanly with the old code, and
+the only symptom was a feature that never fired.
+
+`make reload` rebuilds and then compares `scripts/pkgdigest.py` between host and
+container, failing loudly when they differ. A deployment you cannot verify is
+one you have to trust, and this one was wrong for a day.
 
 The db service publishes `127.0.0.1:5432` so the loader, the bootstrap script
 and a locally-run bot can reach it. Loopback only — never widen that binding.
