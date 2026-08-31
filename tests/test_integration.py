@@ -3995,3 +3995,47 @@ def test_a_dish_at_the_slug_cap_is_found_by_its_own_name(harness):
         await p.execute("DELETE FROM dish WHERE user_id=$1 AND name=$2", uid, name)
 
     run(scenario())
+
+
+def test_the_entry_view_never_sums_the_three_energy_ids(harness):
+    """1008, 2047 and 2048 are alternatives, not components.
+
+    Thirty-seven entries carry all three, so `sum(amount) WHERE nutrient_id IN
+    (1008, 2047, 2048)` — the obvious query — overstates by about 165%. It was
+    written on 31 Aug 2026 and reported a day as 2,632 kcal when the bot had
+    always shown 2,287. Nothing looked wrong: every number was real and the
+    total was plausible.
+    """
+
+    async def scenario():
+        from nutrai import db
+
+        p = await db.pool()
+        # Entries that actually carry more than one energy id — if none do, the
+        # test is asserting nothing and should say so rather than pass.
+        multi = await p.fetch(
+            """SELECT entry_id, count(*) AS n, sum(amount) AS summed
+                 FROM log_nutrient WHERE nutrient_id IN (1008, 2047, 2048)
+                GROUP BY entry_id HAVING count(*) > 1 LIMIT 20""")
+        assert multi, "no entry carries alternative energy ids; nothing tested"
+
+        for row in multi:
+            one = await p.fetchval(
+                """SELECT count(*) FROM v_entry_nutrient
+                    WHERE entry_id = $1 AND nutrient_id IN (1008, 2047, 2048)""",
+                row["entry_id"])
+            assert one == 1, (
+                f"entry {row['entry_id']} exposes {one} energy rows, not one")
+
+            view = await p.fetchval(
+                "SELECT amount FROM v_entry_nutrient "
+                "WHERE entry_id=$1 AND nutrient_id=1008", row["entry_id"])
+            raw = await p.fetchval(
+                "SELECT amount FROM log_nutrient WHERE entry_id=$1 AND nutrient_id=1008",
+                row["entry_id"])
+            assert float(view) == pytest.approx(float(raw)), (
+                "the view must expose the 1008 figure, not a derived one")
+            assert float(view) < float(row["summed"]), (
+                "the view is summing the alternatives, which is the bug")
+
+    run(scenario())

@@ -814,6 +814,15 @@ would treble a Foundation row. `core.nutrition.normalise_energy` and the one
 hard-coded branch in `day_nutrient_coverage` handle that. Two rules because
 there are two relationships.
 
+**Query it through `v_entry_nutrient` (sql/033), not `log_nutrient`.** Thirty-
+seven entries carry all three energy ids, so `sum(amount) WHERE nutrient_id IN
+(1008, 2047, 2048)` — the obvious query — overstates by about 165%. That query
+was written on 31 Aug 2026 by the author of this section, and reported a day as
+2,632 kcal when the bot had always shown 2,287; every number in it was real and
+the total was plausible. The view folds sugars and resolves energy to one 1008
+by preference. It is food only: supplements reach a day through `day_progress`,
+which keeps `amount_food` and `amount_supplement` apart deliberately.
+
 `tests/test_integration.py::test_no_targeted_nutrient_is_silently_split` fails
 if a future load introduces another split. It detects them by *complementary
 coverage* — foods carry one id or the other and almost never both — because
