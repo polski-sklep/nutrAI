@@ -70,6 +70,27 @@ RE_SLUG = re.compile(r"^[a-z][a-z0-9_-]{0,31}$", re.I)
 
 WORD_SCALE = {"half": 0.5, "double": 2.0, "triple": 3.0, "twice": 2.0}
 
+# Percentages, because that is how a portion change is actually said.
+#
+# The grammar had `x0.75` and nothing else, so "reduce all by 25%" — typed at
+# the card that had just invited a correction — came back "I could not read
+# that as a correction". The multiplier is the same instruction expressed in
+# the form nobody reaches for first.
+RE_PERCENT = re.compile(r"^([+-]?)(\d+(?:[.,]\d+)?)\s*%$")
+
+# Which way a bare percentage goes. A percentage with no direction at all is
+# genuinely ambiguous — "25%" could mean a quarter less or a quarter of — and
+# is left unparsed rather than guessed at, because both readings are plausible
+# and one of them silently rewrites a meal.
+SCALE_DOWN = {"reduce", "reduced", "cut", "lower", "decrease", "decreased",
+              "less", "smaller", "down", "shrink", "fewer"}
+SCALE_UP = {"increase", "increased", "raise", "raised", "more", "bigger",
+            "up", "boost", "larger"}
+# Swallowed alongside a percentage so they do not surface as "I could not read
+# ..." noise beside an instruction that was understood.
+SCALE_FILLER = {"all", "by", "everything", "the", "make", "it", "them", "to",
+                "portion", "portions", "size", "sizes", "each", "every"}
+
 
 @dataclass(frozen=True)
 class Scale:
@@ -223,6 +244,27 @@ def parse_ops(toks: list[str]) -> tuple[list[Op], list[str]]:
     """
     ops: list[Op] = []
     unparsed: list[str] = []
+
+    # Percentages are read across the whole instruction rather than token by
+    # token: "reduce all by 25%" carries its direction three words before the
+    # number, and a left-to-right scanner would have emitted the scale before
+    # it knew which way to go.
+    pct = next((m for t in toks if (m := RE_PERCENT.match(t.lower()))), None)
+    if pct:
+        words = {t.lower().strip(".,") for t in toks}
+        sign = pct.group(1)
+        if sign == "-" or (not sign and words & SCALE_DOWN):
+            factor = 1 - _f(pct.group(2)) / 100
+        elif sign == "+" or (not sign and words & SCALE_UP):
+            factor = 1 + _f(pct.group(2)) / 100
+        else:
+            factor = None
+        if factor is not None and factor > 0:
+            ops.append(Scale(factor))
+            toks = [t for t in toks
+                    if not RE_PERCENT.match(t.lower())
+                    and t.lower().strip(".,") not in
+                    (SCALE_DOWN | SCALE_UP | SCALE_FILLER)]
 
     i = 0
     seen_bare_number = False

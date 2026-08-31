@@ -3931,8 +3931,10 @@ async def _try_fix(msg: Message, u: asyncpg.Record, text: str) -> bool:
     if not ops:
         await msg.answer(
             "I could not read that as a correction. Try "
-            "<code>rice 200</code>, <code>-oil</code>, <code>+30 butter</code> "
-            "or <code>x0.8</code>.",
+            "<code>rice 200</code>, <code>-oil</code>, <code>+30 butter</code>, "
+            "<code>reduce all by 25%</code> or <code>x0.8</code>.\n\n"
+            "<i>A bare percentage is ambiguous — <code>25%</code> could mean a "
+            "quarter less or a quarter of — so say which way.</i>",
             parse_mode="HTML",
         )
         return True
@@ -4720,8 +4722,8 @@ async def cb_fix(cq: CallbackQuery) -> None:
     e, comps = await db.entry_with_components(entry_id)
     lines = [
         (
-            "Reply with the correction, e.g. <code>rice 200</code> or "
-            "<code>-oil</code> or <code>x0.8</code>."
+            "Reply with the correction, e.g. <code>rice 200</code>, "
+            "<code>-oil</code>, or <code>reduce all by 25%</code>."
         ),
         "",
     ]

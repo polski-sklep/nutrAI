@@ -286,3 +286,52 @@ def test_a_glass_of_water_is_not_breakfast():
     assert dsl.slot_for_hour(13, "drink", kcal=400) == "drink"
     # Unknown energy changes nothing — the clock decides, as before.
     assert dsl.slot_for_hour(8) == "breakfast"
+
+
+def test_a_portion_change_can_be_said_as_a_percentage():
+    """`x0.75` was the only way to scale, and nobody reaches for it first.
+
+    On 31 Aug 2026 "reduce all by 25%", typed at the card that had just
+    invited a correction, came back "I could not read that as a correction" —
+    the same instruction the grammar already understood, in the form a person
+    actually uses.
+    """
+    from nutrai.core.dsl import Scale, parse_ops
+
+    for text, factor in [
+        ("reduce all by 25%", 0.75),
+        ("-25%", 0.75),
+        ("25% less", 0.75),
+        ("make it 20% smaller", 0.80),
+        ("+30%", 1.30),
+        ("increase by 10%", 1.10),
+    ]:
+        ops, unparsed = parse_ops(text.split())
+        assert ops == [Scale(factor)], f"{text!r} -> {ops}"
+        # The direction and filler words are consumed, not reported back as
+        # noise beside an instruction that was understood.
+        assert unparsed == [], f"{text!r} left {unparsed}"
+
+
+def test_an_ambiguous_or_impossible_percentage_is_refused():
+    """Both readings of a bare percentage are plausible, and one is wrong.
+
+    "25%" could mean a quarter less or a quarter of. Guessing would silently
+    rewrite a meal, so it stays unparsed and the card says which way to say it.
+    """
+    from nutrai.core.dsl import parse_ops
+
+    ops, unparsed = parse_ops(["25%"])
+    assert ops == [] and unparsed == ["25%"]
+
+    # A reduction past zero is not a reduction.
+    ops, unparsed = parse_ops("reduce by 150%".split())
+    assert ops == []
+
+
+def test_a_percentage_combines_with_the_rest_of_the_grammar():
+    from nutrai.core.dsl import Scale, parse_ops
+
+    ops, _unparsed = parse_ops("reduce all by 25% -oil".split())
+    assert Scale(0.75) in ops
+    assert any(type(o).__name__ == "DropComponent" for o in ops)

@@ -720,6 +720,20 @@ async def resolve_items(user_id: int, items: list[dict[str, Any]],
             continue
 
         alias = await db.resolve_alias(user_id, label)
+        # An alias is keyed on the label, and a label does not carry its state.
+        # "pork chop" is raw one day and cooked the next, so a cached row that
+        # contradicts what was declared today is a cache miss, not an answer.
+        #
+        # This is the one guard the alias tier needs. On 31 Aug 2026 a gnocchi
+        # meal logged 200 g of "pork chop" against `Pork, chop, center cut,
+        # raw` — 145 kcal and 22.8 g protein against 183 and 27.5 for a chop
+        # that was eaten — because an alias written before the guards existed
+        # is never re-examined. Skipping it sends the name back through search,
+        # where `state_conflicts` applies as it does to anything else.
+        if alias and state_conflicts(it.get("state"), alias["description"]):
+            log.info("alias %r -> %r contradicts state %r; re-resolving",
+                     label, alias["description"], it.get("state"))
+            alias = None
         if alias:
             await db.bump_alias(alias["id"])
             # The alias tier is the steady state — most resolutions arrive here
