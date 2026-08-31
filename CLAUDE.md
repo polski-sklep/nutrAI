@@ -719,6 +719,28 @@ tell that it is one bottle.
 `record_meal` call per album, not merely one confirmation card. The card count
 was the original guarantee and it stayed true while the contents doubled.
 
+## A label is photographed from more than one side
+
+`_handle_photos` buffers an album correctly and then handed the two label
+branches `msgs[0]`. The name is on the front and the panel is on the back, so
+the model was shown a front label and asked where the nutrition panel was. On
+31 Aug 2026 a psyllium packet printing **88 g of fibre per 100 g** came back as
+"no nutrition panel visible in this photo", and fibre was reported as untracked
+when it is `1079` and has been in `_nutrient_menu` all along.
+
+The caption was the other half. `_handle_photos` computes it, the meal path
+uses it, and neither label branch was passed it — so a panel typed out by
+somebody holding the packet was discarded in favour of the photograph it was
+written from. A caption on a label photo is *better* evidence than the
+photograph, not worse.
+
+Both readers now take `images: list[str]` and send every shot in one call, with
+a line saying they are the same product, exactly as `parse_photo` does for a
+meal. `tests/test_integration.py::test_a_label_album_reaches_the_model_whole`
+counts the image blocks that reached the model rather than the calls made:
+"one call per album" stayed true for weeks while the album's second photo was
+being dropped before the call was built.
+
 ## Two USDA ids, one measurement
 
 `nutrient.canonical_id` folds ids that report the same thing. Today it holds

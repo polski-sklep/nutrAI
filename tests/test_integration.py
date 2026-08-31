@@ -77,6 +77,7 @@ class StubLLM:
 
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.contents: list[list] = []
         self.meal: dict[str, Any] = {}
         self.pending_labels: list[str] = []
         self.label: dict[str, Any] = {"supplements": []}
@@ -86,6 +87,10 @@ class StubLLM:
 
         name = tool["name"]
         self.calls.append(name)
+        # Kept so a test can assert what was *sent*, not only which tool ran.
+        # "One call per album" stayed true while the album's second photo was
+        # being dropped before the call was made.
+        self.contents.append(content)
 
         if name == "record_meal":
             data = self.meal
@@ -3845,5 +3850,52 @@ def test_skipping_a_prompt_records_nothing(harness):
         assert row["declined"] is True and row["observation_id"] is None
 
         await p.execute("DELETE FROM rating_prompt WHERE user_id=$1", uid)
+
+    run(scenario())
+
+
+def test_a_label_album_reaches_the_model_whole(harness):
+    """The panel is on the back and the name is on the front.
+
+    `_handle_photos` buffered the album correctly and then handed the
+    supplement branch `msgs[0]`, so the model was shown a front label and asked
+    where the nutrition panel was. On 31 Aug 2026 a psyllium packet printing
+    88 g of fibre per 100 g came back as "no nutrition panel visible in this
+    photo", and the caption — the panel typed out by somebody holding the
+    packet — was computed at the top of the handler and never passed on.
+    """
+
+    async def scenario():
+        await _reset()
+        from nutrai.bot import ALBUM_WAIT, dp
+
+        harness.llm.label = {
+            "supplements": [{
+                "name": "Psyllium Husk", "serving_desc": "7.5 g",
+                "servings_per_day": 1, "schedule": "daily",
+                "nutrients": [{"nutrient_id": 1079, "amount": 6.6, "unit": "g",
+                               "printed_label": "Fibre"}],
+            }],
+            "unreadable": "",
+        }
+        await harness.feed("/supp add")
+        harness.llm.calls.clear()
+        harness.llm.contents.clear()
+
+        for i in range(2):
+            await dp.feed_update(harness.tg.bot, harness.tg.photo_update(
+                _jpeg(),
+                caption="Fibre 88 g per 100 g" if i == 0 else None,
+                media_group_id="label-1"))
+        await asyncio.sleep(ALBUM_WAIT + 0.6)
+
+        assert harness.llm.calls.count("read_supplement_label") == 1, harness.llm.calls
+        sent = harness.llm.contents[-1]
+        images = [b for b in sent if b.get("type") == "image"]
+        assert len(images) == 2, (
+            f"{len(images)} of 2 photos reached the model — the panel is on the "
+            "one that was dropped")
+        blob = " ".join(b.get("text", "") for b in sent if b.get("type") == "text")
+        assert "88 g per 100 g" in blob, "the caption was computed and discarded"
 
     run(scenario())

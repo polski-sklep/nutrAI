@@ -2861,7 +2861,8 @@ async def cb_off_discard(cq: CallbackQuery) -> None:
                             "another barcode.")
 
 
-async def _handle_food_label(msg: Message, u: asyncpg.Record, name: str) -> None:
+async def _handle_food_label(msgs: Message | list[Message], u: asyncpg.Record,
+                             name: str, *, text: str | None = None) -> None:
     """Transcribe a packaged food's panel and offer to store it.
 
     Same amendment as the supplement panel: a model may transcribe a printed
@@ -2869,14 +2870,22 @@ async def _handle_food_label(msg: Message, u: asyncpg.Record, name: str) -> None
     at the moment it is made — so the card shows each line as printed beside
     the figure taken from it.
     """
-    f = await msg.bot.get_file(msg.photo[-1].file_id)
-    buf = await msg.bot.download_file(f.file_path)
-    b64, _w, _h = llm.prepare_image(buf.read())
+    batch = [msgs] if isinstance(msgs, Message) else list(msgs)
+    msg = batch[0]
+    shots: list[str] = []
+    for m in batch[:4]:
+        if not m.photo:
+            continue
+        f = await m.bot.get_file(m.photo[-1].file_id)
+        buf = await m.bot.download_file(f.file_path)
+        b64, _w, _h = llm.prepare_image(buf.read())
+        shots.append(b64)
+    text = text or next((m.caption for m in batch if m.caption), None)
 
     note = await msg.answer("🏷 reading the panel…")
     try:
         data, cost = await llm.read_food_label(
-            user_id=u["id"], image_b64=b64, name_hint=name)
+            user_id=u["id"], images=shots, name_hint=name, text=text)
     except Exception as exc:
         await _parse_failed(note, exc)
         return
@@ -3486,7 +3495,7 @@ async def _handle_photos(msgs: list[Message]) -> None:
     # A photo sent while naming a food is that food's nutrition panel.
     food = await db.latest_pending(u["id"], "food_await", within_minutes=30)
     if food:
-        await _handle_food_label(msg, u, food.get("name") or "")
+        await _handle_food_label(msgs, u, food.get("name") or "", text=caption)
         return
 
     # A photo sent *just* after "add a supplement" is a label. One sent hours
@@ -3494,7 +3503,7 @@ async def _handle_photos(msgs: list[Message]) -> None:
     # it, so a stale tap from the afternoon captured a plate of stir fry and
     # announced "reading the label…" over it.
     if await db.latest_pending(u["id"], "supp_label", within_minutes=15):
-        await _handle_supplement_label(msg, u)
+        await _handle_supplement_label(msgs, u, text=caption)
         return
 
     # The largest PhotoSize is the last element. Anything smaller loses the
@@ -4373,7 +4382,7 @@ async def unknown_command(msg: Message) -> None:
 
 
 async def _handle_supplement_label(
-    msg: Message, u: asyncpg.Record, *, text: str | None = None
+    msgs: Message | list[Message], u: asyncpg.Record, *, text: str | None = None
 ) -> None:
     """Transcribe one or more panels, show them, save nothing until confirmed.
 
@@ -4383,18 +4392,32 @@ async def _handle_supplement_label(
     """
     from .core import supplements
 
+    # Every photograph of the packet, not the first one. The name is on the
+    # front and the panel is on the back, so a label arrives as an album — and
+    # taking msgs[0] showed the model a front label and then asked it to read
+    # a nutrition panel. On 31 Aug 2026 a psyllium packet printing 88 g of
+    # fibre per 100 g came back as "no nutrition panel visible in this photo".
+    batch = [msgs] if isinstance(msgs, Message) else list(msgs)
+    msg = batch[0]
     photo_id = None
-    b64 = None
-    if msg.photo:
-        f = await msg.bot.get_file(msg.photo[-1].file_id)
-        buf = await msg.bot.download_file(f.file_path)
+    shots: list[str] = []
+    for m in batch[:4]:
+        if not m.photo:
+            continue
+        f = await m.bot.get_file(m.photo[-1].file_id)
+        buf = await m.bot.download_file(f.file_path)
         b64, _w, _h = llm.prepare_image(buf.read())
-        photo_id = msg.photo[-1].file_id
+        shots.append(b64)
+        photo_id = photo_id or m.photo[-1].file_id
+    # A caption on a label photo is the panel typed out by somebody holding the
+    # packet. It was computed and dropped, so the better source was discarded
+    # in favour of the photograph it was written from.
+    text = text or next((m.caption for m in batch if m.caption), None)
 
     note = await msg.answer("🔍 reading the label…")
     try:
         data, cost = await llm.read_supplement_label(
-            user_id=u["id"], image_b64=b64, text=text
+            user_id=u["id"], images=shots, text=text
         )
     except Exception as exc:
         await _parse_failed(note, exc)

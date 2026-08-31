@@ -1003,7 +1003,8 @@ async def _log(res: ToolResult, purpose: str, user_id: int | None) -> None:
 
 
 async def read_supplement_label(
-    *, user_id: int, image_b64: str | None = None, text: str | None = None
+    *, user_id: int, image_b64: str | None = None, text: str | None = None,
+    images: list[str] | None = None,
 ) -> tuple[dict[str, Any], float]:
     """Transcribe supplement panels from a photo or from written text.
 
@@ -1015,15 +1016,24 @@ async def read_supplement_label(
     Either way it is transcription rather than estimation: the model is given
     the exact nutrient ids it may use and told to report what the source states.
     """
-    if not image_b64 and not text:
+    if not image_b64 and not images and not text:
         raise ValueError("a photo or some text is required")
 
-    content: list[dict[str, Any]] = []
-    if image_b64:
-        content.append({
-            "type": "image",
-            "source": {"type": "base64", "media_type": "image/jpeg", "data": image_b64},
-        })
+    # Every photograph of the packet, in one call. A panel is on the back and
+    # the name is on the front, so the two arrive as an album — and sending
+    # only the first meant the model was shown a front label and asked where
+    # the nutrition panel was. On 31 Aug 2026 that read an 88 g/100 g fibre
+    # panel as "no nutrition panel visible in this photo".
+    shots = list(images or ([image_b64] if image_b64 else []))
+    content: list[dict[str, Any]] = [
+        {"type": "image",
+         "source": {"type": "base64", "media_type": "image/jpeg", "data": b}}
+        for b in shots
+    ]
+    if len(shots) > 1:
+        content.append({"type": "text",
+                        "text": f"These {len(shots)} photographs are of the same "
+                                "product — front, back and panel. Read them together."})
     if text:
         content.append({"type": "text", "text": f"Product information:\n\n{text}"})
     content.append({
@@ -1071,7 +1081,8 @@ def _nutrient_menu() -> str:
 
 
 async def read_food_label(
-    *, user_id: int, image_b64: str, name_hint: str = ""
+    *, user_id: int, image_b64: str | None = None, name_hint: str = "",
+    images: list[str] | None = None, text: str | None = None,
 ) -> tuple[dict[str, Any], float]:
     """Transcribe a packaged food's panel into a per-100 g composition.
 
@@ -1081,10 +1092,20 @@ async def read_food_label(
     describes a bowl rather than a product — so the tool is asked which column
     it read and told to prefer per 100 g.
     """
-    content: list[dict[str, Any]] = [{
-        "type": "image",
-        "source": {"type": "base64", "media_type": "image/jpeg", "data": image_b64},
-    }]
+    shots = list(images or ([image_b64] if image_b64 else []))
+    content: list[dict[str, Any]] = [
+        {"type": "image",
+         "source": {"type": "base64", "media_type": "image/jpeg", "data": b}}
+        for b in shots
+    ]
+    if len(shots) > 1:
+        content.append({"type": "text",
+                        "text": f"These {len(shots)} photographs are of the same "
+                                "product — front, back and panel. Read them together."})
+    # A caption is the panel typed out by someone holding the packet, which is
+    # better evidence than a photograph of a curved foil bag, not a worse one.
+    if text:
+        content.append({"type": "text", "text": f"Product information:\n\n{text}"})
     if name_hint:
         content.append({"type": "text",
                         "text": f"The user calls this food: {name_hint}"})
