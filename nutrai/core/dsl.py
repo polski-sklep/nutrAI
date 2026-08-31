@@ -560,3 +560,22 @@ def slot_for_hour(hour: int, model_slot: str | None = None,
         if hour < cutoff:
             return name
     return "snack"
+
+
+# Dish slugs, generated and matched by the same function.
+#
+# There were two transforms: `_slugify` in bot.py replaced any run of non
+# alphanumerics with "-" and cut the result to 32, while `dish_by_name`
+# compared `lower(replace(name, ' ', '-'))` — spaces only, uncut. Equality
+# between them held just for short names with no punctuation. Twenty-five of
+# seventy-six saved dishes sit exactly at the 32-character cap and could never
+# be found by their own name through that path; anything with a comma in it
+# could not either. It fell through to a similarity match, so it looked like
+# fuzzy matching working rather than exact matching broken.
+SLUG_MAX = 32
+
+
+def slugify(name: str) -> str:
+    """A dish name to its slug. The only implementation, deliberately."""
+    s = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return s[:SLUG_MAX].strip("-") or "dish"

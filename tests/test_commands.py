@@ -664,3 +664,43 @@ def test_a_shortened_supplement_name_is_recognised():
     assert _names_supplement(norm("Marine Collagen"), norm("coffee with marine collagen"))
     assert not _names_supplement(norm("Zinc"), norm("zinc-rich beef stew"))
     assert not _names_supplement(norm("Vitamin D3 + K2"), norm("vitamin c with breakfast"))
+
+
+def test_no_callback_data_is_built_by_truncating_a_string():
+    """Telegram caps callback_data at 64 bytes. Cutting to fit is data loss.
+
+    `deffood:` carried a food's name cut to 40 characters, and on 31 Aug 2026
+    that saved a row called "Fish pie (mashed potato, salmon, white f",
+    aliased it under that string, broke the mass lookup that compared the two
+    labels, and finally logged the meal against `Fish, NFS` at 736 kcal. The
+    truncation does not fail where it happens — it fails four subsystems
+    later, where the evidence is gone.
+
+    The rule is that a callback carries ids, and the slice is the tell. This
+    reads the source because the property is about how the string is *built*,
+    which no runtime assertion can see once it has been built.
+    """
+    import pathlib
+    import re
+
+    src = pathlib.Path(__file__).resolve().parent.parent / "nutrai" / "bot.py"
+    offenders = [
+        line.strip()
+        for line in src.read_text().splitlines()
+        if "callback_data=" in line and re.search(r"\[:\s*\d+\s*\]", line)
+    ]
+    assert not offenders, (
+        "callback_data built by truncating a string — carry an id instead:\n  "
+        + "\n  ".join(offenders))
+
+
+def test_every_callback_fits_telegrams_limit_for_realistic_values():
+    """The ids are short, but the rule needs a number attached to it."""
+    from nutrai.core.dsl import SLUG_MAX, slugify
+
+    # The longest callback that carries anything user-derived is the dish
+    # suggestion, and the slug is capped at generation.
+    assert len(f"rpt:{'x' * SLUG_MAX}".encode()) <= 64
+    assert len(slugify("a" * 200)) <= SLUG_MAX
+    # Entry ids are bigints; even an absurd one leaves room.
+    assert len(f"deffood:{9_223_372_036_854_775_807}".encode()) <= 64

@@ -621,6 +621,26 @@ field that distinguishes the shapes rather than the field count.
 
 ## A callback is 64 bytes, and a food name is longer
 
+**The sweep, done 31 Aug 2026.** Every `callback_data=` in `bot.py` was
+enumerated. All but two carry an integer id or a fixed keyword. Pending
+payloads are safe by construction — `pending_action` is JSONB with no length
+limit, and the name it carries *is* the data being collected.
+
+Two carried a name, and there was a third copy of the define button in
+`cb_discard` still cutting to 40. `rpt:{slug}` is safe because `_slugify` caps
+at 32 — but that cap was the same bug one layer down: slugs were generated
+truncated and matched **untruncated**, by a different transform
+(`lower(replace(name, ' ', '-'))`, spaces only). Twenty-five of seventy-six
+saved dishes sit exactly at the cap, so exact-slug matching was dead for them
+and for every name containing a comma. It fell through to the similarity
+branch, which looked like fuzzy matching working rather than exact matching
+broken. There is one `dsl.slugify` now, used to write the slug and to read it.
+
+`test_no_callback_data_is_built_by_truncating_a_string` reads the source and
+fails on a slice next to `callback_data=`. The property is about how the string
+is *built*, and once built there is nothing left for a runtime check to see.
+
+
 `deffood:` carried the label, cut to 40 characters to fit Telegram's
 `callback_data` limit. On 31 Aug 2026 that turned one truncation into four
 failures: `fish pie (mashed potato, salmon, white fish)` — 44 characters — was

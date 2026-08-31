@@ -4428,11 +4428,9 @@ async def _present(
     return entry_id
 
 
-def _slugify(name: str) -> str:
-    import re
-
-    s = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
-    return s[:32] or "dish"
+# Was a second implementation of dsl.slugify, differing from the one the
+# lookup used. Kept as a name so call sites read the same.
+_slugify = dsl.slugify
 
 
 # ------------------------------------------------------- unknown commands
@@ -4706,9 +4704,9 @@ async def cb_no(cq: CallbackQuery) -> None:
     # it is a fact about the parse rather than about the message.
     weak = await db.weak_labels(entry_id)
     await db.discard_entry(entry_id)
-    keep = [InlineKeyboardButton(
-        text=f"🥫 define {render._short_note(weak[0])[:18]} yourself",
-        callback_data=f"deffood:{weak[0][:40]}")] if weak else []
+    # The third place this button was built, and the last one still cutting the
+    # label to 40 characters. One implementation now.
+    keep = _define_button([(w, 0.0) for w in weak], entry_id)
     await cq.message.edit_text(
         (cq.message.text or "") + "\n\n❌ discarded",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[keep]) if keep else None,

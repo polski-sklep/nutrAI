@@ -10,6 +10,7 @@ from typing import Any, Iterable, Sequence
 import asyncpg
 
 from .config import AUTO_MATCH_SIMILARITY, CORE_NUTRIENTS, settings
+from .core import dsl
 from .core.estimate import sigma_for
 from .core.nutrition import ResolvedComponent, normalise_energy, total_nutrients
 
@@ -461,9 +462,9 @@ async def dish_by_name(user_id: int, text: str,
     return await p.fetchrow(
         """SELECT * FROM dish
             WHERE user_id = $1 AND NOT archived
-              AND (slug = lower(replace($2, ' ', '-')) OR similarity(name, $2) >= $3)
-         ORDER BY similarity(name, $2) DESC LIMIT 1""",
-        user_id, text.strip(), min_sim,
+              AND (slug = $4 OR similarity(name, $2) >= $3)
+         ORDER BY (slug = $4) DESC, similarity(name, $2) DESC LIMIT 1""",
+        user_id, text.strip(), min_sim, dsl.slugify(text),
     )
 
 

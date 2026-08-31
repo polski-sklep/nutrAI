@@ -3951,3 +3951,47 @@ def test_a_long_food_name_survives_the_define_button(harness):
         await p.execute("DELETE FROM food WHERE owner_user_id=$1", uid)
 
     run(scenario())
+
+
+def test_a_dish_at_the_slug_cap_is_found_by_its_own_name(harness):
+    """Slugs are generated truncated and were matched untruncated.
+
+    `_slugify` cut to 32 characters and replaced every run of non-alphanumerics
+    with a dash; `dish_by_name` compared `lower(replace(name, ' ', '-'))` —
+    spaces only, uncut. Equality held only for short names without punctuation.
+    Twenty-five of seventy-six saved dishes sit exactly at the cap, so the
+    exact-slug path was dead for them and for anything with a comma; they fell
+    through to a similarity match, which looked like fuzzy matching working
+    rather than exact matching broken.
+    """
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+        from nutrai.core.dsl import SLUG_MAX, slugify
+
+        name = "Fried egg, tomato slices, rye bread and cottage cheese"
+        assert len(slugify(name)) == SLUG_MAX, "this name must reach the cap"
+
+        p = await db.pool()
+        await p.execute("DELETE FROM dish WHERE user_id=$1 AND name=$2", uid, name)
+        await p.execute(
+            "INSERT INTO dish (user_id, name, slug, default_slot) VALUES ($1,$2,$3,'breakfast')",
+            uid, name, slugify(name))
+
+        # Found by the exact-slug branch, not by the similarity fallback: a
+        # threshold of 1.1 is unreachable, so only slug equality can match.
+        found = await db.dish_by_name(uid, name, 1.1)
+        assert found is not None, "a dish at the slug cap cannot be found by name"
+        assert found["name"] == name
+
+        # Punctuation no longer decides it either: slugify collapses every run
+        # of non-alphanumerics, so the same dish typed without commas produces
+        # the same slug and still lands on the exact-match branch.
+        same = await db.dish_by_name(
+            uid, "Fried egg tomato slices rye bread and cottage cheese", 1.1)
+        assert same is not None and same["name"] == name
+
+        await p.execute("DELETE FROM dish WHERE user_id=$1 AND name=$2", uid, name)
+
+    run(scenario())
