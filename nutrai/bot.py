@@ -131,9 +131,16 @@ def _define_button(weak: Sequence[tuple[str, float]],
     if not weak:
         return []
     label = weak[0][0]
+    # The label is NOT in the callback. Telegram caps callback_data at 64
+    # bytes, so it used to be cut to 40 — and on 31 Aug 2026 that saved a food
+    # called "Fish pie (mashed potato, salmon, white f", wrote an alias for
+    # that string, and left a row nothing could ever match: the name it was
+    # created from is 44 characters long. The entry already carries the label
+    # in `parse._weak`, so the id is enough and there is no length to exceed.
     return [InlineKeyboardButton(
         text=f"🥫 define {render._short_note(label)[:20]} yourself",
-        callback_data=f"deffood:{entry_id}:{label[:40]}")]
+        callback_data=f"deffood:{entry_id}"
+                      if entry_id else f"deffood:0:{label[:40]}")]
 
 
 @dp.callback_query(F.data.startswith("deffood:"))
@@ -148,11 +155,23 @@ async def cb_define_food(cq: CallbackQuery) -> None:
     # which is still sitting on every card already on a screen. A label may
     # itself contain a colon, so the numeric second field is what distinguishes
     # them rather than the field count alone.
+    # Three shapes. `deffood:<entry_id>` is current and carries no label at
+    # all; `deffood:<entry_id>:<label>` and the older `deffood:<label>` are
+    # still on cards already on a screen. A label may itself contain a colon,
+    # so it is the *numeric* second field that distinguishes them.
     parts = cq.data.split(":", 2)
-    if len(parts) == 3 and parts[1].isdigit():
+    entry_id, name = 0, ""
+    if len(parts) == 2 and parts[1].strip().isdigit():
+        entry_id = int(parts[1])
+    elif len(parts) == 3 and parts[1].isdigit():
         entry_id, name = int(parts[1]), parts[2].strip()
     else:
-        entry_id, name = 0, cq.data.split(":", 1)[1].strip()
+        name = cq.data.split(":", 1)[1].strip()
+    if entry_id and not name:
+        name = await db.unresolved_label(entry_id) or ""
+    if not name:
+        await cq.answer("that card has expired")
+        return
     await cq.answer()
     await _ask(
         cq.message, u, "food_await",
@@ -181,10 +200,12 @@ def kb_confirm(entry_id: int,
         # The offer belongs here, beside the discard, because this is the
         # moment you can see that the database has nothing like your food —
         # and the moment you would otherwise give up and log something wrong.
-        label = weak[0][0]
-        rows.append([InlineKeyboardButton(
-            text=f"🥫 define {render._short_note(label)[:18]} yourself",
-            callback_data=f"deffood:{entry_id}:{label[:40]}")])
+        #
+        # Built by `_define_button`, not by a second copy of it. There were two
+        # for weeks, and when the 40-character truncation was fixed only one of
+        # them changed — so the bug survived its own fix and the test that
+        # should have caught it passed against the wrong path.
+        rows.append(_define_button(weak, entry_id))
     # What you have had with this before. Offered here because this is the
     # moment the meal is still editable and still in front of you — afterwards
     # it means undoing a confirmed entry and typing the whole thing again.
@@ -2535,6 +2556,29 @@ async def _consume_food_recipe(msg: Message, u: asyncpg.Record, text: str, paylo
     return True
 
 
+@consumes("addmass_await")
+async def _consume_add_mass(msg: Message, u: asyncpg.Record, text: str,
+                            payload: dict[str, Any]) -> bool:
+    """The mass for a food just defined, going into the meal that asked.
+
+    Returns False for anything that is not a mass, so a message that happens
+    to arrive while this is open is still parsed as food.
+    """
+    m = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:g|gram|grams)?\b", text.strip())
+    if not m:
+        return False
+    grams = float(m.group(1).replace(",", "."))
+    if grams <= 0:
+        return False
+    entry_id = int(payload.get("entry_id") or 0)
+    await db.clear_pending(u["id"], "addmass_await")
+    await db.add_component_to_entry(
+        entry_id, int(payload["fdc_id"]), str(payload["name"]), grams,
+        grams_source="stated")
+    await _show_amended_meal(msg, entry_id, grams, str(payload["name"]))
+    return True
+
+
 async def _return_to_the_meal_that_asked(
         msg: Message, u: asyncpg.Record, payload: dict[str, Any],
         name: str, fdc_id: int) -> None:
@@ -2578,17 +2622,33 @@ async def _return_to_the_meal_that_asked(
         # The mass is unknown only if the item never reached the parse, which
         # should not happen — but guessing one would put an invented number
         # into a meal, so it is asked for instead.
-        await msg.answer(
-            f"➕ Add <b>{render._esc(name)}</b> to "
-            f"<b>{render._esc(entry['name'])}</b>? Reply with the mass, "
-            "e.g. <code>+40 g " + render._esc(name) + "</code>.",
-            parse_mode="HTML")
+        # Through `_ask`, so something is listening. Sent with msg.answer it
+        # was a dead prompt: the reply "300g" fell through to the meal parser
+        # and came back "No match in the food database for: unknown food",
+        # which is the exact failure PROMPT_CONSUMERS exists to make
+        # impossible.
+        await _ask(
+            msg, u, "addmass_await",
+            f"➕ How much <b>{render._esc(name)}</b> went into "
+            f"<b>{render._esc(entry['name'])}</b>?\n\n"
+            "<i>Reply with the mass — <code>300 g</code>.</i>",
+            payload={"entry_id": entry_id, "fdc_id": fdc_id, "name": name})
         return
 
     await db.add_component_to_entry(
         entry_id, fdc_id, name, float(grams), grams_source="estimate")
+    await _show_amended_meal(msg, entry_id, float(grams), name)
 
-    _e, comps = await db.entry_with_components(entry_id)
+
+async def _show_amended_meal(msg: Message, entry_id: int, grams: float,
+                             name: str) -> None:
+    """The meal again, with the new component in it, still unconfirmed.
+
+    Shared by both routes in — the mass recovered from the parse, and the mass
+    typed when there was none to recover — so a corrected meal cannot end up
+    on two different footings depending on which way it got there.
+    """
+    entry, comps = await db.entry_with_components(entry_id)
     profs = await db.profiles_for([c["fdc_id"] for c in comps])
     resolved = [
         ResolvedComponent(c["label"], c["fdc_id"], float(c["grams"]),

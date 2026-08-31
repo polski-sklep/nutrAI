@@ -619,6 +619,32 @@ The old two-field callback is still parsed: cards already on a screen keep
 working, and a label may itself contain a colon, so it is the *numeric* second
 field that distinguishes the shapes rather than the field count.
 
+## A callback is 64 bytes, and a food name is longer
+
+`deffood:` carried the label, cut to 40 characters to fit Telegram's
+`callback_data` limit. On 31 Aug 2026 that turned one truncation into four
+failures: `fish pie (mashed potato, salmon, white fish)` — 44 characters — was
+saved as **"Fish pie (mashed potato, salmon, white f"**, aliased under that
+string, and so could never match the name it was created from;
+`entry_awaiting_food` compared the mangled name against the parse's label and
+found no mass; the fallback ask was a dead prompt; and the meal was finally
+logged against `Fish, NFS` at 736 kcal for a plate that is mostly potato.
+
+The label is not in the callback at all now. The entry already stores it in
+`parse._weak`, so `deffood:<entry_id>` is enough and there is no length to
+exceed. Both older shapes still parse, for cards already on a screen.
+
+**The button was built in two places**, and that is the part worth remembering:
+`_define_button` and a second copy inside `kb_confirm`. Fixing the truncation
+in one left the other, so the bug survived its own fix and a test written
+against the wrong path passed. `kb_confirm` now calls `_define_button`.
+
+**The mass ask goes through `_ask`.** Sent with `msg.answer` it opened no
+prompt, so replying "300g" fell through to the meal parser and came back "No
+match in the food database for: unknown food" — the exact failure
+`PROMPT_CONSUMERS` exists to make impossible, reintroduced by a card that asked
+a question without registering a listener.
+
 ## Why a food matched, recorded
 
 `sql/030` created `resolution_event` and nothing wrote to it, so for every meal

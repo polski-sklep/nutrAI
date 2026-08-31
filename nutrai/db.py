@@ -617,6 +617,24 @@ async def record_resolution_events(
     return [r["id"] for r in rows]
 
 
+async def unresolved_label(entry_id: int) -> str | None:
+    """The label a "define it yourself" offer was made about, in full.
+
+    Read from the entry rather than carried in the callback, because Telegram
+    caps callback_data at 64 bytes and the label was being cut to 40. A
+    44-character name came back as "Fish pie (mashed potato, salmon, white f",
+    which is what the food was then saved and aliased as — a row nothing could
+    ever match, created by the very card that offered to fix the problem.
+    """
+    p = await pool()
+    row = await p.fetchval("SELECT parse FROM log_entry WHERE id = $1", entry_id)
+    try:
+        weak = (json.loads(row) or {}).get("_weak") or []
+    except (TypeError, ValueError):
+        return None
+    return str(weak[0]) if weak else None
+
+
 async def entry_awaiting_food(entry_id: int, label: str) -> dict[str, Any] | None:
     """The entry a "define it yourself" offer came from, and the mass it wanted.
 

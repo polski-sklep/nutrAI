@@ -3899,3 +3899,55 @@ def test_a_label_album_reaches_the_model_whole(harness):
         assert "88 g per 100 g" in blob, "the caption was computed and discarded"
 
     run(scenario())
+
+
+def test_a_long_food_name_survives_the_define_button(harness):
+    """Telegram caps callback_data at 64 bytes; the label was cut to 40.
+
+    On 31 Aug 2026 "fish pie (mashed potato, salmon, white fish)" — 44
+    characters — was saved as "Fish pie (mashed potato, salmon, white f" and
+    aliased under that string. The row could never match the name it was
+    created from, the mass lookup missed because the labels differed, and the
+    meal ended up logged against `Fish, NFS` at 736 kcal. One truncation, four
+    failures.
+    """
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai import db
+
+        p = await db.pool()
+        await p.execute("DELETE FROM food WHERE owner_user_id=$1", uid)
+
+        long_label = "fish pie (mashed potato, salmon, white fish)"
+        assert len(long_label) > 40, "the point of this test is the length"
+
+        harness.llm.meal = {
+            "dish_name": "Fish pie with rocket",
+            "items": [
+                {"label": long_label, "search_terms": "zzzznomatchzzzz",
+                 "grams": 300, "grams_source": "estimate", "state": "cooked",
+                 "confidence": 0.5},
+                {"label": "rocket", "search_terms": "arugula, raw",
+                 "grams": 20, "grams_source": "estimate", "state": "raw",
+                 "confidence": 0.8},
+            ],
+            "confidence": 0.6,
+        }
+        harness.sent.clear()
+        await harness.feed("fish pie with rocket")
+        card = harness.sent.last()
+        deffood = next((b for b in card.buttons if b.startswith("deffood:")), None)
+        assert deffood, f"no define offer: {card.buttons}"
+        # The label must not be in the callback at all — it does not fit.
+        assert len(deffood.encode()) <= 64, f"callback too long: {deffood!r}"
+
+        harness.sent.clear()
+        await harness.press(deffood, card.message_id)
+        prompt = harness.sent.last().text
+        assert "white fish" in prompt, (
+            f"the name was truncated before the food was even named: {prompt!r}")
+
+        await p.execute("DELETE FROM food WHERE owner_user_id=$1", uid)
+
+    run(scenario())
