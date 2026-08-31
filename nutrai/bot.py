@@ -98,10 +98,21 @@ ALBUM_WAIT = 1.2
 # matched, `/food new`, and the reply to "what shall I call it?" — and an
 # example that drifts out of step with the parser teaches a syntax the bot then
 # refuses.
+# Four routes in, and the prompt used to name one.
+#
+# `_consume_food_recipe` already accepts a barcode, a photographed panel and a
+# pasted panel as well as a list of ingredients — but it asked "what goes into
+# it?" and showed a recipe, so the other three were discoverable only by
+# guessing. A screen that supports more than it advertises reads as a screen
+# that does not work.
 _RECIPE_EXAMPLES = (
-    "<code>1000 ml water, 30 g salt, 100 ml white vinegar</code>\n\n"
-    "<i>Baked? End with what it made — then a slice needs no weighing:</i>\n"
+    "<b>1 · a recipe</b> — resolved against USDA and added up:\n"
+    "<code>1000 ml water, 30 g salt, 100 ml white vinegar</code>\n"
+    "<i>Baked? End with what it made, and a slice needs no weighing:</i>\n"
     "<code>… makes 850 g, 16 slices</code>\n\n"
+    "<b>2 · a photo of the nutrition panel</b> — send it here.\n\n"
+    "<b>3 · the panel typed or pasted</b>, per 100 g or per serving.\n\n"
+    "<b>4 · a barcode</b> — just the digits, looked up on OpenFoodFacts.\n\n"
 )
 
 
