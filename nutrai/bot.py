@@ -237,8 +237,8 @@ def _today(u: asyncpg.Record) -> dt.date:
 # row can, and a row that has to be read twice is worse than a short one.
 COMMANDS: list[tuple[str, str]] = [
     # Logging and checking, which is nearly everything.
-    ("/repeat", "Log something you have had before"),
-    ("/again", "Repeat a whole morning, afternoon or evening"),
+    ("/again", "Log a single thing you have had before"),
+    ("/repeat", "Repeat a whole morning, afternoon or evening"),
     ("/supp", "Tick off today's supplements"),
     ("/today", "Where you stand today"),
     ("/next", "What would close today's gaps"),
@@ -285,8 +285,8 @@ async def start(msg: Message) -> None:
     )
 
 
-@dp.message(Command("r", "repeat"))
-async def repeat_menu(msg: Message) -> None:
+@dp.message(Command("a", "r", "again"))
+async def again_menu(msg: Message) -> None:
     u = await _user(msg)
     hour = _local_now(u).hour
     dishes = await db.top_dishes(u["id"], 8, tz=u["tz"], hour=hour)
@@ -316,12 +316,13 @@ BLOCKS: dict[str, tuple[int, int, str]] = {
 }
 
 
-@dp.message(Command("again", "block"))
-async def again(msg: Message) -> None:
-    """Repeat a whole block of a day — `/again morning`.
+@dp.message(Command("repeat", "block"))
+async def repeat_block(msg: Message) -> None:
+    """Repeat a whole block of a day — `/repeat morning`.
 
-    A morning is a set of meals rather than a dish, and repeating it through
-    /repeat is five taps with a chance of forgetting the fourth. The dishes are
+    A morning is a set of meals rather than a dish, and repeating it one dish
+    at a time through `/again` is five taps with a chance of forgetting the
+    fourth. The dishes are
     already stored; what was missing was a way to name several of them at once.
 
     Nothing is logged here. Each meal comes back as its own confirmation card,
@@ -458,7 +459,7 @@ async def cb_block_pick(cq: CallbackQuery) -> None:
     payload = await db.take_pending(int(cq.data.split(":")[1]))
     await cq.answer()
     if not payload:
-        await cq.message.answer("That block has expired — send /again.")
+        await cq.message.answer("That block has expired — send /repeat.")
         return
     u = await db.get_or_create_user(cq.from_user.id)
     meals, selected = payload["meals"], payload["selected"]
@@ -512,7 +513,7 @@ async def cb_block_go(cq: CallbackQuery) -> None:
     if not slugs:
         await cq.message.answer(
             "Nothing selected." if pending else
-            "That block has expired — send /again.")
+            "That block has expired — send /repeat.")
         return
     done = 0
     for slug in slugs:
@@ -2084,7 +2085,7 @@ async def cb_repeat_dish(cq: CallbackQuery) -> None:
     if not await _try_repeat(cq.message, u, cmd):
         await cq.message.answer(
             "That dish is not available to repeat any more. "
-            "<code>/repeat</code> shows what is.",
+            "<code>/again</code> shows what is.",
             parse_mode="HTML",
         )
 
@@ -3587,7 +3588,7 @@ def _failure_reason(exc: Exception) -> str:
             # because "the bot is down" and "the parser is down" are different
             # situations and only one of them stops you logging lunch.
             return (f"⚠️ {sentence}\n\nNothing was logged. "
-                    "<code>/repeat</code> still works — it never calls a model.")
+                    "<code>/again</code> still works — it never calls a model.")
     # Naming the exception class tells you the HTTP shape and nothing about
     # the cause. Where the failure plainly came from the model API, say so —
     # that alone distinguishes "my account" from "my bot is broken", which are
@@ -3597,7 +3598,7 @@ def _failure_reason(exc: Exception) -> str:
                 f"(<code>{escape(type(exc).__name__)}</code>) — most often an "
                 "account limit. Check console.anthropic.com; the exact message "
                 "is in the bot logs.\n\nNothing was logged. "
-                "<code>/repeat</code> still works — it never calls a model.")
+                "<code>/again</code> still works — it never calls a model.")
     return (f"That did not go through — {escape(type(exc).__name__)}. "
             "Nothing was logged. The detail is in the bot logs; try again in a moment.")
 

@@ -2188,13 +2188,36 @@ def user_food_list_card(foods: Sequence[Row]) -> str:
             "to pick the least-bad wrong answer every time.</i>\n\n"
             "<b>Reply with a name</b> to make one — <code>pickle juice</code>."
         )
-    lines = ["🥫 <b>Your own foods</b>", ""]
-    rows = []
-    for f in foods:
-        kcal = f"{float(f['kcal_100g']):,.0f} kcal" if f["kcal_100g"] is not None else "no energy"
-        rows.append(f"{_short_note(f['description'])[:22]:<24}{kcal:>12} /100 g")
-        rows.append(f"    {f['n_nutrients']} nutrients · used {f['times_used']}×")
-    lines.append(_pre(_esc(r) for r in rows))
+    # Not a <pre> table. The columns were 43 characters wide against a phone's
+    # ~30, so every row wrapped: names were cut mid-word ("Devolay chicken
+    # (bread") and "/100 g" landed on a line of its own. Alignment that does
+    # not survive the screen it is read on is worse than no alignment — a
+    # wrapped name still reads, a truncated one does not.
+    #
+    # Most-used first, because the question this screen answers is "what have I
+    # got", and the answer is led by the things actually eaten. Alphabetical
+    # buried a row used 14 times below one used never.
+    ordered = sorted(
+        foods,
+        key=lambda f: (-int(f["times_used"] or 0), str(f["description"]).lower()),
+    )
+    used = sum(1 for f in ordered if int(f["times_used"] or 0))
+    lines = [
+        "🥫 <b>Your own foods</b>",
+        f"<i>{len(ordered)} row{'' if len(ordered) == 1 else 's'} you have made"
+        + (f", {used} in use." if used else ".") + "</i>",
+        "",
+    ]
+    for f in ordered:
+        kcal = (f"{float(f['kcal_100g']):,.0f} kcal/100 g"
+                if f["kcal_100g"] is not None else "no energy figure")
+        n = int(f["times_used"] or 0)
+        # "used 0×" is a sum reported where a plain word is clearer, and this
+        # column is mostly zeroes.
+        times = "never used" if not n else f"used {n}×"
+        lines.append(f"• <b>{_esc(str(f['description']))}</b>")
+        lines.append(f"  <i>{_esc(kcal)} · {f['n_nutrients']} nutrients · "
+                     f"{_esc(times)}</i>")
     lines += ["", "<b>Reply with a name</b> to add another. Your own rows "
                   "outrank USDA's generic one when you log that name."]
     return "\n".join(lines)

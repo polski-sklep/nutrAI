@@ -2657,7 +2657,7 @@ def test_repeat_offers_single_foods_as_well_as_dishes(harness):
         await harness.press(f"ok:{_confirm_id(card)}", card.message_id)
 
         harness.sent.clear()
-        await harness.feed("/repeat")
+        await harness.feed("/again")
         menu = harness.sent.last()
         assert "Or one thing" in menu.text, menu.text
 
@@ -2691,7 +2691,7 @@ def test_a_single_food_repeat_takes_a_modifier(harness):
         await harness.feed("250 g minced beef, 164 g rice")
         card = harness.sent.last()
         await harness.press(f"ok:{_confirm_id(card)}", card.message_id)
-        await harness.feed("/repeat")
+        await harness.feed("/again")
         pending = await db.latest_pending(uid, "repeat_menu")
         n = len(pending["ids"]) + 1
         base = pending["components"][0]["grams"]

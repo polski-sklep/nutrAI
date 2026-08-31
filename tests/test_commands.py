@@ -86,15 +86,27 @@ def test_command_list_is_not_empty_and_matches_the_table():
         assert name in rendered
 
 
-def test_repeat_is_advertised_by_its_full_name_and_listed_first():
-    """It is the most-used path, and /r is muscle memory rather than a name."""
-    assert COMMANDS[0][0] == "/repeat"
+def test_logging_something_had_before_is_listed_first():
+    """It is the most-used path, and /r is muscle memory rather than a name.
+
+    The command is `/again` since 31 Aug 2026: "repeat" reads as a whole day
+    and "again" as one thing, which is the way round they are actually used.
+    The list order did not change — only the two names did.
+    """
+    assert COMMANDS[0][0] == "/again"
+    assert COMMANDS[1][0] == "/repeat"
     assert "/r " not in command_list()
 
 
 def test_the_short_alias_still_works():
-    """Dropping it from the menu must not drop it from the dispatcher."""
-    assert {"/r", "/repeat"} <= registered_commands()
+    """Dropping it from the menu must not drop it from the dispatcher.
+
+    `/r` stays on the single-thing path across the rename. It is muscle memory
+    for an action, and the action did not change — only its name did, so
+    moving the alias with the word would have broken the habit to no purpose.
+    """
+    assert {"/r", "/a", "/again"} <= registered_commands()
+    assert {"/repeat", "/block"} <= registered_commands()
 
 
 def test_menu_descriptions_fit_telegrams_limits():
@@ -270,7 +282,7 @@ def test_out_of_credit_does_not_advise_retrying():
     assert "hit a limit" in out and "console.anthropic.com" in out
     assert "try again in a moment" not in out
     # The local paths are unaffected, and that is the useful thing to know.
-    assert "/repeat" in out
+    assert "/again" in out
 
 
 def test_a_rate_limit_does_advise_retrying():
@@ -611,7 +623,7 @@ def test_a_connection_failure_says_so_and_names_what_still_works():
 
     out = _failure_reason(APIConnectionError("Connection error."))
     assert "reach" in out.lower()
-    assert "/repeat" in out
+    assert "/again" in out
 
 
 def test_food_new_without_a_name_waits_for_one():
