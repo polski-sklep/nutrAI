@@ -1061,7 +1061,13 @@ def _nutrient_menu() -> str:
     """
     names = {
         1008: "Energy (kcal)", 1003: "Protein (g)", 1004: "Fat (g)", 1005: "Carbohydrate (g)",
-        1079: "Fibre (g)", 2000: "Sugars (g)", 1258: "Saturated fat (g)", 1093: "Sodium (mg)",
+        1079: "Fibre (g)", 2000: "Sugars (g)", 1258: "Saturated fat (g)", 
+        # EU panels print "Salt", not sodium. That line is reported as 1093
+        # with the unit "g salt" and converted in Python: a model asked to
+        # divide by 2.5 is a model estimating a nutrient value, and one that
+        # reads "Salt 0.30 g" as 0.30 mg of sodium is wrong by a factor of
+        # 2.5 with nothing downstream able to tell.
+        1093: "Sodium (mg) — for a 'Salt' line use unit 'g salt', do not convert",
         1092: "Potassium (mg)", 1087: "Calcium (mg)", 1089: "Iron (mg)", 1090: "Magnesium (mg)",
         1095: "Zinc (mg)", 1178: "Vitamin B-12 (ug)", 1114: "Vitamin D (ug)",
         1162: "Vitamin C (mg)", 1106: "Vitamin A RAE (ug)", 1177: "Folate (ug)",

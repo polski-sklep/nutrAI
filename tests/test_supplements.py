@@ -88,3 +88,29 @@ def test_the_nutrient_menu_disambiguates_vitamin_k_forms():
     assert not any(
         line.strip().endswith("= Vitamin K (ug)") for line in menu.splitlines()
     )
+
+
+def test_a_salt_line_becomes_sodium_and_is_not_left_to_the_model():
+    """EU panels print salt; this system counts sodium.
+
+    Without a path in, the sodium line of a European label was dropped as
+    unconvertible — silently, on every product, and every packet here is a
+    European packet. This is the vitamin D case rather than the vitamin A one:
+    NaCl is a fixed compound, so the factor is arithmetic and not an
+    assumption about which form the label meant.
+    """
+    from nutrai.core.supplements import convert
+
+    # 0.30 g salt per 100 g -> 118 mg sodium.
+    value, why = convert(1093, 0.30, "g salt", "MG")
+    assert why == "" and abs(value - 118.0) < 0.5
+
+    value, why = convert(1093, 0.02, "g salt", "MG")
+    assert why == "" and abs(value - 7.87) < 0.05
+
+    # A sodium line stays a sodium line.
+    assert convert(1093, 120, "mg", "MG") == (120, "")
+
+    # And the ambiguous conversion is still refused: vitamin A IU depends on
+    # which form the label meant, and no factor is arithmetic.
+    assert convert(1106, 3000, "iu", "UG")[0] is None

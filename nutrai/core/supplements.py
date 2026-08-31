@@ -42,6 +42,10 @@ class Rejected:
     reason: str
 
 
+# Sodium as a fraction of sodium chloride by mass: 22.990 / 58.443.
+_SODIUM_PER_SALT = 0.3934
+
+
 def convert(
     nutrient_id: int, amount: float, unit: str, target_unit: str
 ) -> tuple[float | None, str]:
@@ -49,6 +53,21 @@ def convert(
     u, t = unit.strip().lower(), target_unit.strip().lower()
     if amount < 0:
         return None, "negative amount"
+
+    # EU panels print salt; this system counts sodium, and every packet here is
+    # an EU packet. Without this the sodium line of a European label had no
+    # path in at all and was dropped as unconvertible — silently, and on every
+    # product.
+    #
+    # This is the vitamin D case, not the vitamin A one: NaCl is a fixed
+    # compound and sodium is 22.990 of its 58.443 g/mol, so the factor is
+    # arithmetic rather than an assumption about which form the label meant.
+    # An estimate would be checkable against nothing; this is checkable against
+    # a periodic table.
+    if u in ("g salt", "salt g", "salt"):
+        amount, u = amount * _SODIUM_PER_SALT, "g"
+    elif u in ("mg salt", "salt mg"):
+        amount, u = amount * _SODIUM_PER_SALT, "mg"
 
     if u == "iu":
         mapping = _IU_TO_UNIT.get(nutrient_id)
