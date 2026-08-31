@@ -215,7 +215,9 @@ made — against the packet in your hand, at the confirm gate — and an estimat
 checkable against nothing. Enforcement is threefold: the tool is given the exact
 list of nutrient ids it may use, so an unlisted line is omitted rather than
 approximated onto a neighbour; units are converted in Python and refused where
-ambiguous (vitamin D IU is exact, vitamin A IU is not); and nothing is saved
+ambiguous (vitamin D IU is exact, vitamin A IU is not, and a European
+panel's "Salt" line is exact — NaCl is a fixed compound, so sodium is
+22.990 of its 58.443 by mass); and nothing is saved
 until a human confirms the panel. `supplement.source` records which route the
 numbers came in by, and must never say `model_estimate`.
 
