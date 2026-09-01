@@ -72,6 +72,7 @@ def tidy_test_users(request: pytest.FixtureRequest):
                     # log_entry cascade never reaches the ones that matter.
                     "DELETE FROM resolution_event WHERE user_id=$1",
                     "DELETE FROM rating_prompt WHERE user_id=$1",
+                    "DELETE FROM supplement_log WHERE user_id=$1",
                     "DELETE FROM observation WHERE user_id=$1",
                     "DELETE FROM pending_action WHERE user_id=$1",
                     "DELETE FROM notification_log WHERE user_id=$1",

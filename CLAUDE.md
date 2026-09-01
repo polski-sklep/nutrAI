@@ -492,6 +492,25 @@ mutes the morning note and the supplement reminders with it.
   nobody ever answers is a kind not worth asking about, and deleting the
   unanswered rows is what would hide that.
 
+## Cigarettes
+
+`/smoke 3` records three now; `/smoke` shows the pattern; `/smoke 0` records a
+clear day, which is data rather than the absence of it. Stored in `observation`
+as kind `cigarettes` with `scale = 'count'` — a tally and a 1-10 rating are
+different measurements and that column exists to say which. Each call is its
+own row, so the *times* survive; a day's figure is the sum.
+
+**The vitamin C floor moves at read time, not in `target`.** Smoking raises the
+requirement by 35 mg (IOM DRI increment, 2000), and `day_progress` adds it on a
+day with any cigarettes recorded. Writing it into `target` would close and open
+a row every day — invariant 3's exact failure, and `target` has reached five
+figures of superseded rows once already from far less. The requirement belongs
+to the day, not to the person.
+
+The constant lives in `sql/034_smoking.sql` and in `config.SMOKER_VITAMIN_C_MG`,
+which is a liability; `test_the_smoking_adjustment_matches_the_one_in_sql`
+asserts they agree by running the function rather than by reading either.
+
 ## Days that do not count
 
 `/incomplete` marks a day the user knows they did not log properly. Absence of
@@ -877,6 +896,20 @@ of the dish, and an unstated form means the plain food at lower confidence.
 - The repeat DSL rejects `250 g of chicken and rice` by returning `None`. That
   is correct: it is a food description, not a repeat command.
 - `_label_match` is loose on purpose. `-onion` should match `red onion`.
+- **`_names_supplement` needs two words, not all of them, and not
+  consecutively.** It required the supplement's words in a run, so "protein
+  shake with psyllium and creatine" did not tick off Psyllium Husk and "took my
+  D3 and K2" did not tick Vitamin D3 + K2 — a supplement named out loud went
+  unticked and the person who had said it was left to tick it by hand. Two of
+  its own words anywhere in the message now match. One is still never enough:
+  "zinc" appears in "zinc-rich beef stew" and no tablet was swallowed.
+- **A powder can be a food ingredient or a ticked supplement, never both.** The
+  shake's psyllium counted as a component contributes fibre through
+  `amount_food`; ticked as a supplement it contributes through
+  `amount_supplement`. Doing both claims 8.8 g of fibre for 2.5 g of husk, and
+  `day_progress` keeps the two apart precisely so that double would be
+  invisible in the total. So the powders ride as nutrient-free marker rows
+  whose only job is to be *named*.
 - **`ruff check` reports around thirty findings and that is the resting state.**
   Nearly all are `UP017` (`dt.timezone.utc` rather than `datetime.UTC`) and a
   couple of deliberate broad `except` clauses. The datetime spelling is a

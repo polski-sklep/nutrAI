@@ -1254,6 +1254,43 @@ async def sparsest_kinds(user_id: int, kinds: list[str], day: dt.date) -> list[s
     return [r["kind"] for r in rows if not r["today"]]
 
 
+async def log_cigarettes(user_id: int, count: float, *, tz: str = "Europe/Warsaw",
+                         rollover_hour: int = 4, note: str | None = None) -> int:
+    """One smoking event, as an observation.
+
+    Each call writes its own row rather than updating a daily total, so the
+    *times* survive — which is the pattern worth having later, and the thing a
+    running tally would throw away. A day's figure is the sum.
+
+    `scale` says 'count', because a tally and a 1-10 rating are different
+    measurements and that column exists to keep them apart.
+    """
+    return await log_observation(user_id, "cigarettes", count, scale="count",
+                                 tz=tz, rollover_hour=rollover_hour, note=note)
+
+
+async def cigarettes_on(user_id: int, day: dt.date) -> float:
+    p = await pool()
+    return float(await p.fetchval(
+        """SELECT COALESCE(sum(value), 0) FROM observation
+            WHERE user_id = $1 AND local_date = $2 AND kind = 'cigarettes'""",
+        user_id, day) or 0)
+
+
+async def smoking_days(user_id: int, days: int = 14) -> list[asyncpg.Record]:
+    """Per-day totals, newest first. Days with none are absent, not zero —
+    a day you did not record is not a day you did not smoke."""
+    p = await pool()
+    return await p.fetch(
+        """SELECT local_date, sum(value) AS cigarettes, count(*) AS entries,
+                  min(observed_at) AS first_at, max(observed_at) AS last_at
+             FROM observation
+            WHERE user_id = $1 AND kind = 'cigarettes'
+              AND local_date > current_date - $2::int
+         GROUP BY local_date ORDER BY local_date DESC""",
+        user_id, days)
+
+
 async def observations(user_id: int, kind: str, days: int = 90) -> list[asyncpg.Record]:
     p = await pool()
     return await p.fetch(
@@ -2811,21 +2848,30 @@ async def rating_notes(user_id: int, days: int = 28) -> list[asyncpg.Record]:
 
 
 def _names_supplement(name: str, text: str) -> bool:
-    """Whether a message names this supplement, allowing a shortened form.
+    """Whether a message names this supplement.
 
-    Two or more of the supplement's own words, consecutively, in the message.
-    A single word is not enough: "zinc" appears in "zinc-rich beef stew" and no
-    tablet was swallowed.
+    At least two of the supplement's own words somewhere in the message, in any
+    order. One is never enough: "zinc" appears in "zinc-rich beef stew" and no
+    tablet was swallowed, so a one-word name never matches free text at all.
+
+    Two rather than all, so a shortened form still works — the stack holds
+    "Vitamin D3 + K2" and people write "with vitamin d3".
+
+    It used to require the words *consecutively*, which failed on every natural
+    phrasing that separated them. "Psyllium husk (2.5 teaspoons)" matched;
+    "protein shake with psyllium and creatine" did not, and neither did "husk
+    of psyllium" or "took my D3 and K2". So a supplement named plainly in a
+    meal went unticked, repeatedly, and the person who had said it out loud was
+    left to tick it by hand — which is the whole thing this is here to avoid.
+
+    Word-level rather than substring, still: "vitamin" inside "vitamins" is
+    fine, but a bare substring test would match "k2" inside a barcode.
     """
-    want, said = name.split(), text.split()
-    if len(want) < 2 or len(said) < 2:
+    want = [w for w in re.split(r"[^a-z0-9]+", name.lower()) if w]
+    said = {w for w in re.split(r"[^a-z0-9]+", text.lower()) if w}
+    if len(want) < 2 or not said:
         return False
-    for n in range(len(want), 1, -1):
-        for i in range(len(want) - n + 1):
-            run = want[i:i + n]
-            if any(said[j:j + n] == run for j in range(len(said) - n + 1)):
-                return True
-    return False
+    return sum(w in said for w in want) >= 2
 
 
 async def supplements_named_in(user_id: int, day: dt.date,

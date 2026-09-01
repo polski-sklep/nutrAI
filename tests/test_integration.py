@@ -4039,3 +4039,88 @@ def test_the_entry_view_never_sums_the_three_energy_ids(harness):
                 "the view is summing the alternatives, which is the bug")
 
     run(scenario())
+
+
+def test_smoking_raises_the_vitamin_c_floor_without_rewriting_a_target(harness):
+    """The requirement belongs to the day, not to the person.
+
+    A floor that moved with each day's smoking, written into `target`, would
+    close and open a row every day — and `target` has reached five figures of
+    superseded rows once already from far less (invariant 3). So the stored
+    floor stays put and the day's floor is derived at read time.
+    """
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai.config import SMOKER_VITAMIN_C_MG, VITAMIN_C
+        from nutrai import db
+
+        p = await db.pool()
+        day = db.local_date_for(dt.datetime.now(dt.timezone.utc), "Europe/Warsaw", 4)
+        await p.execute(
+            "DELETE FROM observation WHERE user_id=$1 AND kind='cigarettes'", uid)
+
+        def floor(rows):
+            return float(next(r for r in rows if r["nutrient_id"] == VITAMIN_C)["min_amount"])
+
+        before = floor(await db.day_progress(uid, day))
+        versions = await p.fetchval(
+            "SELECT count(*) FROM target WHERE user_id=$1 AND nutrient_id=$2",
+            uid, VITAMIN_C)
+
+        await db.log_cigarettes(uid, 3, tz="Europe/Warsaw")
+        after = floor(await db.day_progress(uid, day))
+
+        assert after == pytest.approx(before + SMOKER_VITAMIN_C_MG), (
+            f"floor went {before} -> {after}, expected +{SMOKER_VITAMIN_C_MG}")
+        # The stored target is untouched: no new version, no closed row.
+        assert await p.fetchval(
+            "SELECT count(*) FROM target WHERE user_id=$1 AND nutrient_id=$2",
+            uid, VITAMIN_C) == versions, "a target row was written for a day's smoking"
+
+        # Each call is its own row, so the times survive and a day is the sum.
+        await db.log_cigarettes(uid, 2, tz="Europe/Warsaw")
+        assert await db.cigarettes_on(uid, day) == 5
+
+        # Zero is a recorded clear day, not the absence of a record — and it
+        # must not move the floor.
+        await p.execute(
+            "DELETE FROM observation WHERE user_id=$1 AND kind='cigarettes'", uid)
+        await db.log_cigarettes(uid, 0, tz="Europe/Warsaw")
+        assert await db.cigarettes_on(uid, day) == 0
+        assert floor(await db.day_progress(uid, day)) == pytest.approx(before)
+
+        await p.execute(
+            "DELETE FROM observation WHERE user_id=$1 AND kind='cigarettes'", uid)
+
+    run(scenario())
+
+
+def test_the_smoking_adjustment_matches_the_one_in_sql(harness):
+    """The 35 mg lives in sql/034 and in config.py, and must not drift.
+
+    A constant in two places is a liability; this asserts they agree by
+    running the function rather than by reading either of them.
+    """
+
+    async def scenario():
+        uid = await _reset()
+        from nutrai.config import SMOKER_VITAMIN_C_MG, VITAMIN_C
+        from nutrai import db
+
+        p = await db.pool()
+        day = db.local_date_for(dt.datetime.now(dt.timezone.utc), "Europe/Warsaw", 4)
+        await p.execute(
+            "DELETE FROM observation WHERE user_id=$1 AND kind='cigarettes'", uid)
+        base = await p.fetchval(
+            "SELECT min_amount FROM day_progress($1,$2) WHERE nutrient_id=$3",
+            uid, day, VITAMIN_C)
+        await db.log_cigarettes(uid, 1, tz="Europe/Warsaw")
+        raised = await p.fetchval(
+            "SELECT min_amount FROM day_progress($1,$2) WHERE nutrient_id=$3",
+            uid, day, VITAMIN_C)
+        assert float(raised) - float(base) == pytest.approx(SMOKER_VITAMIN_C_MG)
+        await p.execute(
+            "DELETE FROM observation WHERE user_id=$1 AND kind='cigarettes'", uid)
+
+    run(scenario())

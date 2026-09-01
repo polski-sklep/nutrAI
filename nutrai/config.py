@@ -127,6 +127,18 @@ ALCOHOL = 1018
 CAFFEINE = 1057
 SAT_FAT = 1258
 SODIUM = 1093
+VITAMIN_C = 1162
+
+# Smoking raises the vitamin C requirement by this much per day — the Institute
+# of Medicine's DRI increment for smokers (2000), the figure behind the
+# 90 -> 125 mg and 75 -> 110 mg adult recommendations.
+#
+# The authoritative copy is in `sql/034_smoking.sql`, where `day_progress`
+# applies it; this one exists so a card can say *why* a floor moved. A constant
+# in two places is a liability, so
+# `test_the_smoking_adjustment_matches_the_one_in_sql` asserts they agree by
+# actually running the function.
+SMOKER_VITAMIN_C_MG = 35
 
 # Atwater factors, kcal per gram. Used only as a cross-check on the database,
 # never as the source of the energy figure.

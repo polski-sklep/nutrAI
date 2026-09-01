@@ -2589,3 +2589,41 @@ def rating_prompt_card(kind: str) -> str:
     scale = ("1 full \u2192 10 ravenous" if kind == "hunger"
              else "1 worst \u2192 10 best")
     return f"{icon} <b>{_esc(question)}</b>\n<i>{_esc(scale)}</i>"
+
+
+def smoking_card(today: float, history: Sequence[Row], vitc: Row | None,
+                 bump_mg: int) -> str:
+    """What was recorded, and the one thing it changes.
+
+    Deliberately not a lecture. This is a log, and the reason it earns a place
+    beside the food is that smoking moves a nutrient floor the system already
+    tracks — so it says which floor and by how much, and stops there.
+    """
+    lines = [f"\U0001f6ac <b>{today:g} today</b>" if today
+             else "\U0001f6ac <b>None recorded today</b>"]
+
+    if history:
+        rows = [f"{r['local_date']:%a %d %b}   {float(r['cigarettes']):>4g}"
+                for r in history]
+        total = sum(float(r["cigarettes"]) for r in history)
+        span = len(history)
+        lines += ["", _pre(_esc(r) for r in rows),
+                  f"<i>{total:g} across {span} recorded day"
+                  f"{'' if span == 1 else 's'}, "
+                  f"{total / span:.1f} a day.</i>"]
+    else:
+        lines.append("<i>Nothing recorded yet.</i>")
+
+    if today:
+        line = (f"\n\U0001f34a Your vitamin C floor is <b>+{bump_mg} mg</b> today "
+                "because of it")
+        if vitc is not None:
+            line += (f" — {float(vitc['amount']):.0f} of "
+                     f"{float(vitc['min_amount']):.0f} mg so far")
+        lines.append(line + ".")
+        lines.append("<i>Peppers, citrus, kiwi and brassicas are the cheapest "
+                     "way to close that gap.</i>")
+
+    lines += ["", "<code>/smoke 3</code> to add three · <code>/smoke 0</code> "
+                  "records a clear day."]
+    return "\n".join(lines)

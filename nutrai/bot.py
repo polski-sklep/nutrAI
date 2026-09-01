@@ -22,7 +22,16 @@ from aiogram.types import (
 )
 
 from . import db, off
-from .config import CARB, CONFIDENCE_FLOOR, ENERGY_KCAL, FAT, PROTEIN, settings
+from .config import (
+    CARB,
+    CONFIDENCE_FLOOR,
+    ENERGY_KCAL,
+    FAT,
+    PROTEIN,
+    SMOKER_VITAMIN_C_MG,
+    VITAMIN_C,
+    settings,
+)
 from .core import dsl, estimate, fasting, insight, plan, render, suggest
 from .core import profile as profile_mod
 from .core.nutrition import (
@@ -284,6 +293,7 @@ COMMANDS: list[tuple[str, str]] = [
     # The other things you record daily.
     ("/weight", "Log a weigh-in"),
     ("/rate", "Rate sleep, focus, mood or effort"),
+    ("/smoke", "Record cigarettes, and what they cost in vitamin C"),
     ("/training", "Sessions, and this week's total"),
     ("/fast", "Your current fast"),
     ("/window", "Your eating window"),
@@ -1147,6 +1157,48 @@ async def cb_rate_value(cq: CallbackQuery) -> None:
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
             text="📝 why?", callback_data=f"ratenote:{obs_id}")]]),
     )
+
+
+@dp.message(Command("smoke", "cig", "cigarettes"))
+async def smoke_cmd(msg: Message) -> None:
+    """`/smoke 3` records three cigarettes now. `/smoke` shows the pattern.
+
+    Kept as a log rather than a judgement. It earns its place beside the food
+    because it moves a nutrient floor the system already tracks — vitamin C,
+    by `SMOKER_VITAMIN_C_MG` — and `day_progress` applies that at read time so
+    no `target` row is rewritten for it (invariant 3).
+
+    Each call is its own observation, so the times survive. A day's figure is
+    the sum, and `/smoke 0` records a clear day, which is data rather than the
+    absence of it.
+    """
+    u = await _user(msg)
+    day = _today(u)
+    arg = (msg.text or "").split()[1:2]
+
+    if arg:
+        try:
+            n = float(arg[0].replace(",", "."))
+        except ValueError:
+            await msg.answer(
+                "How many? <code>/smoke 3</code>, or <code>/smoke 0</code> for "
+                "a clear day.", parse_mode="HTML")
+            return
+        if n < 0 or n > 100:
+            await msg.answer("That is not a number of cigarettes.")
+            return
+        await db.log_cigarettes(u["id"], n, tz=u["tz"],
+                                rollover_hour=u["day_rollover_hour"])
+
+    progress = {r["nutrient_id"]: r for r in await db.day_progress(u["id"], day)}
+    await msg.answer(
+        render.smoking_card(
+            await db.cigarettes_on(u["id"], day),
+            await db.smoking_days(u["id"]),
+            progress.get(VITAMIN_C),
+            SMOKER_VITAMIN_C_MG,
+        ),
+        parse_mode="HTML")
 
 
 @dp.message(Command("prompts"))
