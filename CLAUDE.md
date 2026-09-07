@@ -86,6 +86,37 @@ docker compose logs -f bot
 make reload                                  # rebuild the image AND prove it is running
 ```
 
+## Where it runs
+
+```bash
+make vps-check HOST=root@1.2.3.4   # preflight only, changes nothing
+make vps HOST=root@1.2.3.4         # deploy, migrate, verify, schedule backups
+```
+
+**A laptop is not a host.** The bot ran on a MacBook that sleeps when the lid
+closes, so 2–6 Sep 2026 has no diary at all: the machine was on holiday with
+its owner and Docker was not running. Tailscale does not fix this and never
+could — it is a network overlay that lets you reach machines that are running,
+and there was nothing at the far end of the tunnel. The requirement is a
+machine that stays powered on, and nothing smaller.
+
+What the bot needs is smaller than it looks. `start_polling` makes **outbound**
+connections only, so there is no public port, no reverse proxy, no Funnel and
+no inbound firewall rule anywhere in this. A €5 VPS with an internet connection
+is the entire specification.
+
+`scripts/deploy.sh` rsyncs rather than pulling, because there is no git remote
+and every commit lives on the laptop; the digest check at the end verifies what
+is actually running rather than trusting the copy. Two refusals are load-bearing:
+
+- **The local bot is stopped first.** Telegram allows one `getUpdates` consumer
+  per token. Two pollers do not share the work, they take turns losing — 409s,
+  and meals landing on whichever won the race.
+- **It will not restore over a non-empty diary.** Restoring this laptop's dump
+  onto a server that has been logging would replace server-side entries with an
+  older copy. That is a merge, which is a different job, and doing it silently
+  is how a fortnight disappears.
+
 **`docker compose restart bot` deploys nothing.** The service is `build: .` with
 no bind mount, so `restart` restarts the container from the image it already
 has. On 26 Aug 2026 that made every "restarted the bot" claim in a day's work

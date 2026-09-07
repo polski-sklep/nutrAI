@@ -1,4 +1,4 @@
-.PHONY: db test load bootstrap pin run logs deploy reload fmt backup backup-check
+.PHONY: db test load bootstrap pin run logs deploy vps vps-check reload fmt backup backup-check
 
 db:                       ## Postgres only; schema in sql/ applies on first boot
 	docker compose up -d db
@@ -38,6 +38,14 @@ reload:                   ## locally: rebuild the image and PROVE the new code i
 	 else \
 	   echo "STILL STALE — host $$host, container $$cont"; exit 1; \
 	 fi
+
+vps:                      ## deploy to a server: make vps HOST=root@1.2.3.4
+	@test -n "$(HOST)" || (echo "usage: make vps HOST=root@1.2.3.4"; exit 1)
+	./scripts/deploy.sh $(HOST)
+
+vps-check:                ## preflight only, changes nothing
+	@test -n "$(HOST)" || (echo "usage: make vps-check HOST=root@1.2.3.4"; exit 1)
+	./scripts/deploy.sh $(HOST) --check
 
 deploy:                   ## on the VPS: pull, rebuild, restart. DB untouched.
 	git pull --ff-only
